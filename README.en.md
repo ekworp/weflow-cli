@@ -52,7 +52,7 @@ $ weflow-cli fav list -n 3
 ```text
 weflow-cli sessions                    # list chat sessions
 weflow-cli messages "contact" -n 20    # query chat messages
-weflow-cli export "contact" html       # export HTML / Excel / Markdown / JSON
+weflow-cli export "contact" html       # export HTML / Excel / TXT / JSON
 weflow-cli fav list -t article -k AI   # favorites: type filter + keyword search
 weflow-cli daily --date 2026-08-21     # official-account digest + AI summary
 weflow-cli daily-server                # local reader http://localhost:8765
@@ -64,7 +64,7 @@ weflow-cli mcp-config                  # one-shot MCP client integration
 
 | Scenario | Capability |
 | --- | --- |
-| Chat history | Query sessions, contacts, and messages; export to JSON, TXT, Markdown, HTML, Excel. |
+| Chat history | Query sessions, contacts, and messages; export to JSON, TXT, HTML, Excel. An HTML export also writes a media coverage report saying which images and stickers could not be embedded, and why. |
 | Official-account digest | Crawl articles, AI summarization and classification, generate a local reading page, keep favorites and read states. |
 | Personal knowledge base | Sync WeRead notes, build an Obsidian vault, semantic search, RAG Q&A, and a concept wiki. |
 | AI collaboration | Expose article crawling, knowledge-base retrieval, digests, and selected local-data tools to MCP-compatible clients. The inventory follows the current code and `docs/MCP.md`. |
@@ -148,7 +148,7 @@ The reader serves at `http://localhost:8765/` by default.
 weflow-cli export "contact" json --contract weflow-v1 --output ./output
 ```
 
-The generated envelope keeps message fields stable and includes conservative `coverage` metadata. For incremental reads, use an overlapping `--from` time window and deduplicate locally by conversation plus `localId`/`serverId`; a stable cursor is not exposed yet. The legacy JSON export remains a top-level array.
+The generated envelope keeps message fields stable and includes conservative `coverage` metadata. For incremental reads, use an overlapping `--from` time window and deduplicate locally by conversation plus `localId`/`serverId`, or let `sync` keep the checkpoint and report what it covered. A stable cursor is still not exposed: it has to be backed by every database backend before it can be advertised. The legacy JSON export remains a top-level array.
 
 **Connect an AI editor**
 
@@ -198,7 +198,8 @@ Management: `weflow-cli assistant status` / `log` / `stop`; send "帮助" in WeC
 | Check environment & config | `weflow-cli check` · `weflow-cli config show` |
 | Initialize or specify paths | `weflow-cli init [--path <dir>]` |
 | Browse chat data | `weflow-cli sessions` · `weflow-cli messages <contact>` · `weflow-cli contacts` |
-| Export chat history | `weflow-cli export <contact> <json\|txt\|md\|html\|excel>` |
+| Export chat history | `weflow-cli export <contact> <json\|txt\|html\|excel>` |
+| Sync checkpoint | `weflow-cli sync run <contact> --since <date>` · `sync status` · `sync verify` |
 | Digest & reader | `weflow-cli daily` · `weflow-cli daily-server` · `weflow-cli review` |
 | Moments cache | `weflow-cli sns timeline` · `weflow-cli sns users` · `weflow-cli sns stats` |
 | WeChat favorites | `weflow-cli fav list` · `weflow-cli fav export markdown` · `weflow-cli fav set-key` |

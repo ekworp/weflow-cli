@@ -52,7 +52,7 @@ $ weflow-cli fav list -n 3
 ```text
 weflow-cli sessions                    # 会话列表
 weflow-cli messages "联系人" -n 20      # 查询聊天消息
-weflow-cli export "联系人" html         # 导出 HTML / Excel / Markdown / JSON
+weflow-cli export "联系人" html         # 导出 HTML / Excel / TXT / JSON
 weflow-cli fav list -t article -k AI   # 微信收藏: 类型过滤 + 关键词搜索
 weflow-cli daily --date 2026-08-21     # 公众号日报 + AI 摘要与分类
 weflow-cli daily-server                # 本地阅读器 http://localhost:8765
@@ -92,7 +92,7 @@ Linux 的自动初始化能力取决于微信发行版、Python 依赖和当前�
 
 | 场景 | 能力 |
 | --- | --- |
-| 聊天记录 | 查询会话、联系人和消息；导出 JSON、TXT、Markdown、HTML、Excel。 |
+| 聊天记录 | 查询会话、联系人和消息；导出 JSON、TXT、HTML、Excel。HTML 导出会同时给出一份媒体覆盖报告，说明哪些图片/表情没能嵌入以及原因。 |
 | 公众号日报 | 抓取文章、AI 摘要与分类、生成本地阅读页，保留收藏和已读状态。 |
 | 个人知识库 | 同步微信读书笔记、构建 Obsidian Vault、语义搜索、RAG 问答和概念 Wiki。 |
 | AI 协作 | 通过 MCP 把文章、知识库、日报和受控的本地数据能力交给兼容客户端；工具清单以 `weflow-cli mcp-config` 和 `docs/MCP.md` 为准。 |
@@ -246,7 +246,8 @@ weflow-cli config set assistantGroupRequireMention true
 | 检查环境与配置 | `weflow-cli check` · `weflow-cli config show` |
 | 初始化或手动指定路径 | `weflow-cli init [--path <目录>]` |
 | 浏览聊天数据 | `weflow-cli sessions` · `weflow-cli messages <联系人>` · `weflow-cli contacts` |
-| 导出聊天记录 | `weflow-cli export <联系人> <json\|txt\|md\|html\|excel>` |
+| 导出聊天记录 | `weflow-cli export <联系人> <json\|txt\|html\|excel>` |
+| 同步检查点 | `weflow-cli sync run <联系人> --since <日期>` · `sync status` · `sync verify` |
 | 公众号日报与阅读器 | `weflow-cli daily` · `weflow-cli daily-server` · `weflow-cli review` |
 | 朋友圈缓存 | `weflow-cli sns timeline` · `weflow-cli sns users` · `weflow-cli sns stats` |
 | 微信收藏 | `weflow-cli fav list` · `weflow-cli fav export markdown` · `weflow-cli fav set-key` |
