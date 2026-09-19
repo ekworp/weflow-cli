@@ -44,17 +44,40 @@ DEFAULT_SENDER = 'wxid_synthetic_sender'
 BASE_TIME = 1_700_000_000
 
 
+def shard_salt(index):
+    """A per-shard salt, deterministic so fixtures are reproducible.
+
+    Real WeChat gives every shard its own header salt; a fixture that reuses
+    one salt cannot model the per-shard key derivation at all, which is what
+    went wrong the first time this fixture was written.
+    """
+    return hashlib.sha256(b'weflow-synthetic-salt-%d' % index).digest()[:16]
+
+
+def derive_shard_key(passphrase_hex, salt16):
+    """PBKDF2-HMAC-SHA512(passphrase, shard salt, 256000, 32) - same as the reader."""
+    return hashlib.pbkdf2_hmac('sha512', bytes.fromhex(passphrase_hex), salt16,
+                               256000, 32).hex()
+
+
 def connect(path):
     from sqlcipher3 import dbapi2
-    conn = dbapi2.connect(path)
-    conn.execute('PRAGMA key = "x\'%s%s\'"' % (SYNTHETIC_KEY, SYNTHETIC_SALT))
-    return conn
+    return dbapi2.connect(path)
 
 
-def write_shard(path, talker, rows, sender=DEFAULT_SENDER):
-    """One encrypted shard holding this conversation's rows."""
+def write_shard(path, talker, rows, sender=DEFAULT_SENDER, salt=None):
+    """One encrypted shard holding this conversation's rows.
+
+    Encrypted under the key derived from the passphrase and *this shard's*
+    salt, spelled out via `x'<key><salt>'`, which is exactly how the reader
+    opens it. Using the passphrase directly as the key would produce a file
+    the derivation path cannot verify.
+    """
     table = 'Msg_' + hashlib.md5(talker.encode()).hexdigest()
+    salt16 = salt if salt is not None else shard_salt(0)
+    key_hex = derive_shard_key(SYNTHETIC_KEY, salt16)
     conn = connect(path)
+    conn.execute('PRAGMA key = "x\'%s%s\'"' % (key_hex, salt16.hex()))
     try:
         conn.execute('CREATE TABLE "%s" (%s)' % (table, MSG_COLUMNS))
         if rows:
@@ -79,6 +102,7 @@ def build(root, talker, per_shard=2, shards=2, with_sender=True):
     os.makedirs(msg_dir, exist_ok=True)
 
     written = []
+    salts = []
     for shard_index in range(shards):
         rows = [
             text_row(shard_index * 100 + i + 1,
@@ -87,8 +111,11 @@ def build(root, talker, per_shard=2, shards=2, with_sender=True):
             for i in range(per_shard)
         ]
         path = os.path.join(msg_dir, 'message_%d.db' % shard_index)
-        write_shard(path, talker, rows, DEFAULT_SENDER if with_sender else 'wxid_other')
+        salt16 = shard_salt(shard_index)
+        write_shard(path, talker, rows, DEFAULT_SENDER if with_sender else 'wxid_other',
+                    salt=salt16)
         written.append(path)
+        salts.append(salt16)
 
     config_dir = os.path.join(root, '.weflow-cli')
     os.makedirs(config_dir, exist_ok=True)
@@ -102,8 +129,14 @@ def build(root, talker, per_shard=2, shards=2, with_sender=True):
             # `init` always writes it, so a real install is unaffected.
             'dbPath': root,
             'ntDbPath': written[0],
-            'ntKey': SYNTHETIC_KEY,
-            'ntSalt': SYNTHETIC_SALT,
+            # `decryptKey` is what the reader uses as the shared passphrase, so
+            # setting it here makes the CLI go through per-shard derivation -
+            # the same path a real install takes, rather than the fallback.
+            'decryptKey': SYNTHETIC_KEY,
+            # The fallback pair, which only ever opens shard 0. Derived from
+            # that shard's salt so it is consistent with the derived path.
+            'ntKey': derive_shard_key(SYNTHETIC_KEY, salts[0]),
+            'ntSalt': salts[0].hex(),
             'dataVersion': '4.x',
         }, handle, indent=2)
 

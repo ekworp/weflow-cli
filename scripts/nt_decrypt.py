@@ -7,6 +7,8 @@ import sys
 import os
 import json
 import re
+import hmac
+import struct
 import hashlib
 import ctypes
 from ctypes import wintypes, c_void_p, c_size_t, create_string_buffer, byref, sizeof
@@ -508,6 +510,61 @@ def derive_database_key(path, fallback_key, fallback_salt, passphrase=''):
         return key, salt.hex()
     except (OSError, ValueError):
         return fallback_key, fallback_salt
+
+
+def verify_passphrase_native(passphrase_hex, db_path, internal_key_hex=''):
+    """Check a passphrase against a database without sqlcipher3.
+
+    Verifies the SQLCipher page-1 HMAC directly with stdlib primitives:
+
+        mac_salt = header_salt XOR 0x3a
+        key      = PBKDF2-HMAC-SHA512(passphrase, header_salt, 256000, 32)
+        mac_key  = PBKDF2-HMAC-SHA512(key, mac_salt, 2, 32)
+        compare HMAC-SHA512(mac_key, page1_body || page_number=1) with the
+        digest stored at the end of page 1
+
+    Why this exists: the normal way to check a key is to open the database,
+    which needs the native library. When sqlcipher3 is missing or misbehaving,
+    that route says nothing about whether the key itself is right - and the
+    two failures look identical. This separates them.
+
+    Returns True (correct), False (wrong), or None (cannot tell - bad input,
+    file too small, or a passphrase that is not hex).
+    """
+    try:
+        raw_passphrase = bytes.fromhex(passphrase_hex)
+    except (TypeError, ValueError):
+        return None
+    if internal_key_hex:
+        # Some WeChat builds XOR the passphrase with a key embedded in
+        # Weixin.dll before deriving. Optional: the installs seen so far do
+        # not need it, so an empty value must stay the default.
+        try:
+            internal = bytes.fromhex(internal_key_hex)
+        except (TypeError, ValueError):
+            return None
+        if len(internal) == len(raw_passphrase):
+            raw_passphrase = bytes(a ^ b for a, b in zip(raw_passphrase, internal))
+
+    try:
+        with open(db_path, 'rb') as handle:
+            page = handle.read(4096)
+    except OSError:
+        return None
+    if len(page) < 4096 or page[:16] == b'\x00' * 16:
+        return None
+
+    salt = page[:16]
+    mac_salt = bytes(byte ^ 0x3a for byte in salt)
+    key = hashlib.pbkdf2_hmac('sha512', raw_passphrase, salt, 256000, 32)
+    mac_key = hashlib.pbkdf2_hmac('sha512', key, mac_salt, 2, 32)
+
+    reserve = 16 + 64                      # IV + HMAC-SHA512
+    reserve = ((reserve + 15) // 16) * 16  # rounded up to the AES block size
+    body_end = 4096 - reserve + 16
+    mac = hmac.new(mac_key, page[16:body_end], hashlib.sha512)
+    mac.update(struct.pack('<I', 1))       # page number
+    return hmac.compare_digest(mac.digest(), page[body_end:body_end + 64])
 
 
 def connect_message_shards_detailed(db_path, key_hex, salt_hex, passphrase=''):
@@ -1269,6 +1326,14 @@ def main():
     verify_parser.add_argument('--key', default=os.environ.get('WEFLOW_NT_KEY'), required=not os.environ.get('WEFLOW_NT_KEY'), help='Key hex (64 chars)')
     verify_parser.add_argument('--salt', default=os.environ.get('WEFLOW_NT_SALT'), required=not os.environ.get('WEFLOW_NT_SALT'), help='Salt hex (32 chars)')
 
+    # Same question as `verify`, answered without the native library - so a
+    # missing or broken sqlcipher3 does not hide whether the key is correct.
+    native_parser = sub.add_parser('verify-native',
+                                   help='Verify a passphrase from the file header alone (no sqlcipher3)')
+    native_parser.add_argument('--db', default=os.environ.get('WEFLOW_DB_PATH'), required=not os.environ.get('WEFLOW_DB_PATH'), help='Path to any database in the set')
+    native_parser.add_argument('--passphrase', default=os.environ.get('WEFLOW_NT_PASSPHRASE'), required=not os.environ.get('WEFLOW_NT_PASSPHRASE'), help='Passphrase hex (64 chars)')
+    native_parser.add_argument('--internal-key', default=os.environ.get('WEFLOW_INTERNAL_DB_KEY', ''), help='Optional 64-char hex XOR key (some builds)')
+
     # fav-list command
     fav_list_parser = sub.add_parser('fav-list', help='List favorite items')
     fav_list_parser.add_argument('--db', default=os.environ.get('WEFLOW_DB_PATH'), required=not os.environ.get('WEFLOW_DB_PATH'), help='Path to favorite.db')
@@ -1336,6 +1401,17 @@ def main():
             print(json.dumps({"success": n > 0, "tables": n}, ensure_ascii=True))
         except Exception as e:
             print(json.dumps({"success": False, "error": str(e).split('\n')[0][:200]}, ensure_ascii=True))
+        return
+
+    if args.command == 'verify-native':
+        verdict = verify_passphrase_native(args.passphrase, args.db,
+                                           getattr(args, 'internal_key', '') or '')
+        if verdict is None:
+            print(json.dumps({"success": False, "verified": None,
+                              "error": "无法判定（文件不可读、过短，或 passphrase 不是 64 位 hex）"},
+                             ensure_ascii=True))
+            return
+        print(json.dumps({"success": True, "verified": verdict}, ensure_ascii=True))
         return
 
     # Build contact name map once if contact db provided
