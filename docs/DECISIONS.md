@@ -294,6 +294,60 @@ The gaps being closed - shard read failures dropped silently, media counters com
 - Still not advertised: a stable incremental cursor. D-027 stands - overlapping windows plus local
   deduplication is what this exposes.
 
+## D-030: Adapt message reads to the shard's actual columns, and refuse a window rather than approximate it
+
+**Status:** Active
+
+Three changes to message reads, all about a read that cannot be done as asked.
+
+1. The SELECT is built per shard from `PRAGMA table_info` against the six columns the reader
+   actually consumes (`local_id`, `server_id`, `local_type`, `real_sender_id`, `create_time`,
+   `message_content`). The previous SELECT named fourteen columns while `_message_dict` read six,
+   so a version renaming any of the other eight made every shard raise and the conversation came
+   back **empty with no error** unless `--report-shards` was used. A shard missing one of the six is
+   now read anyway, with the loss named in `missingColumns`; a shard where none of the three anchor
+   columns (`create_time`, `local_id`, `server_id`) survives is reported `SCHEMA_MISMATCH`.
+2. `messages` gains `--from`/`--to` (unix seconds, inclusive) pushed into SQL. A shard whose table
+   has no `create_time` is reported `WINDOW_UNAVAILABLE` and skipped rather than returning
+   out-of-range rows.
+3. `export_chat_html.fetch_messages` keeps its ten-column positional projection, but a column the
+   shard does not have is selected as `NULL AS <name>` instead of being dropped. The rest of that
+   file reads rows by index (`row[4]` is the sender, `row[5]` the time), so dropping a column would
+   shift every later field by one. A `--date` export on a shard without `create_time` raises rather
+   than widening itself to the whole conversation.
+
+**Reason:** A read failure that is indistinguishable from "nothing here" is the worst failure mode
+this codebase has had - it cost a real investigation into an allegedly truncated export. Columns
+nobody reads must not be able to cause one, and in the exporter a shifted column would be worse
+still: silently wrong output that no error surfaces. For the window, the caller of a windowed read is
+tracking what it has covered: returning rows it did not ask for lets it record a range it never
+read, and silently returning fewer rows is the same failure in the other direction. Refusing is the
+only answer that stays honest, and it is visible because every in-tree window caller also passes
+`shard_report`.
+
+**Consequences:**
+
+- `coverage: 'partial'` now means "an opened shard carries a `reason`", not "a shard reported
+  `READ_FAILED`". `SCHEMA_MISMATCH` and `WINDOW_UNAVAILABLE` join it: all three describe rows that
+  were not read. A shard that never opened still yields `unverified`, unchanged - nothing is known
+  about its rows, which is a different claim from knowing they were missed.
+- `missingColumns` is **not** a coverage failure. The rows came back; only fields were lost. It is
+  reported as a `shard-columns-missing:<shard>:<columns>` warning and leaves `coverage: complete`.
+  Treating the two alike would make every sync on such a database report `partial` forever and never
+  advance `lastSuccessfulRun`.
+- The window pushdown is an **optimisation, never the correctness guarantee**. `syncService` still
+  filters by the window itself, because the non-NT backends have no pushdown. It measured no faster
+  (519 ms with no window vs 514 ms from the newest message on a 925-message conversation): the cost
+  is process start plus 256000-round PBKDF2 per shard, not row transfer. Do not advertise it as a
+  speed-up.
+- The `--from`/`--to` pushdown is a prerequisite for a stable cursor, not a cursor. D-027 stands.
+- Unknown columns are ignored rather than selected, so a future schema needs no code change to stay
+  readable - but no future schema has been tested. Synthetic shards in
+  `test/nt_decrypt_shards_test.py` are the only evidence.
+- The exporter keeps its own copy of both the shard discovery and the projection. They were **not**
+  unified with `nt_decrypt` here; only the failure mode was fixed on both sides. The two copies are
+  pinned together by a test, so the next person to change one is told about the other.
+
 ## Decision Template
 
 

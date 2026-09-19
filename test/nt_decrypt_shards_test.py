@@ -46,7 +46,13 @@ MSG_COLUMNS = (
 )
 
 
-def make_shard(path, talker=TALKER, rows=(), with_name_table=True, omit_column=False):
+# A message table that shares no column name with the real one. Stands in for
+# a schema the reader cannot name anything in, which is a different outcome
+# from a readable shard that simply holds nothing for this conversation.
+ALIEN_COLUMNS = 'foo TEXT, bar TEXT'
+
+
+def make_shard(path, talker=TALKER, rows=(), with_name_table=True, columns=None):
     """One NT-shaped shard file.
 
     Closing in a finally matters: a leaked connection keeps the file locked on
@@ -54,13 +60,11 @@ def make_shard(path, talker=TALKER, rows=(), with_name_table=True, omit_column=F
     PermissionError that looks nothing like the actual mistake.
     """
     table = 'Msg_' + hashlib.md5(talker.encode()).hexdigest()
-    columns = MSG_COLUMNS
-    if omit_column:
-        # A table missing a column the SELECT asks for must raise on read,
-        # which is how a per-shard READ_FAILED is produced. Row shape no
-        # longer matches, so callers must not pass rows with this option.
-        columns = columns.replace(', compress_content BLOB', '')
-        assert not rows, 'omit_column changes the row width; do not pass rows'
+    columns = columns or MSG_COLUMNS
+    if columns != MSG_COLUMNS:
+        # A custom column list changes the row width, so the caller has to
+        # supply rows that match it - or none at all.
+        assert not rows, 'custom columns change the row width; do not pass rows'
     conn = sqlite3.connect(path)
     try:
         conn.execute('CREATE TABLE "%s" (%s)' % (table, columns))
@@ -185,12 +189,13 @@ class MessageShardReportTests(unittest.TestCase):
             self.assertIsNone(by_name['message_1.db']['rowsForTalker'])
             self.assertIsNone(by_name['message_1.db']['reason'])
 
-    def test_one_broken_shard_is_flagged_while_the_others_still_return(self):
+    def test_an_unnameable_shard_is_flagged_while_the_others_still_return(self):
         with tempfile.TemporaryDirectory() as tmp:
             make_shard(os.path.join(tmp, 'message_0.db'), rows=[row(1, 1_700_000_000)])
-            # No rows: the table exists but lacks a column the SELECT asks for,
-            # so reading it raises mid-shard rather than returning nothing.
-            make_shard(os.path.join(tmp, 'message_1.db'), omit_column=True)
+            # The table exists but shares no column name with the real one, so
+            # there is nothing to read rows as. That is a schema mismatch, not
+            # an empty conversation, and must not be reported as one.
+            make_shard(os.path.join(tmp, 'message_1.db'), columns=ALIEN_COLUMNS)
 
             conns = self._open(tmp)
             report = []
@@ -201,10 +206,213 @@ class MessageShardReportTests(unittest.TestCase):
                 conn.close()
 
             by_name = {item['name']: item for item in report}
-            self.assertEqual(by_name['message_1.db']['reason'], 'READ_FAILED')
+            self.assertEqual(by_name['message_1.db']['reason'], 'SCHEMA_MISMATCH')
             self.assertIsNone(by_name['message_0.db']['reason'])
             # The readable shard's message must still come back.
             self.assertEqual(len(result['messages']), 1)
+
+
+class ExporterColumnVariationTests(unittest.TestCase):
+    """The HTML exporter reads rows by position, so a gap must not shift them.
+
+    `export_chat_html.fetch_messages` returns tuples that the formatter indexes
+    (`row[4]` for the sender, `row[5]` for the time). A column dropped from the
+    SELECT would move every later field up one and export wrong data with no
+    error at all - the one failure a caller cannot notice.
+    """
+
+    def _connect(self, tmp):
+        return export.connect(os.path.join(tmp, 'message_0.db'), 'a' * 64, 'b' * 32)
+
+    def _insert(self, path, statement):
+        conn = sqlite3.connect(path)
+        try:
+            table = 'Msg_' + hashlib.md5(TALKER.encode()).hexdigest()
+            conn.execute(statement % table)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_a_column_gap_does_not_shift_the_fields_after_it(self):
+        # `sort_seq` is index 3 and nothing reads it; `real_sender_id` is 4.
+        columns = MSG_COLUMNS.replace('sort_seq INTEGER, ', '')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'message_0.db')
+            make_shard(path, columns=columns)
+            self._insert(path,
+                         'INSERT INTO "%s" (local_id, server_id, local_type, real_sender_id,'
+                         " create_time, message_content) VALUES (7, 99, 1, 42, 1700000000, 'text')")
+
+            conn, _c = self._connect(tmp)
+            try:
+                rows = export.fetch_messages(conn, TALKER)
+            finally:
+                conn.close()
+
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row[0], 7)           # local_id
+            # sort_seq is index 3 and is the column that is missing: substituting
+            # NULL keeps every later field at the index the formatter expects.
+            self.assertIsNone(row[3])
+            self.assertEqual(row[4], 42)          # real_sender_id, not create_time
+            self.assertEqual(row[5], 1_700_000_000)
+            self.assertEqual(row[8], 'text')
+            self.assertIsNone(row[9])             # compress_content, absent
+
+    def test_a_date_export_is_refused_when_the_day_cannot_be_expressed(self):
+        # `date` narrows the export. Without create_time it cannot be honoured,
+        # and exporting everything would widen a bounded export silently.
+        columns = MSG_COLUMNS.replace('create_time INTEGER, ', '')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'), columns=columns)
+            conn, _c = self._connect(tmp)
+            try:
+                with self.assertRaises(ValueError):
+                    export.fetch_messages(conn, TALKER, date='2026-09-20')
+            finally:
+                conn.close()
+
+
+class MessageColumnVariationTests(unittest.TestCase):
+    """A column nobody reads must not be able to break a read.
+
+    The SELECT used to name all fourteen columns of the message table while
+    `_message_dict` consumed six of them, so a version that renamed one of the
+    other eight made every shard unreadable and the conversation came back
+    empty. The SELECT is now built from the columns the reader uses.
+    """
+
+    def _open(self, tmp):
+        return nt.connect_message_shards(
+            os.path.join(tmp, 'message_0.db'), 'a' * 64, 'b' * 32)
+
+    def test_a_missing_used_column_degrades_instead_of_failing(self):
+        # `server_id` is one of the six the reader consumes, and losing it is
+        # survivable: the message still has an id, a time, and its text. What
+        # must not happen is the shard coming back as unreadable, or the loss
+        # going unrecorded.
+        degraded = MSG_COLUMNS.replace('server_id INTEGER, ', '')
+        degraded = degraded.replace(', compress_content BLOB', '')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'), columns=degraded)
+            path = os.path.join(tmp, 'message_0.db')
+            conn = sqlite3.connect(path)
+            try:
+                table = 'Msg_' + hashlib.md5(TALKER.encode()).hexdigest()
+                conn.execute('INSERT INTO "%s" (local_id, create_time, message_content)'
+                             ' VALUES (1, 1700000000, %s)' % (table, "'kept'"))
+                conn.commit()
+            finally:
+                conn.close()
+
+            conns = self._open(tmp)
+            report = []
+            result = nt.get_messages(conns, TALKER, 10,
+                                     shard_names=['message_0.db'], shard_report=report)
+            for conn in conns:
+                conn.close()
+
+            self.assertIsNone(report[0]['reason'])
+            # Only the columns the reader wanted: `compress_content` was never
+            # selected by it, so its absence is not a loss worth reporting.
+            self.assertEqual(report[0]['missingColumns'], ['server_id'])
+            self.assertEqual([m['content'] for m in result['messages']], ['kept'])
+            self.assertEqual(result['messages'][0]['serverId'], '')
+
+    def test_a_missing_sender_table_loses_names_not_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'),
+                       rows=[row(1, 1_700_000_000, 'survives')],
+                       with_name_table=False)
+
+            conns = self._open(tmp)
+            result = nt.get_messages(conns, TALKER, 10)
+            for conn in conns:
+                conn.close()
+
+            self.assertEqual(len(result['messages']), 1)
+            self.assertEqual(result['messages'][0]['content'], 'survives')
+            self.assertEqual(result['messages'][0]['senderUsername'], '')
+
+
+class MessageWindowTests(unittest.TestCase):
+    """`from_time`/`to_time` are pushed into SQL, so they must be exact.
+
+    Getting this wrong is quiet: a window that is off by a message looks like
+    a conversation that simply had less in it.
+    """
+
+    def _build(self, tmp):
+        make_shard(os.path.join(tmp, 'message_0.db'), rows=[
+            row(1, 1_700_000_000, 'too old'),
+            row(2, 1_700_000_100, 'first in window'),
+            row(3, 1_700_000_200, 'second in window'),
+        ])
+        make_shard(os.path.join(tmp, 'message_1.db'), rows=[
+            row(4, 1_700_000_300, 'third in window'),
+            row(5, 1_700_000_400, 'too new'),
+        ])
+
+    def _read(self, tmp, **kwargs):
+        conns = nt.connect_message_shards(
+            os.path.join(tmp, 'message_0.db'), 'a' * 64, 'b' * 32)
+        try:
+            return nt.get_messages(conns, TALKER, 10, **kwargs)
+        finally:
+            for conn in conns:
+                conn.close()
+
+    def test_both_bounds_are_inclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build(tmp)
+            result = self._read(tmp, from_time=1_700_000_100, to_time=1_700_000_300)
+            self.assertEqual([m['content'] for m in result['messages']],
+                             ['third in window', 'second in window', 'first in window'])
+
+    def test_the_window_spans_shards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build(tmp)
+            # Shard 0 has one message in range, shard 1 has one: a window that
+            # only reached one shard would silently halve the answer.
+            result = self._read(tmp, from_time=1_700_000_200, to_time=1_700_000_300)
+            self.assertEqual([m['content'] for m in result['messages']],
+                             ['third in window', 'second in window'])
+
+    def test_an_empty_window_returns_no_messages_rather_than_everything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._build(tmp)
+            result = self._read(tmp, from_time=1_800_000_000)
+            self.assertEqual(result['messages'], [])
+
+    def test_a_window_is_reported_not_approximated_when_it_cannot_be_applied(self):
+        # No create_time, so there is no way to honour the window. Returning
+        # these rows anyway would have a caller tracking coverage record a
+        # range they never actually read.
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'),
+                       columns='local_id INTEGER, message_content TEXT')
+            conn = sqlite3.connect(os.path.join(tmp, 'message_0.db'))
+            try:
+                table = 'Msg_' + hashlib.md5(TALKER.encode()).hexdigest()
+                conn.execute('INSERT INTO "%s" VALUES (1, %s)' % (table, "'x'"))
+                conn.commit()
+            finally:
+                conn.close()
+
+            conns = self._open(tmp)
+            report = []
+            result = nt.get_messages(conns, TALKER, 10, from_time=1_700_000_000,
+                                     shard_names=['message_0.db'], shard_report=report)
+            for conn in conns:
+                conn.close()
+
+            self.assertEqual(report[0]['reason'], 'WINDOW_UNAVAILABLE')
+            self.assertEqual(result['messages'], [])
+
+    def _open(self, tmp):
+        return nt.connect_message_shards(
+            os.path.join(tmp, 'message_0.db'), 'a' * 64, 'b' * 32)
 
     def test_the_report_never_carries_an_absolute_path(self):
         with tempfile.TemporaryDirectory() as tmp:

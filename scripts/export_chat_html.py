@@ -135,6 +135,28 @@ PREFETCH_WORKERS = 24
 PREFETCH_MAX_URLS = 800
 
 
+# The columns the row-consuming code below reads by position. Order is part
+# of the contract: `row[4]` is `real_sender_id` and nothing else.
+EXPORT_MESSAGE_COLUMNS = ('local_id', 'server_id', 'local_type', 'sort_seq',
+                          'real_sender_id', 'create_time', 'status', 'source',
+                          'message_content', 'compress_content')
+
+# A column this shard lacks is selected as NULL rather than dropped. Dropping
+# it would shift every later field by one and put, say, `create_time` where
+# `real_sender_id` is expected - wrong output with no error anywhere, which is
+# worse than the empty export a hard failure would produce.
+MISSING_COLUMN_WARNING = '  WARNING: shard has no column %s; reading it as NULL'
+
+
+def table_columns(cursor, table):
+    """Column names of `table`, or an empty set if it has none to report."""
+    try:
+        rows = cursor.execute('PRAGMA table_info("%s")' % table).fetchall()
+    except Exception:
+        return set()
+    return {row[1] for row in rows}
+
+
 def connect(db_path, key_hex, salt_hex):
     raw_key = f"x'{key_hex}{salt_hex}'"
     conn = sqlcipher.connect(db_path)
@@ -166,12 +188,21 @@ def fetch_messages(conn, talker, date=''):
         date_filter = ' WHERE create_time >= ? AND create_time < ?'
         date_params = [int(day.timestamp()), int((day + datetime.timedelta(days=1)).timestamp())]
 
-    c.execute(f'''
-        SELECT local_id, server_id, local_type, sort_seq, real_sender_id,
-               create_time, status, source, message_content, compress_content
-        FROM "{tbl}"{date_filter}
-        ORDER BY create_time ASC
-    ''', date_params)
+    available = table_columns(c, tbl)
+    for col in EXPORT_MESSAGE_COLUMNS:
+        if col not in available:
+            print(MISSING_COLUMN_WARNING % col)
+    if date and 'create_time' not in available:
+        # A requested day cannot be expressed here. Exporting everything
+        # instead would silently widen a bounded export into an unbounded one.
+        raise ValueError('shard has no create_time column, so a date-bounded export cannot be produced')
+    projection = ', '.join('"%s"' % col if col in available else 'NULL AS "%s"' % col
+                           for col in EXPORT_MESSAGE_COLUMNS)
+    order = [col for col in ('create_time', 'local_id', 'server_id')
+             if col in available]
+    order_sql = ' ORDER BY ' + ', '.join('"%s" ASC' % col for col in order) if order else ''
+
+    c.execute(f'SELECT {projection} FROM "{tbl}"{date_filter}{order_sql}', date_params)
 
     messages = []
     batch = 0

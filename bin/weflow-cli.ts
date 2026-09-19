@@ -1383,7 +1383,7 @@ syncCmd
       const result = await runSync(resolvedTalker, {
         since, full: !!opts.full, overlapSeconds: overlap, limit,
         scope: displayName,
-        read: (who, howMany) => chatService.getMessagesWithShards(who, howMany, 0),
+        read: (who, howMany, from) => chatService.getMessagesWithShards(who, howMany, 0, from),
       })
       if (opts.json) {
         console.log(JSON.stringify({

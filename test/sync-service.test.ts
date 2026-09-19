@@ -229,6 +229,108 @@ test('a failed shard is surfaced as a warning naming the shard', async () => {
   })
 })
 
+test('a shard the reader could not name anything in makes coverage partial', async () => {
+  // SCHEMA_MISMATCH is not a fault after opening in the READ_FAILED sense, but
+  // the rows are just as unread, so "complete" would be a false claim.
+  await withStore(async (store) => {
+    const result = await runSync(TALKER, {
+      store, since: 1_700_000_000, now: 1_700_001_000,
+      read: async () => ({
+        messages: [message(1, 1_700_000_100, 's1')],
+        shards: report({
+          items: [
+            { name: 'message_0.db', opened: true, hasTalkerTable: true,
+              rowsForTalker: 1, reason: null },
+            { name: 'message_1.db', opened: true, hasTalkerTable: true,
+              rowsForTalker: 4, reason: 'SCHEMA_MISMATCH', missingColumns: ['local_id'] },
+          ],
+        }),
+      }),
+    })
+    assert.equal(result.coverage, 'partial')
+    assert.equal(result.success, false)
+    assert.ok(result.warnings.includes('shard-not-read:message_1.db:SCHEMA_MISMATCH'))
+  })
+})
+
+test('a shard that lost an unread window makes coverage partial too', async () => {
+  await withStore(async (store) => {
+    const result = await runSync(TALKER, {
+      store, since: 1_700_000_000, now: 1_700_001_000,
+      read: async () => ({
+        messages: [message(1, 1_700_000_100, 's1')],
+        shards: report({
+          items: [
+            { name: 'message_0.db', opened: true, hasTalkerTable: true,
+              rowsForTalker: 1, reason: 'WINDOW_UNAVAILABLE' },
+          ],
+        }),
+      }),
+    })
+    assert.equal(result.coverage, 'partial')
+    assert.ok(result.warnings.includes('shard-not-read:message_0.db:WINDOW_UNAVAILABLE'))
+  })
+})
+
+test('a shard read with columns missing still counts as complete, and says so', async () => {
+  // The rows did come back; only fields were lost. That is a fidelity warning,
+  // not a coverage failure, and conflating the two would make every sync on
+  // such a database report itself as partial forever.
+  await withStore(async (store) => {
+    const result = await runSync(TALKER, {
+      store, since: 1_700_000_000, now: 1_700_001_000,
+      read: async () => ({
+        messages: [message(1, 1_700_000_100, 's1')],
+        shards: report({
+          items: [
+            { name: 'message_0.db', opened: true, hasTalkerTable: true,
+              rowsForTalker: 1, reason: null, missingColumns: ['server_id'] },
+          ],
+        }),
+      }),
+    })
+    assert.equal(result.coverage, 'complete')
+    assert.equal(result.success, true)
+    assert.ok(result.warnings.includes('shard-columns-missing:message_0.db:server_id'))
+  })
+})
+
+test('the window lower bound is offered to the reader as a pushdown hint', async () => {
+  await withStore(async (store) => {
+    const seen: Array<number | null> = []
+    await runSync(TALKER, {
+      store, since: 1_700_000_000, now: 1_700_001_000,
+      read: async (_who, _limit, from) => {
+        seen.push(from)
+        return { messages: [message(1, 1_700_000_100, 's1')] }
+      },
+    })
+    assert.deepEqual(seen, [1_700_000_000])
+  })
+})
+
+test('a resumed run offers the overlapped checkpoint, not the caller window', async () => {
+  // Second run: the checkpoint from the first has to come back as the lower
+  // bound, pulled back by the overlap so boundary messages are read again.
+  await withStore(async (store) => {
+    const first = await runSync(TALKER, {
+      store, since: 1_700_000_000, now: 1_700_001_000,
+      read: async () => ({ messages: [message(1, 1_700_000_900, 's1')] }),
+    })
+    assert.equal(first.recordsReturned, 1)
+
+    const seen: Array<number | null> = []
+    await runSync(TALKER, {
+      store, now: 1_700_002_000, overlapSeconds: 300,
+      read: async (_who, _limit, from) => {
+        seen.push(from)
+        return { messages: [message(1, 1_700_000_900, 's1')] }
+      },
+    })
+    assert.deepEqual(seen, [1_700_000_600])
+  })
+})
+
 test('a backend without shard reporting is marked unverified, not complete', async () => {
   await withStore(async (store) => {
     const result = await runSync(TALKER, {

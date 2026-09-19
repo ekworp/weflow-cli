@@ -116,9 +116,16 @@ export function deriveCoverage(input: {
   mayHaveMore: boolean
 }): SyncCoverage {
   if (input.mayHaveMore) return 'partial'
-  // A shard that faulted *after* opening means its rows are only partly read.
-  const readFailed = input.shards?.items.some(item => item.reason === 'READ_FAILED')
-  if (readFailed) return 'partial'
+  // Any per-shard reason means those rows were not read: a fault after opening
+  // (READ_FAILED), a table the reader can name nothing in (SCHEMA_MISMATCH), or
+  // a window the shard cannot express (WINDOW_UNAVAILABLE). Coverage is about
+  // whether the range was read, so all of them make it partial. A shard read
+  // with columns missing is *not* one of these - its rows did come back.
+  // A shard that never opened is a different answer and stays 'unverified'
+  // below: nothing is known about its rows either way, which is not the same
+  // claim as knowing they were missed.
+  const anyShardUnread = input.shards?.items.some(item => item.opened && item.reason)
+  if (anyShardUnread) return 'partial'
   if (!input.shards) return 'unverified'
   // A shard that never opened is not knowable either way; say so rather than
   // claiming completeness or declaring failure.
@@ -205,8 +212,18 @@ export interface SyncRunOptions extends WindowOptions {
   source?: string
   scope?: string
   limit?: number
-  /** Injected for tests; the CLI wires this to chatService. */
-  read: (talker: string, limit: number) => Promise<{ messages: Message[]; shards?: ShardReport }>
+  /**
+   * Injected for tests; the CLI wires this to chatService.
+   *
+   * `from` is a hint that a backend may push into SQL. It is never a
+   * correctness guarantee: runSync still applies the window itself, because a
+   * backend that cannot honour the lower bound reads everything instead.
+   */
+  read: (
+    talker: string,
+    limit: number,
+    from: number | null
+  ) => Promise<{ messages: Message[]; shards?: ShardReport }>
   write?: boolean
   /** Defaults to the real store; tests pass one rooted in a temp directory. */
   store?: SyncStateStore
@@ -251,11 +268,13 @@ export async function runSync(talker: string, options: SyncRunOptions): Promise<
   }
 
   const limit = options.limit ?? 0
-  const read = await options.read(talker, limit)
+  const read = await options.read(talker, limit, window.from)
   const { unique, duplicateCount } = dedupeMessages(read.messages, source, talker)
 
-  // Without a native range pushdown the read is the whole conversation, so the
-  // window is applied here. This is why the sync is correct but not cheap yet.
+  // The window is applied here as well as being pushed down, and this filter -
+  // not the pushdown - is what makes the result correct: a backend without
+  // range support returns the whole conversation, and one that cannot express
+  // the lower bound says so per shard rather than quietly dropping the bound.
   const inWindow = window.from === null
     ? unique
     : unique.filter(m => Number(m.createTime) >= (window.from as number))
@@ -270,10 +289,19 @@ export async function runSync(talker: string, options: SyncRunOptions): Promise<
   const mayHaveMore = limit > 0 && read.messages.length >= limit
   const coverage = deriveCoverage({ shards: read.shards, mayHaveMore })
   if (!read.shards) warnings.push('shard-report-unavailable')
-  if (read.shards && read.shards.failed > 0) {
+  if (read.shards) {
     for (const item of read.shards.items) {
       if (!item.opened) warnings.push(`shard-unverified:${item.name}`)
       else if (item.reason === 'READ_FAILED') warnings.push(`shard-read-failed:${item.name}`)
+      // A shard the reader could not name anything in, or could not apply the
+      // window to. Both mean "this range was not read here", which must not
+      // pass as covered - hence a warning rather than a silent skip.
+      else if (item.reason) warnings.push(`shard-not-read:${item.name}:${item.reason}`)
+      // Read, but with fields missing. Column names are schema, not content,
+      // so this stays safe to record in the state file.
+      else if (item.missingColumns?.length) {
+        warnings.push(`shard-columns-missing:${item.name}:${item.missingColumns.join('+')}`)
+      }
     }
   }
 

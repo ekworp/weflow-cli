@@ -46,7 +46,7 @@
     "scanned": 4, "opened": 4, "failed": 0,
     "items": [
       { "name": "message_0.db", "opened": true, "hasTalkerTable": true,
-        "rowsForTalker": 8123, "reason": null }
+        "rowsForTalker": 8123, "reason": null, "missingColumns": [] }
     ]
   },
   "coverage": "complete",
@@ -70,16 +70,44 @@
 
 | 值 | 含义 |
 | --- | --- |
-| `complete` | 扫到的分片全部打开、打开的全读成功，且 `mayHaveMore` 为 false |
+| `complete` | 扫到的分片全部打开、打开的全读成功（无 `reason`，允许有 `missingColumns`），且 `mayHaveMore` 为 false |
 | `unverified` | 有分片**打不开**，但打开的都读成功。已读部分是可信的，未打开的分片是否含本会话消息**无法判断** |
-| `partial` | 某个**已打开**的分片读失败，或 `mayHaveMore` 为 true，或分页在到达窗口起点前就短页结束 |
+| `partial` | 某个**已打开**的分片带 `reason`，或 `mayHaveMore` 为 true，或分页在到达窗口起点前就短页结束 |
 
 `unverified` 不是失败：`connect_message_shards` 一直把打不开的分片当作可跳过的（这是有意设计），
 CLI 无法知道那个分片里有没有本会话的消息。如实标成 `unverified` + `warnings` 比直接失败更有用，
 也让自动化不至于卡死。
 
+`partial` 的判据是**已打开的分片带 reason**，而不是某个特定的 reason 值。除 `READ_FAILED`（读到一半
+出错）外还有两种同样意味着"这个分片的这段范围没读到"的情况：
+
+| `reason` | 含义 |
+| --- | --- |
+| `READ_FAILED` | 已打开，读的过程中出错 |
+| `SCHEMA_MISMATCH` | 已打开，但表里**没有一个**读者认得的列，这些行无法变成消息 |
+| `WINDOW_UNAVAILABLE` | 已打开，但表里没有 `create_time`，请求的时间窗无法表达。**宁可拒绝也不近似**——不筛就返回会让调用方把没读的范围记成已覆盖 |
+
+把三者都算 `partial` 是必须的：它们描述的都是"这些行没读"，而这正是 `coverage` 要回答的问题。
+
+**`missingColumns` 是另一回事，不算 partial。** 它的行**读回来了**，只是少了字段（如缺 `server_id`），
+所以 `coverage` 仍是 `complete`，另发一条 `shard-columns-missing:<分片>:<列+列>` 警告。
+把两者混为一谈，会让这类数据库上的每次同步永远报 `partial`，`lastSuccessfulRun` 永远不推进。
+列名是 schema 不是内容，写进状态文件不违反脱敏约束。
+
 `partial` 则**必须失败**（`code: 'SYNC_PARTIAL'`，退出码 1）：状态文件照写（方案 §5.2 要求
 部分完成不得删除已生成的可用结果），但 `lastSuccessfulRun` 不推进。
+
+### 时间窗下推：是优化，不是正确性来源
+
+`sync` 会把窗口下界作为**提示**传给后端（NT 走 `nt_decrypt.py messages --from`），SQL 侧因此不必
+把整段会话取回来再丢弃。但**窗口的真正执行者是 `syncService` 自己**：它在读回之后再按
+`createTime >= from` 过滤一遍。这样划分的原因是**非 NT 后端没有范围下推**，若把正确性寄托在下推上，
+这些后端上的同步会静默地整段读、却报告成"按窗口读了"。
+
+**实测（2026-09-20，本机真实数据，925 条 4 分片）**：下推带来的收益**观测不到**——
+无窗口 519 ms / `--from=最新` 514 ms，两者在噪声内。这个耗时的绝大部分是进程启动 + 每个分片的
+PBKDF2（256000 轮），跟搬多少行无关。所以下推的意义是**渐近的**（会话越大越有用），
+不是当前就能测到的时间节省；这也意味着**不要**拿它当性能优化写进发布说明。
 
 ### 身份
 

@@ -38,8 +38,18 @@ export interface ShardOutcome {
   /** null when the shard could not be read at all */
   hasTalkerTable: boolean | null
   rowsForTalker: number | null
-  /** null | KEY_REJECTED | OPEN_FAILED | READ_FAILED */
+  /**
+   * null | KEY_REJECTED | OPEN_FAILED | READ_FAILED | SCHEMA_MISMATCH |
+   * WINDOW_UNAVAILABLE
+   */
   reason: string | null
+  /**
+   * Columns the reader needed and this shard did not have. Reported on a shard
+   * that was still read, so a non-empty list with a null `reason` means the
+   * read succeeded but lost fields - which a caller checking coverage has to
+   * be able to see.
+   */
+  missingColumns?: string[]
 }
 
 export interface ShardReport {
@@ -308,14 +318,29 @@ export class NtCore {
    * Separate method rather than a flag on `getMessages`: the extra argv token
    * changes what the child returns, and every existing caller is better off
    * with the smaller payload it already parses.
+   *
+   * `fromTime` is pushed into SQL so a resumed read does not fetch the whole
+   * conversation only to discard it. It is an optimisation and nothing more:
+   * callers must still filter by window themselves, because the child refuses
+   * the window outright (WINDOW_UNAVAILABLE) on a shard that cannot express
+   * it rather than approximating it. Only the lower bound is worth pushing -
+   * the upper bound is normally "now", above which nothing exists to skip.
    */
-  async getMessagesWithShards(talker: string, limit = 100, offset = 0): Promise<NtMessagesResult> {
+  async getMessagesWithShards(
+    talker: string,
+    limit = 100,
+    offset = 0,
+    fromTime?: number | null
+  ): Promise<NtMessagesResult> {
     const args: string[] = [
       'messages',
       '--limit', String(limit),
       '--offset', String(offset),
       '--report-shards',
     ]
+    if (typeof fromTime === 'number' && Number.isFinite(fromTime)) {
+      args.push('--from', String(fromTime))
+    }
     const ownWxid = configService.get('wxid')
     const result = await this.callPython(args, { talker, ownWxid })
     if (result.error) {

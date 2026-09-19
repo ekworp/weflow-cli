@@ -251,17 +251,21 @@ export class ChatService {
   async getMessagesWithShards(
     talker: string,
     limit = 0,
-    offset = 0
+    offset = 0,
+    fromTime?: number | null
   ): Promise<{ messages: Message[]; shards?: ShardReport }> {
     const conn = await this.connect()
     if (!conn.success) return { messages: [] }
 
     if (this.ntCore) {
-      const result = await this.ntCore.getMessagesWithShards(talker, limit, offset)
+      const result = await this.ntCore.getMessagesWithShards(talker, limit, offset, fromTime)
       if (!result.success || !result.messages) return { messages: [] }
       return { messages: result.messages, shards: result.shards }
     }
 
+    // The other backends have no shard report and no range pushdown. They
+    // return everything and the caller's own window filter does the rest,
+    // which is why a sync over them reports `coverage: 'unverified'`.
     return { messages: await this.getMessages(talker, limit, offset) }
   }
 

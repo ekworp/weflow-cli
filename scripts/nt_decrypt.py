@@ -871,11 +871,38 @@ def _strip_group_speaker(content, known_ids):
     return content[match.end():]
 
 
+# The columns the reader actually consumes. The SELECT is built from these
+# only: a WeChat version that renames or drops any *other* column of the
+# message table cannot break a read of a column nobody looks at.
+MESSAGE_COLUMNS = ('local_id', 'server_id', 'local_type', 'real_sender_id',
+                   'create_time', 'message_content')
+
+# Any one of these is enough to give rows an identity and an order. With none
+# of them a row cannot become a message at all, and that is a schema mismatch
+# rather than an empty conversation.
+MESSAGE_ANCHOR_COLUMNS = ('create_time', 'local_id', 'server_id')
+
+
+def table_columns(cursor, table):
+    """Column names of `table`, or an empty set if it has none to report."""
+    try:
+        rows = cursor.execute('PRAGMA table_info("%s")' % table).fetchall()
+    except Exception:
+        return set()
+    return {row[1] for row in rows}
+
+
 def _message_dict(row, sender_id_map, name_map, own_wxid, is_group=False):
-    """One message row -> the CLI's message shape."""
-    local_type = row[2] or 0
-    create_time = row[5] or 0
-    real_sender_id = row[4] or 0
+    """One message row -> the CLI's message shape.
+
+    `row` is a column-name keyed dict, not a tuple. Positional access assumes
+    every column exists; when a WeChat version drops one, the whole shard read
+    fails and the conversation looks empty. Reading by name means a missing
+    column costs that one field instead.
+    """
+    local_type = row.get('local_type') or 0
+    create_time = row.get('create_time') or 0
+    real_sender_id = row.get('real_sender_id') or 0
 
     # Resolve sender: real_sender_id -> Name2Id -> user_name
     sender_username = sender_id_map.get(real_sender_id, "")
@@ -899,15 +926,16 @@ def _message_dict(row, sender_id_map, name_map, own_wxid, is_group=False):
         sender_display = name_map.get(sender_username, sender_username) if sender_username else sender_username
 
     # Parse message_content - TEXT column
-    content = row[12] if isinstance(row[12], str) else ""
+    content = row.get('message_content')
+    content = content if isinstance(content, str) else ""
 
     # `content`/`rawContent` stay exactly as stored; only `parsedContent` - the
     # field every consumer reads first - gets the display-ready form.
     display = _strip_group_speaker(content, set(sender_id_map.values())) if is_group else content
 
     return {
-        "localId": row[0] or 0,
-        "serverId": str(row[1] or ''),
+        "localId": row.get('local_id') or 0,
+        "serverId": str(row.get('server_id') or ''),
         "localType": local_type,
         "createTime": create_time,
         "isSend": 1 if is_self else 0,  # 1 = I sent this
@@ -920,7 +948,7 @@ def _message_dict(row, sender_id_map, name_map, own_wxid, is_group=False):
 
 
 def get_messages(conns, talker, limit=100, offset=0, name_map=None, own_wxid=None,
-                 shard_names=None, shard_report=None):
+                 shard_names=None, shard_report=None, from_time=None, to_time=None):
     """Get messages for a specific talker, merged across every shard.
 
     Args:
@@ -930,14 +958,26 @@ def get_messages(conns, talker, limit=100, offset=0, name_map=None, own_wxid=Non
         shard_report: optional list to append one outcome dict per shard to.
             Purely additive: the returned messages are identical with or
             without it, which is asserted by test/nt_decrypt_shards_test.py.
+        from_time: optional inclusive lower bound on `create_time` (unix
+            seconds), pushed into SQL so a bounded read does not have to fetch
+            and discard the whole conversation.
+        to_time: optional inclusive upper bound, same units.
+
+    A requested window is only ever honoured or refused, never approximated: a
+    shard whose table has no `create_time` is skipped and reported as
+    WINDOW_UNAVAILABLE rather than returning out-of-range rows that a caller
+    tracking coverage would count as covered. Every in-tree caller that passes
+    a window also passes `shard_report`, so that refusal is always visible.
     """
     if name_map is None:
         name_map = {}
 
+    window_requested = from_time is not None or to_time is not None
+
     msg_table = f"Msg_{hashlib.md5(talker.encode()).hexdigest()}"
     is_group = '@chatroom' in talker
 
-    def record(index, opened, has_table, rows_for_talker, reason):
+    def record(index, opened, has_table, rows_for_talker, reason, missing=None):
         if shard_report is None:
             return
         name = shard_names[index] if shard_names and index < len(shard_names) else ''
@@ -947,6 +987,10 @@ def get_messages(conns, talker, limit=100, offset=0, name_map=None, own_wxid=Non
             'hasTalkerTable': has_table,
             'rowsForTalker': rows_for_talker,
             'reason': reason,
+            # Columns this shard does not have. A non-empty list together with
+            # a null `reason` means the read succeeded but lost fields, which is
+            # a different thing from a failed read and has to stay visible.
+            'missingColumns': list(missing or ()),
         })
 
     # Each shard only needs to yield its newest window: once every shard's rows
@@ -968,28 +1012,59 @@ def get_messages(conns, talker, limit=100, offset=0, name_map=None, own_wxid=Non
             rows_for_talker = c.execute(
                 'SELECT COUNT(*) FROM "%s"' % msg_table).fetchone()[0]
 
-            sql = f'''
-                SELECT local_id, server_id, local_type, sort_seq, real_sender_id,
-                       create_time, status, upload_status, download_status,
-                       server_seq, origin_source, source, message_content, compress_content
-                FROM "{msg_table}"
-                ORDER BY create_time DESC, local_id DESC
-            '''
-            if window:
-                c.execute(sql + ' LIMIT ?', (window,))
-            else:
-                c.execute(sql)
-            rows = c.fetchall()
+            available = table_columns(c, msg_table)
+            selected = [col for col in MESSAGE_COLUMNS if col in available]
+            missing = [col for col in MESSAGE_COLUMNS if col not in available]
+            if not [col for col in MESSAGE_ANCHOR_COLUMNS if col in available]:
+                # The row shape no longer matches anything the reader can name.
+                record(index, True, True, rows_for_talker, 'SCHEMA_MISMATCH',
+                       missing=missing)
+                continue
+            if window_requested and 'create_time' not in available:
+                record(index, True, True, rows_for_talker, 'WINDOW_UNAVAILABLE',
+                       missing=missing)
+                continue
 
-            # Sender ids are rowids, so the map has to come from the same shard.
-            c.execute("SELECT rowid, user_name FROM Name2Id")
-            sender_id_map = {rowid: uname for rowid, uname in c.fetchall()}
+            order = [col for col in ('create_time', 'local_id', 'server_id')
+                     if col in available]
+            sql = 'SELECT %s FROM "%s"' % (
+                ', '.join('"%s"' % col for col in selected), msg_table)
+            params = []
+            clauses = []
+            if from_time is not None:
+                clauses.append('"create_time" >= ?')
+                params.append(from_time)
+            if to_time is not None:
+                clauses.append('"create_time" <= ?')
+                params.append(to_time)
+            if clauses:
+                sql += ' WHERE ' + ' AND '.join(clauses)
+            sql += ' ORDER BY ' + ', '.join('"%s" DESC' % col for col in order)
+            if window:
+                sql += ' LIMIT ?'
+                params.append(window)
+            c.execute(sql, params)
+            # Dicts rather than driver rows: the SELECT list varies per shard,
+            # so position no longer identifies a column. Built here rather than
+            # via row_factory, which every other reader sharing these
+            # connections would inherit.
+            rows = [dict(zip(selected, values)) for values in c.fetchall()]
+
+            # Sender ids are rowids, so the map has to come from the same
+            # shard. Absent, it costs sender names and nothing else, so it is
+            # probed rather than left to raise and lose the whole shard.
+            has_name_table = c.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='Name2Id'").fetchone()[0] > 0
+            sender_id_map = {}
+            if has_name_table:
+                c.execute("SELECT rowid, user_name FROM Name2Id")
+                sender_id_map = {rowid: uname for rowid, uname in c.fetchall()}
         except Exception:
             # This shard had the conversation's table but could not be read.
             # Previously this was indistinguishable from "no rows here".
             record(index, True, None, None, 'READ_FAILED')
             continue
-        record(index, True, True, rows_for_talker, None)
+        record(index, True, True, rows_for_talker, None, missing=missing)
 
         for row in rows:
             collected.append(_message_dict(row, sender_id_map, name_map, own_wxid, is_group))
@@ -1271,6 +1346,14 @@ def main():
     msg_parser.add_argument('--talker', default=os.environ.get('WEFLOW_TALKER'), required=not os.environ.get('WEFLOW_TALKER'), help='Talker username')
     msg_parser.add_argument('--limit', type=int, default=100)
     msg_parser.add_argument('--offset', type=int, default=0)
+    # Unix seconds, inclusive at both ends. Pushed into SQL, so a bounded read
+    # no longer has to fetch the whole conversation to discard most of it.
+    msg_parser.add_argument('--from', dest='from_time', type=int,
+                            default=os.environ.get('WEFLOW_FROM_TIME'),
+                            help='Only messages at or after this unix time')
+    msg_parser.add_argument('--to', dest='to_time', type=int,
+                            default=os.environ.get('WEFLOW_TO_TIME'),
+                            help='Only messages at or before this unix time')
     msg_parser.add_argument('--contact-db', default=os.environ.get('WEFLOW_CONTACT_DB'), help='Path to contact.db for sender names')
     msg_parser.add_argument('--contact-key', default=os.environ.get('WEFLOW_CONTACT_KEY'), help='Contact DB key hex (64 chars)')
     msg_parser.add_argument('--contact-salt', default=os.environ.get('WEFLOW_CONTACT_SALT'), help='Contact DB salt hex (32 chars)')
@@ -1455,7 +1538,8 @@ def main():
             shard_items = []
             result = get_messages(conns, args.talker, args.limit, args.offset,
                                   contact_name_map, own_wxid,
-                                  shard_names=names, shard_report=shard_items)
+                                  shard_names=names, shard_report=shard_items,
+                                  from_time=args.from_time, to_time=args.to_time)
             # Failure entries carry no opened connection, so they are not in
             # `conns` and could not be recorded by get_messages itself.
             result['shards'] = {
@@ -1470,7 +1554,8 @@ def main():
                 print(json.dumps({"error": "无法打开消息数据库，请检查密钥"}, ensure_ascii=True))
                 return
             result = get_messages(conns, args.talker, args.limit, args.offset,
-                                  contact_name_map, own_wxid)
+                                  contact_name_map, own_wxid,
+                                  from_time=args.from_time, to_time=args.to_time)
 
         print(json.dumps(result, ensure_ascii=True))
         for conn in conns:
