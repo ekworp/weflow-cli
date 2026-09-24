@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import (call_deepseek, load_config, decrypt_lock, get_api_key,
                     write_with_frontmatter, format_wikilinks,
-                    TOPICS, TOPIC_CRITERIA)
+                    TOPICS, TOPIC_CRITERIA, DEFAULT_TOPIC)
 
 try:
     from sqlcipher3 import dbapi2 as sqlcipher
@@ -121,6 +121,23 @@ def _guess_topic(article: dict) -> str:
     return '新闻'
 
 
+def _tags_for_write(article, topic):
+    """两个写入者共用的 tags 取值。
+
+    md 与 json 原本各写各的默认：md 是 `a.get('tags', [topic])`，json 是
+    `article.get('tags', [])`。**键不存在时**（`--no-ai`、或没配 API key，
+    Phase 2 整段不跑，就不会有任何分类路径去设 `tags`）同一篇文章于是变成
+    md `tags: [学术]`、json `tags: []`。2026-09-04 的 177 篇就是这个样子。
+
+    回落成 `[主题]` 而不是 `[]`，是沿用本仓库既有的约定：分类路径自己就是
+    `a['tags'] = [a['topic']]`（三处）。这里只是让 json 那个写入者跟上。
+
+    注意用的是 `.get(k, 默认)` 而不是 `... or [topic]`：键**存在但为空表**
+    （模型一个标签都没抽出来）是另一种情况，两条路都保留空表，不要在这里合流。
+    """
+    return article.get('tags', [topic])
+
+
 def _serializable_article(article, date_str):
     """一篇文章 -> `.articles.json` 里的那条记录。
 
@@ -133,9 +150,11 @@ def _serializable_article(article, date_str):
         'source': article.get('account_name', ''),
         'date': date_str,
         'time': article.get('time', ''),
-        'topic': article.get('topic', ''),
+        # 默认值与分组/md 那条路**必须是同一个**。这里曾经是 `''`，而分组那边是
+        # `'学术'`，于是同一次运行里 md 写 `topic: 学术`、json 写 `topic: ""`。
+        'topic': article.get('topic') or DEFAULT_TOPIC,
         'relevance': article.get('relevance', '中'),
-        'tags': article.get('tags', []),
+        'tags': _tags_for_write(article, article.get('topic') or DEFAULT_TOPIC),
         'summary': article.get('summary', article.get('digest', '')),
         'url': article.get('url', ''),
     }
@@ -143,6 +162,51 @@ def _serializable_article(article, date_str):
         if article.get(key) is not None:
             entry[key] = round(float(article[key]), 3)
     return entry
+
+
+def _normalize_topics(articles):
+    """把每篇的主题定稿到 `TOPICS` 之内，**就地**改，返回兜底的篇数。
+
+    在写入之前只跑这一次，分组、md frontmatter、json 三条路都读它的结果。
+
+    以前没有这一步，主题在写入路径上有三个来源，而且都不报错：
+
+    * 分组键：`a.get('topic','学术')`，越界再折成 `'学术'` —— md 写的是它
+    * json：`a.get('topic','')` —— 空字符串
+    * 原始字段：可能是空的，也可能不在分类法里
+
+    2026-09-04 的产出就是这么分叉的：178 篇全落在 `学术/`、frontmatter 写
+    `topic: 学术`（其中两篇是「OpenAI 深夜发布 GPT-6」「专为高管准备的 AI 助手」），
+    而同一批的 json 全是 `topic: ""` —— 报告读 json，整批被静默排除。
+
+    返回值不为 0 就是"这一批有文章没拿到主题"的信号，调用方要把它说出来：
+    整批兜底（`--no-ai` 就是）不该看起来像一次正常分类。
+    """
+    fallbacks = 0
+    for a in articles:
+        if a.get('topic') not in TOPICS:
+            a['topic'] = DEFAULT_TOPIC
+            fallbacks += 1
+    return fallbacks
+
+
+def _group_by_topic(articles):
+    """归一化主题并按主题分桶，返回 `(分组, 兜底篇数)`。
+
+    **分组键就是 md 写进 frontmatter 的那个主题**（见 Phase 3 的 `fm['topic']`），
+    所以这张表和 `.articles.json` 里的 `topic` 必须指的是同一个值——md 与 json
+    对同一篇文章给出不同主题，就是从这里分叉出去的。
+
+    归一化放在函数内部而不是让调用方分两步做：两步就能被写颠倒（先分组再归一化，
+    键就落在归一化之前的旧值上），而这类颠倒不会报错。合成一个入口之后，
+    "分组用的主题"和"落盘用的主题"在结构上不可能不是同一个。
+    """
+    fallbacks = _normalize_topics(articles)
+    groups = {t: [] for t in TOPICS}
+    for a in articles:
+        # 直取不兜底：归一化刚保证过成员资格，这里再兜一次就等于又有第二个默认值。
+        groups[a['topic']].append(a)
+    return groups, fallbacks
 
 
 def _classify_with_jev(client, title, body, topics):
@@ -857,7 +921,7 @@ def main():
                     time.sleep(0.3)
                 except Exception as e:
                     a['summary'] = a.get('digest', '') or content[:300]
-                    a['topic'] = a.get('source_category') or '学术'
+                    a['topic'] = a.get('source_category') or DEFAULT_TOPIC
                     a['tags'] = [a['topic']]
                     a['concepts'] = []
                     # 这三条兜底路径以前完全不设 relevance，靠落盘时的默认值兜成「中」。
@@ -866,16 +930,16 @@ def main():
                     print(f'[{i+1}/{len(articles)}] [{t}] {n} - ERR: {e}')
             elif content:
                 a['summary'] = content[:400]
-                a['topic'] = a.get('source_category') or '学术'
+                a['topic'] = a.get('source_category') or DEFAULT_TOPIC
                 a.setdefault('relevance', '中')
             else:
                 a['summary'] = a.get('digest', '(无内容)')
-                a['topic'] = a.get('source_category') or '学术'
+                a['topic'] = a.get('source_category') or DEFAULT_TOPIC
                 a.setdefault('relevance', '中')
 
         # Print topic distribution
         from collections import Counter
-        topic_counts = Counter(a.get('topic', '学术') for a in articles)
+        topic_counts = Counter(a.get('topic') or DEFAULT_TOPIC for a in articles)
         print(f'\n  主题分布: {dict(topic_counts)}')
 
     # ====== Phase 3: Write files (by topic folders) ======
@@ -885,13 +949,13 @@ def main():
     for topic in TOPICS:
         (out_dir / topic).mkdir(parents=True, exist_ok=True)
 
-    # Group articles by topic
-    topic_groups = {t: [] for t in TOPICS}
-    for a in articles:
-        t = a.get('topic', '学术')
-        if t not in topic_groups:
-            t = '学术'
-        topic_groups[t].append(a)
+    # --- 主题在这里定稿：**分组、md frontmatter、json 三条路都只读这一次的结果** ---
+    topic_groups, fallback_count = _group_by_topic(articles)
+    if fallback_count:
+        # 说出来，别让它看起来像一次正常分类：`--no-ai`、没配 key、或者来源配置里
+        # 写了个不在分类法里的词，都会整批落到兜底类。
+        print(f'  [WARN] {fallback_count}/{len(articles)} 篇没有可用主题，'
+              f'已归入兜底类「{DEFAULT_TOPIC}」（不是判断结果）')
 
     # --- 写入结构化 JSON：一次提取，多次复用（供 AI 报告等下游使用） ---
     serializable = [_serializable_article(a, date_str) for a in articles]
@@ -930,7 +994,7 @@ def main():
                     print(f'  [SKIP] 内容过短 ({len(body_text)}字): {a["title"]}')
                     continue
             summary = a.get('summary', a.get('digest', ''))
-            tags = a.get('tags', [topic])
+            tags = _tags_for_write(a, topic)
             concepts = a.get('concepts', [])
 
             fm = {
