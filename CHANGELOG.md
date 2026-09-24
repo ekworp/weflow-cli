@@ -4,6 +4,61 @@ The npm package is published separately from GitHub. It may lag behind the `mast
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **The assistant can look at a picture.** 15.5% of the messages in one measured 30-day archive are
+  images (242 of 1564), and the model used to see `[图片]` and nothing else - the largest remaining gap,
+  and one no amount of prompt work closes. `get_messages` now renders an image as `[图片 #1234]`, and a
+  new `look_at_image` tool takes that number, decrypts that one image **locally**, and attaches it to the
+  next request as a real image. Looking is on demand: one image per call, at most two per turn.
+
+  **An image is data leaving the machine, and it is treated as such.** `strict` mode (`assistantPrivacy`)
+  holds images back at two layers - the tool refuses to fetch, and the request builder drops anything that
+  got through anyway - and a drop is stated in the message body rather than happening silently. The
+  `#N` handle is not even shown in `strict` mode: advertising something the tool will certainly refuse is
+  worse than not mentioning it. The audit gained `IMAGE_SENT` and `IMAGE_HELD` lines (byte counts and
+  message ids, never content).
+
+  Reading is 0.9 s for a direct chat and up to ~19 s for a group with 30k messages, because the media
+  index is rebuilt per read; a resolved image is cached under `output/.cache/read-image/`, so a second
+  look at the same picture is cheap. Images never enter memory. See D-042 for the boundaries, and note
+  that this makes a third-party vision model part of the loop - the same content already went to
+  DeepSeek as text, but images are a new class of it.
+
+- `strict` mode now keeps the **type** of a non-text message. Its own rule says "time, direction and type
+  only", and masking `[图片]` / `[文件] Base.csv` into `[内容4字已按严格模式屏蔽]` was throwing the type
+  away too - the model could not tell an image from a text message, and learned nothing that was not
+  already allowed. The payload is still withheld. A message the user *typed* that happens to start with
+  `[图片]` is still masked as text: only the reader's own non-text labels count as labels.
+
+### Fixed
+
+- **Quoted messages no longer lose what they were quoting.** In the appmsg payload the *reply* sits in
+  `title` and the *quoted original* in `refermsg/content`, and only the first was read. Measured on 37
+  real quote messages in one archive: the quoted original is a median of 36 characters (longest 12733 -
+  a whole article was pasted in), so the model was routinely shown a line like "是呀，够得意个" with no
+  way to know what it was replying to. Both parts are carried now, separated by ` ｜ 引：`. Each is
+  clipped with a trailing `…` (reply 60, quoted text 120) because an unmarked cut reads as a complete
+  sentence - the longest quoted text would otherwise have looked like it simply ended. Entities are
+  decoded for display (`a&amp;b` reads as `a&b`), which the WeChat 3.x reader already did and the 4.x
+  one did not.
+
+- **The same fix reached the WeChat 3.x reader, which had no test at all.** `sqlcipherCore`'s AppMsg
+  formatting was the second implementation of this display form; it is now `core/appMsgFormat.ts` as
+  pure functions with 13 tests. Extracting it immediately paid for itself: reading `<type>` from the
+  whole document could pick up a quoted message's `<type>` instead of the outer message's, and the
+  entity-decoding the original did was very nearly dropped in the move (the tests caught both). The two
+  implementations now share one set of clip lengths and one separator, so the same message reads the
+  same on either WeChat version - they are still two implementations, and the tests pin the values they
+  must agree on.
+
+- **One assistant message body was cut at 80 characters.** A quote (`[引用] reply ｜ 引：quoted`) had
+  its quoted text reduced to seven or eight characters - carried, but useless - and any long message
+  was cut mid-sentence with nothing to show it had been cut. The limit is now 160, with a trailing `…`.
+  Worst case stays bounded: 50 messages × ~180 characters ≈ 9k.
+
 ## 1.7.0
 
 ### Added
