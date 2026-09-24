@@ -15,7 +15,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,6 +27,8 @@ const { chatService } = await import('../src/services/chatService.js')
 const { wereadService } = await import('../src/services/wereadService.js')
 const { AssistantMemory } = await import('../src/services/assistantMemory.js')
 const { executeTool } = await import('../src/services/assistantTools.js')
+const { exportService } = await import('../src/services/exportService.js')
+const { configService } = await import('../src/services/configService.js')
 
 const svc = chatService as any
 const weread = wereadService as any
@@ -326,3 +328,328 @@ test('工具执行结果永远是字符串（主循环会把它塞进 messages�
   assert.equal(typeof await run('list_sessions', {}), 'string')
   assert.equal(typeof await run('search_memory', { keyword: 'x' }), 'string')
 })
+
+test('get_messages：非文本消息显示为标签，而不是原始 XML 或空白', async () => {
+  // 严格模式会把正文整体遮罩（那是另一条测试的事），这里测的是**取哪个字段**。
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet(k))
+  try {
+  // 实测：助手曾只看到"空内容"——因为读取器把非文本消息丢掉了（修在 nt_decrypt.py）。
+  // 这里钉住工具侧的取正文顺序：非文本用 parsedContent，不要让原始 XML 进模型上下文。
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  svc.getMessages = async () => ([
+    { createTime: 1758000000, isSend: false, senderUsername: '甲', localType: 47,
+      parsedContent: '[表情]', content: '<msg><emoji md5="dd6f13ec" cdnurl="http://x"/></msg>' },
+    { createTime: 1758000060, isSend: false, senderUsername: '甲', localType: 10000,
+      parsedContent: '"甲" 撤回了一条消息', content: '' },
+  ])
+
+  const out = await run('get_messages', { contact: '甲' })
+
+  assert.match(out, /\[表情\]/)
+  assert.match(out, /撤回了一条消息/)
+  assert.doesNotMatch(out, /emoji/, '原始 XML 不该进上下文')
+  assert.doesNotMatch(out, /cdnurl/)
+  } finally { ;(configService as any).get = realGet }
+})
+
+test('get_messages：文本消息仍然用原文（parsedContent 被截断过）', async () => {
+  const realGet2 = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet2(k))
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  svc.getMessages = async () => ([
+    { createTime: 1758000000, isSend: false, senderUsername: '甲', localType: 1,
+      content: '一段完整的文本', parsedContent: '一段完整的文本' },
+  ])
+  try {
+    assert.match(await run('get_messages', { contact: '甲' }), /一段完整的文本/)
+  } finally { ;(configService as any).get = realGet2 }
+})
+
+// ------------------------------------------------- 脚本类工具（走 pythonBridge）
+
+const bridge = await import('../src/services/pythonBridge.js')
+
+/** 装上假 runner，返回它收到的调用，便于断言参数 */
+function stubScript(stdout: string, code = 0, stderr = '') {
+  const calls: { script: string; args: string[]; env?: Record<string, string> }[] = []
+  bridge.setScriptRunner(async (script: string, args: string[], options: any) => {
+    calls.push({ script, args, env: options?.env })
+    return { stdout, stderr, code }
+  })
+  return calls
+}
+
+test('search_chats：把命中会话与消息渲染出来，并带上查询词', async () => {
+  // 这个文件默认跑在 strict 下（正文会被遮罩），而这条测的是渲染本身
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet(k))
+  stubScript(JSON.stringify({
+    success: true, terms: ['部署', '上线'],
+    ranked: [{ id: 1, kind: '群聊', label: '群A', messages: 12, lastDaysAgo: 2, hits: { 部署: 3 } },
+             { id: 2, kind: '单聊', label: '甲', messages: 5, lastDaysAgo: 9, hits: { 上线: 1 } }],
+    messages: { '1': [{ time: 1758000000, text: '部署脚本我改好了' }] },
+  }))
+  try {
+    const out = await run('search_chats', { question: '上次说的部署方案' })
+    assert.match(out, /命中 2 个会话/)
+    assert.match(out, /部署、上线/)
+    assert.match(out, /群A/)
+    assert.match(out, /部署脚本我改好了/)
+  } finally {
+    bridge.setScriptRunner(null)
+    ;(configService as any).get = realGet
+  }
+})
+
+test('search_chats：严格模式下对话正文不许出现在结果里', async () => {
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'strict' : realGet(k))
+  stubScript(JSON.stringify({
+    success: true, terms: ['部署'],
+    ranked: [{ id: 1, kind: '群聊', label: '群A', messages: 3, lastDaysAgo: 1, hits: { 部署: 1 } }],
+    messages: { '1': [{ time: 1758000000, text: '这是第三方聊天正文' }] },
+  }))
+  try {
+    const out = await run('search_chats', { question: '部署' })
+    assert.doesNotMatch(out, /这是第三方聊天正文/, '严格模式下正文不许出现——与 get_messages 同一条纪律')
+    assert.match(out, /已按严格模式屏蔽/)
+  } finally {
+    bridge.setScriptRunner(null)
+    ;(configService as any).get = realGet
+  }
+})
+
+test('search_chats：一个都没命中时说实话，而不是回空', async () => {
+  stubScript(JSON.stringify({ success: true, terms: ['xyz'], ranked: [], messages: {} }))
+  try {
+    assert.match(await run('search_chats', { question: 'xyz' }), /没有会话字面命中/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_chats：脚本失败时给出分类过的原因', async () => {
+  stubScript('', 2, '缺少 TypeSafe key')
+  try {
+    const out = await run('search_chats', { question: '部署' })
+    assert.match(out, /会话检索失败/)
+    assert.match(out, /退出码 2/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_chats：脚本参数带上 --yes 与 --json（前者是它自己的出网闸门）', async () => {
+  const calls = stubScript(JSON.stringify({ success: true, terms: [], ranked: [], messages: {} }))
+  try {
+    await run('search_chats', { question: '部署', per_card: 4 })
+    assert.deepEqual(calls[0].args.slice(0, 5), ['ask', '部署', '--yes', '--json', '--per-card'])
+    assert.equal(calls[0].args[5], '4')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('who_owes_reply：列出谁在等、等了多久、概率多少', async () => {
+  stubScript(JSON.stringify({
+    success: true, excluded_service: 2,
+    debts: [{ name: '甲', days: 3.5, waiting: 0.82, urgencyScore: 2, kind: '单聊' },
+            { name: '群B', days: 1.2, waiting: 0.61, urgencyScore: null, kind: '群聊' }],
+  }))
+  try {
+    const out = await run('who_owes_reply', {})
+    assert.match(out, /在等你回话的 2 个会话/)
+    assert.match(out, /甲（等了 3.5 天 · 概率 0.82 · 紧急度 2 · 单聊）/)
+    assert.match(out, /群B（等了 1.2 天 · 概率 0.61 · 群聊）/, '没有紧急度时不该写成 null')
+    assert.match(out, /只报谁在等/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('who_owes_reply：没人欠账时说实话', async () => {
+  stubScript(JSON.stringify({ success: true, debts: [] }))
+  try {
+    assert.match(await run('who_owes_reply', { days: 7 }), /最近 7 天没有明显在等你回话/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
+// ------------------------------------------------- 语义检索与导出
+
+test('search_semantic：查询词走环境变量，不进 argv', async () => {
+  // 仓库写进测试的隐私纪律：用户输入继承环境变量而不是进程参数（ps 里看不到正文）
+  const calls = stubScript(JSON.stringify([{ title: '某篇文章', source: 'x.md', score: 0.9, text: '片段' }]))
+  try {
+    await run('search_semantic', { query: '和钱有关的讨论' })
+    assert.equal(calls[0].env?.WEFLOW_SEARCH_QUERY, '和钱有关的讨论', '查询词必须在环境变量里')
+    assert.equal(calls[0].args.includes('和钱有关的讨论'), false, '查询词不许出现在 argv')
+    assert.deepEqual(calls[0].args, ['search', '--top-k', '8'])
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_semantic：结果渲染成标题+分数+片段', async () => {
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet(k))
+  stubScript(JSON.stringify([
+    { title: '部署方案', source: 'a.md', score: 0.87, text: '先灰度再全量' },
+    { title: '预算讨论', source: 'b.md', score: 0.71, text: '成本核算' },
+  ]))
+  try {
+    const out = await run('search_semantic', { query: '上线' })
+    assert.match(out, /前 2 条/)
+    assert.match(out, /部署方案（0\.87）/)
+    assert.match(out, /先灰度再全量/)
+  } finally {
+    bridge.setScriptRunner(null)
+    ;(configService as any).get = realGet
+  }
+})
+
+test('search_semantic：严格模式下片段被遮罩', async () => {
+  stubScript(JSON.stringify([{ title: 't', score: 0.5, text: '第三方正文内容' }]))
+  try {
+    const out = await run('search_semantic', { query: 'x' })
+    assert.doesNotMatch(out, /第三方正文内容/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_semantic：没结果与失败是两句不同的话', async () => {
+  stubScript('[]')
+  try {
+    assert.match(await run('search_semantic', { query: 'x' }), /没有结果/)
+  } finally { bridge.setScriptRunner(null) }
+
+  stubScript('', 3, '缺少 dashscopeApiKey')
+  try {
+    const out = await run('search_semantic', { query: 'x' })
+    assert.match(out, /语义检索失败/)
+    assert.match(out, /search-index/, '失败时要提示可能还没建索引')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('export_chat：导出到 output/exports/ 下的新目录，并报出条数', async () => {
+  const exportRoot = join(HOME, 'exports-tmp')
+  mkdirSync(exportRoot, { recursive: true })
+  process.env.WEFLOW_ASSISTANT_EXPORT_ROOT = exportRoot
+
+  const calls: any[] = []
+  const realExport = exportService.exportHtml.bind(exportService)
+  ;(exportService as any).exportHtml = async (talker: string, outDir: string, limit: number) => {
+    calls.push({ talker, outDir, limit })
+    return { success: true, path: outDir, count: 42 }
+  }
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  try {
+    const out = await run('export_chat', { contact: '甲', limit: 100 })
+    assert.match(out, /已导出 42 条/)
+    assert.match(out, /output\/exports\/甲-\d{12}/, '路径固定、带时间戳')
+    assert.equal(calls[0].talker, 'wxid_a', '显示名要先解析成会话 id')
+    assert.equal(calls[0].limit, 100)
+    const normalized = calls[0].outDir.split(String.fromCharCode(92)).join('/')
+    assert.match(normalized, /(^|\/)甲-\d{12}(-\d+)?$/, '目录是导出根下的新目录（不依赖根目录名）')
+  } finally {
+    ;(exportService as any).exportHtml = realExport
+  }
+})
+
+test('export_chat：目录已存在时往后加序号，绝不覆盖', async () => {
+  const exportRoot = join(HOME, 'exports-tmp')
+  mkdirSync(exportRoot, { recursive: true })
+  process.env.WEFLOW_ASSISTANT_EXPORT_ROOT = exportRoot
+
+  const dirs: string[] = []
+  const realExport = exportService.exportHtml.bind(exportService)
+  ;(exportService as any).exportHtml = async (_t: string, outDir: string) => {
+    dirs.push(outDir)
+    // 模拟"这一秒里已经导过一次"：把目录真实建出来，逼下一次换名字
+    mkdirSync(outDir, { recursive: true })
+    return { success: true, path: outDir, count: 1 }
+  }
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  try {
+    await run('export_chat', { contact: '甲' })
+    await run('export_chat', { contact: '甲' })
+    assert.notEqual(dirs[0], dirs[1], '同一秒内两次导出必须落进不同目录')
+    assert.match(dirs[1], /-2$/, '撞了就加序号')
+  } finally {
+    ;(exportService as any).exportHtml = realExport
+  }
+})
+
+test('export_chat：导出失败时如实说，且不带出奇怪的东西', async () => {
+  const realExport = exportService.exportHtml.bind(exportService)
+  ;(exportService as any).exportHtml = async () => ({ success: false, error: '缺少 NT 密钥' })
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  try {
+    assert.match(await run('export_chat', { contact: '甲' }), /导出失败: 缺少 NT 密钥/)
+  } finally {
+    ;(exportService as any).exportHtml = realExport
+  }
+})
+
+test('export_chat：缺联系人时不写任何文件', async () => {
+  assert.equal(await run('export_chat', {}), '(缺少 contact 参数)')
+})
+
+// ------------------------------------------------- 给已有工具补的参数
+
+test('get_sns users：谁常发朋友圈（本地聚合，不加新出境）', async () => {
+  svc.getSnsTimeline = async () => ({
+    success: true,
+    timeline: [
+      { create_time: 1758000000, nickname: '甲', content: 'a' },
+      { create_time: 1758000060, nickname: '甲', content: 'b' },
+      { create_time: 1758000120, nickname: '乙', content: 'c' },
+    ],
+  })
+  const out = await run('get_sns', { mode: 'users' })
+  assert.match(out, /甲：2 条/)
+  assert.match(out, /乙：1 条/)
+  assert.ok(out.indexOf('甲') < out.indexOf('乙'), '发得多的排前面')
+})
+
+test('export_chat：格式白名单，认不出来就报参数错误（不猜）', async () => {
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  const out = await run('export_chat', { contact: '甲', format: 'pdf' })
+  assert.match(out, /参数错误: format 只能是 html\/txt\/json\/excel/)
+})
+
+test('export_chat：txt 走 txt 那条导出，并在回话里说明格式', async () => {
+  const used: string[] = []
+  const realTxt = exportService.exportTxt.bind(exportService)
+  const realHtml = exportService.exportHtml.bind(exportService)
+  ;(exportService as any).exportTxt = async (_t: string, outDir: string) => {
+    used.push('txt')
+    mkdirSync(outDir, { recursive: true })
+    return { success: true, path: outDir, count: 7 }
+  }
+  ;(exportService as any).exportHtml = async (_t: string, outDir: string) => {
+    used.push('html')
+    return { success: true, path: outDir, count: 7 }
+  }
+  const exportRoot = join(HOME, 'exports-tmp2')
+  mkdirSync(exportRoot, { recursive: true })
+  process.env.WEFLOW_ASSISTANT_EXPORT_ROOT = exportRoot
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  try {
+    const out = await run('export_chat', { contact: '甲', format: 'txt' })
+    assert.deepEqual(used, ['txt'], '选了 txt 就不该走 html')
+    assert.match(out, /已导出 7 条/)
+    assert.match(out, /（txt）/, '回话里要说清导的是什么格式')
+  } finally {
+    ;(exportService as any).exportTxt = realTxt
+    ;(exportService as any).exportHtml = realHtml
+  }
+})
+
+test('search_favorites：不给关键词就列最近的收藏', async () => {
+  const asked: any[] = []
+  svc.getFavorites = async (opts: any) => {
+    asked.push(opts)
+    return { success: true, total: 12, favorites: [{ title: '最近的收藏', source_name: '某号' }] }
+  }
+  const out = await run('search_favorites', {})
+  assert.match(out, /最近的收藏/)
+  assert.equal(asked[0].keyword, undefined, '空关键词不该往下传')
+  assert.ok(asked[0].limit >= 15, '列最近时给的条数比搜索时多')
+})
+
+test('search_favorites：收藏为空与搜不到是两句不同的话', async () => {
+  svc.getFavorites = async () => ({ success: true, total: 0, favorites: [] })
+  assert.match(await run('search_favorites', {}), /收藏是空的，或收藏库/)
+  assert.match(await run('search_favorites', { keyword: '不存在' }), /收藏中未搜到「不存在」/)
+})
+

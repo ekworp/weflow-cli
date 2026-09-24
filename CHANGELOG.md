@@ -163,6 +163,137 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   variance is the likeliest). The changes stay, because stating the current mode as a fact is right on its own
   terms, but they are **not** presented as a proven fix. What actually caught this was the audit line: a
   per-turn `tools=N` count turned "the assistant says it looked" into "the assistant did not look".
+- A **tool-use guard** in the assistant: if the router judged that a message needs local data and the turn
+  then produced **no tool call at all**, the model is pushed back once - "you hold no tool result; call a
+  tool or say which one you called and what it returned" - and the loop runs again. It exists because two
+  live answers said "I did look it up, the content was masked" while the audit showed `tools=0`; 40 probe
+  calls against the real model could not reproduce it, so this is a code-level **contradiction check**
+  rather than a theory about the cause. The trigger is the routing decision, so: it never fires in `off`
+  (no signal), and it **does** fire in `log` - deliberately, because `log` promises that *routing*
+  changes nothing, while this is a safety behaviour, and the observation period is exactly when a
+  fabricated "I looked" is most likely to be noticed. It fires at most once per turn, only on the
+  contradiction, and a failed push-back keeps the reply it already had. `TOOL_GUARD_PUSHBACK` in the
+  audit is the line to grep; the loop is now one shared implementation for both passes.
+
+- **Non-text messages are no longer dropped when reading a conversation.** `parsedContent` was filled only
+  for `local_type == 1`, and a non-text body is a zstd-compressed BLOB that "is not a str, so it becomes
+  an empty string" - so images, stickers, files, quotes, transfers, red packets and **revoke notices**
+  all arrived downstream as empty. In a real 44-message conversation the three "empty" messages turned out
+  to be a revoke notice and two stickers, and the assistant answered, truthfully, that it could not read
+  the content. They now get a display form: the type code is derived (`local_type = apptype * 2**32 + 49`,
+  49 being the appmsg family) rather than tabulated, the XML is decompressed when it is zstd, and the
+  useful part is carried through - `[文件] Base.csv`, `[引用] <quoted text>`, `"某人" 撤回了一条消息`,
+  `[转账] 微信转账`, `[表情]`. An unknown app type says `[应用消息]` rather than guessing "link", and an
+  unknown type says `[未识别的消息类型 N]`: **a non-text message never becomes an empty string again**, and
+  a test asserts that over a list of types. The assistant tool now prefers `parsedContent` for non-text
+  messages, so raw XML (md5, cdn urls) no longer goes into the model's context. Also fixed a latent wrong
+  value: `getMediaStream` labelled **everything** that was not a video as `mediaType: 'image'`, text
+  included (it has no callers today, but a wrong value in a public method gets believed eventually).
+
+- The assistant's memory file now carries a **format version** (`version: 1`, conversations under a
+  `users` key). A file without a version is the previous shape and is migrated; any other version is
+  **refused** - renamed to `assistant_memory.json.unreadable-<timestamp>` and announced in the log and the
+  audit - rather than parsed by guesswork. A file that cannot be parsed at all takes the same path, because
+  it may be the only copy. The criterion for what counts as a structural change (and therefore a bump) is
+  written down next to the constant: renaming/removing a field, changing its meaning or units, or changing
+  the key space; **adding an optional field does not**, and a test pins that unknown fields in a
+  same-version file are ignored.
+- Long-term facts gained **provenance and usage**: each fact records the user turn it was extracted from
+  and the sentence that triggered it (`sourceTurn`, `sourceQuote`), and the time it was last retrieved
+  (`usedAt`). A fact can now be checked against what the user actually said, and stale facts are
+  distinguishable from live ones.
+- Fact de-duplication no longer loses the more specific version. It used to treat mutual containment as a
+  duplicate, so `项目叫 weflow-cli` blocked `项目叫 weflow-cli 并开源` - the more precise statement could never
+  be stored. Now the longer, more specific fact replaces the general one (normalised comparison, with a
+  length-ratio guard so that two facts merely sharing a short fragment stay separate). The remaining
+  ambiguity is documented in a test: two facts that are prefixes of each other resolve in favour of the
+  longer.
+- The working window compresses on **two gates with different retention rules**, because a fixed turn count
+  is window-independent and goes wrong as soon as the model changes. The turn gate (many short turns) keeps
+  about half; the budget gate (a few long turns) keeps what fits 16% of the input budget, and the character
+  bound wins over the turn floor - six 6,000-character turns are 36,000 characters, and no turn floor
+  justifies exceeding the budget. Both rules are clamped to the window length, which fixed a real bug: a
+  computed retain of 6 in a 5-turn window turned into `slice(-1)`, i.e. keeping exactly one turn.
+- The rolling summary is now a **fixed eight-section skeleton** (用户诉求 / 技术要点 / 涉及的文件与命令 /
+  错误与修复 / 待办 / 当前进展 / 下一步 / 关键上下文) with an explicit merge law: keep what is still true, drop
+  what is stale, produce one summary, never copy the previous one verbatim. An empty section writes
+  `(none)`; a section is never dropped. Free-form summaries were where compression quietly lost information.
+  The extraction prompt also now asks only for what **the user stated**, not for the assistant's guesses.
+- A memory file that could not be loaded is announced at startup (`⚠ 记忆: …` plus a `MEMORY_LOAD_ISSUE`
+  audit line) instead of silently presenting an empty memory, which reads as "it forgot me".
+
+- Facts are now **selected for injection by relevance** instead of all being sent every turn. Thirty facts at
+  ~72 characters each is about 2.1 KB per request, and the ones unrelated to the question are noise - which
+  costs more than money. Selection ranks by direct containment first, then character-bigram overlap, then
+  recent use (`usedAt`) and recency; the selected facts keep their chronological order so the block still
+  reads as a list. The prompt now **says how many were left out** ("另有 N 条与这次问题关系较远，未列出"):
+  claiming "here is everything I remember" while sending a subset is worse than sending less, because the
+  model then believes it has seen it all.
+- Local data entering the system prompt (the rolling summary and the memory facts) is now wrapped in a
+  `<weflow-local-data source="…">` frame, with **any occurrence of the frame tags inside the content
+  neutralised**. The threat is frame spoofing: chat text, article text and a stored fact can all contain
+  `</weflow-local-data>` followed by something that reads like a system instruction, and without escaping
+  the data could close the frame and speak as the system. This does not make the model immune to
+  instructions hidden in data - it only removes the ability to **close our frame**, which is the part we
+  can guarantee. The idea came from the same `deepseek-harness` audit: it treats referenced session content
+  as untrusted and keeps its injected instructions tag-safe for exactly this reason.
+
+- Fact selection now has a **relevance floor**, applied **before** the budget cut. Measuring the earlier
+  version showed the flaw: the budget is counted in characters, thirty short facts came to about 1,080
+  characters, everything fitted, and "select by relevance" had degraded into sorting - i.e. full injection
+  again (2,483 bytes of facts per request). With the floor, an unrelated question injects eight recent
+  facts as a fallback (791 bytes) and a question matching one fact injects 390 bytes; the "另有 N 条" note
+  appears in both cases. A relevance-only fallback is intentional: memory itself is context, so injecting
+  nothing at all is worse than injecting the most recent few.
+
+- Two more assistant tools, and the Python-calling code is now one implementation instead of two.
+- `search_chats`: "where did we talk about X" across every conversation. It runs `scripts/route_cards.py`
+  (the decision model picks the query words, ranking is local against the message full-text index) and
+  reuses that script's own egress gate; only the question and the candidate words leave the machine, never
+  chat bodies - and the excerpts it does return go through `privacyGate.maskMessageBody`, the same rule
+  `get_messages` follows, so strict mode masks them here too.
+- `who_owes_reply`: who is waiting on you, from `scripts/reply_debt.py --json`. It reports who/ how long /
+  how likely and deliberately **not** what they wrote; ask for a specific person with `get_messages`, which
+  does the masking properly.
+- `route_cards.py` gained a `--json` output for this (the JSON is the last line, since the human-readable
+  progress lines still go first) with a test asserting that shape and that `--keyword` stays offline.
+- New `src/services/pythonBridge.ts`: the single way to call an in-repo Python script and get JSON back.
+  There were two implementations before (`get_todos` via `execFile` with argv, the router via `spawn` with
+  stdin), each with its own timeout and error handling - exactly the duplication this repo keeps finding.
+  The bridge classifies failures (timeout / non-zero exit / no JSON / the script reporting `success:false`)
+  instead of collapsing them into "execution failed", does not throw at callers, and is injectable so the
+  tool branches can be tested without spawning a process - which is what finally makes `get_todos`
+  testable, the one tool that had been left uncovered for that reason.
+
+- Two more assistant tools, taking the set to 16.
+- `search_semantic`: meaning-based search for when literal words miss (`search_chats` matches literal strings
+  only). The query travels in `WEFLOW_SEARCH_QUERY` rather than argv, following the rule this repo already
+  tests for other readers - user text must not show up in a process list. Being explicit about the egress:
+  the query is embedded by Aliyun (百炼 text-embedding-v4) and the candidate snippets are reranked by the
+  decision model, both existing cloud paths in this repo, and it needs an index built first
+  (`weflow-cli search-index`).
+- `export_chat`: write a conversation out as HTML with images. It is the first **write** tool the assistant
+  has, so its boundary is fixed in code rather than left to the prompt: it only ever creates a **new**
+  directory under `output/exports/` (the model cannot supply a path), the name carries a timestamp, and if
+  that name is taken a numeric suffix is appended - "never overwrite" is a property, not an intention.
+  The root is overridable with `WEFLOW_ASSISTANT_EXPORT_ROOT` (tests use a temp directory; a test run must
+  not write into the repository).
+- Deliberately **not** tool-ified, with reasons recorded rather than left implicit: `evidence-review` and
+  `vault promote` have their own preview-and-confirm gates for a human at a terminal, and routing a chat
+  message around those gates would defeat the reason they exist; sending messages is outward-facing and
+  irreversible, and the repository does not implement remote silent control; changing privacy settings, the
+  allowlist or the sources stays on the machine.
+
+- Three gaps in existing tools closed rather than three new tools added - each was a case where the CLI could
+  already do it and the tool was just narrower than the question:
+- `get_sns` gained mode `users` ("who posts the most"), aggregated locally from the timeline it already
+  fetches, so it adds no new egress; the CLI had this as a subcommand and the tool only had timeline/stats.
+- `export_chat` gained a `format` argument (`html` default, plus `txt`/`json`/`excel`). An unrecognised format
+  is a parameter error, not a guess, and the reply names the format it wrote.
+- `search_favorites` no longer requires a keyword: with none it lists the most recent favourites, which is a
+  question people actually ask. "The collection is empty" and "nothing matched that word" are now different
+  sentences, as they were for the search case.
+
 ### Changed
 - Image downloads during the daily run are concurrent (6-way). They were sequential at 0.37 s and 135 KB each - about 18 minutes per 190-article day - even though they come from `.qpic.cn`, WeChat's CDN, which a browser fetches in parallel anyway. Same three articles: 17.2 s → 2.1 s. The same change fixed the map: a failed download used to be recorded in `.image_map.json` **before** it was attempted, and the reader injects that map as `window._IMG_MAP`, so the page was told to look for a local file that did not exist. Only files that are actually on disk are mapped now, and duplicates in a page are fetched once (31 image links in one article were 17 distinct images).
 - LLM summaries are generated concurrently, so a 190-article day spends about 2 minutes there instead of 9 (measured 2.27/2.92/2.45 s per article). The calls are **prefetched, not the loop rewritten**: responses are filled back by their original index and the existing loop still does the parsing and the field writes in the same order, so every fallback branch behaves exactly as before - a failed call comes back as an error and the loop re-raises it into its own `except`. The per-article 0.3 s pacing moved into the worker, so the request rate to the provider is unchanged. The stage now prints `摘要完成 N/M 篇，耗时 Xs（6 并发；串行约需 Ys）`, the shape the classification stage already used.

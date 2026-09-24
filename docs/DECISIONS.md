@@ -798,6 +798,21 @@ daemon running against a live channel, which is the user's to start; `log` mode 
 exactly that. Free-text-argument tools remain unroutable until something can select a
 value rather than a label - the same job `route_cards.py` does for conversation search.
 
+### Update 2026-09-22 (later): a contradiction check, because the cause could not be found
+
+Two live answers claimed a lookup had been made and the bodies masked, while the audit read `tools=0`.
+Forty real calls across four prompt variants (current prompt, the conditional-only variant, a window
+seeded with the model's own earlier "blocked" answers, and the complete pre-change prompt) **called the
+tool 40/40 times**, so the first explanation written here - that the prompt's conditional was read as the
+current state - is wrong, and the cause of those two turns is unknown.
+
+What ships instead is a guard that does not depend on knowing the cause: when the router says the message
+needs local data and the turn produced no tool call, the model is told it holds no tool result and the loop
+runs once more. That adds one switch whose semantics differ from `assistantFastRoute`: the guard is armed
+whenever the router ran, **including `log`**, because `log`'s promise is about routing rather than about
+safety, and an observation period is when a fabricated lookup is most likely to be noticed. `off` remains
+bit-identical because the router never runs and there is no signal to check.
+
 ## D-036: Search your own conversations with the decision model selecting query terms, not ranking sessions
 
 **Status:** Active
@@ -975,6 +990,41 @@ than a belief.
   so nobody reads the guard as a stronger guarantee than it is.
 - The pure helpers (`isSafeUrl`, `stripTags`, `extractText`, `extractFromChallengePage`) are
   exported for testing. They take strings and return strings - no side effects, no configuration.
+
+## D-041: The memory file carries a version, and an unknown version is refused rather than migrated
+
+**Status:** Active
+
+`~/.weflow-cli/assistant_memory.json` now starts with `version: 1` and puts every conversation under a
+`users` key. A file without a `version` is the previous shape (v0, conversations at the top level) and is
+**migrated**; a file whose version is anything else is **refused**, renamed to
+`assistant_memory.json.unreadable-<timestamp>`, and the assistant starts with an empty memory and says so
+in the log and the audit.
+
+**Reason:** the format had no version at all, and the repo freezes schemas for its other artifacts
+(`docs/SYNC_CONTRACT.md`, the `reconstructed` provenance block in `.articles.json`) — memory was the
+exception, and the cost of that lands on the first migration. The write criterion came from the same
+audit as the rest of this change: `deepseek-harness` pins its session format at `0` with the note that
+**no compatibility is implied and no migration is provided**, and rejects anything else at load. That
+combination (field + written criterion + refuse-don't-guess) is cheap and removes the "we will figure it
+out later" debt.
+
+**Consequences and boundaries:**
+- **What counts as a structural change** (this criterion is part of the format, not an afterthought):
+  renaming or removing a field, changing a field's meaning or units, or changing the key space (the
+  `users` layer). **Adding an optional field does not** — readers ignore fields they do not know, and a
+  test pins that a same-version file with unknown fields still loads.
+- v0 is migrated because **we wrote it** and know its exact shape. Unknown versions are refused because we
+  do not: reading another producer's fields by guess is how silent corruption gets in.
+- Refusing must not destroy data: the rename to `unreadable-<timestamp>` is mandatory and the startup log
+  names the file. A file that cannot be parsed at all takes the same path — it may be the user's only copy.
+- The same audit produced two other changes here rather than the file format: the compression **retains by
+  ratio, not by a fixed turn count** (a fixed count is window-independent and goes wrong the moment the
+  model changes), and the summariser prompt is a **fixed eight-section skeleton** with an explicit merge
+  law ("keep what is still true, drop what is stale, never copy the previous summary verbatim"). The two
+  gates differ in what they retain, deliberately: the turn gate keeps about half, the budget gate keeps
+  what fits 16% of the budget and lets the character bound win over the turn floor, because six 6,000
+  character turns are 36,000 characters and no turn floor justifies exceeding the input budget.
 
 ## Decision Template
 
