@@ -502,6 +502,20 @@ their probabilities. Two rules came out of building it, and both are general:
    `证据：对方末条 N 字 · 对方实质发言 M 条`, and anything resting on fewer than five characters
    is marked as too thin to act on.
 
+**Measured: what you feed sets the ceiling, not the model.** The same 132 questions (44 scripts x
+does-it-write / does-it-network / does-it-spawn) were asked twice, changing only the evidence in
+the state. Given each file's first 14 lines: **77.3%** agreement with a regex baseline. Given its
+first 1500 characters: **88.6%**, with subprocess at **100%** and file-writing at 97.7%, for 2.3s
+and $0.0011. The ceiling moved 11 points without touching a single question.
+
+**And the disagreements are not automatically the model's fault.** Of the remaining `network`
+mismatches, five of the six checked by hand call `call_ai` / `create_engine`, which reaches
+`urllib.request.urlopen` inside `_utils` - so those scripts *do* egress and the model was right
+while the regex baseline (which only looked inside each file) was wrong. **Two imperfect
+instruments agreeing 88.6% of the time is not an accuracy figure for either of them.** Treating
+the baseline as truth would have produced a confidently wrong conclusion about which instrument
+to trust.
+
 **Also:** `waiting` has one mechanically checkable failure mode - claiming the other side is
 waiting while the last message in the transcript is the user's own. That contradiction is
 detected and reported. It is the only part of this output that can be falsified without reading
@@ -515,6 +529,81 @@ answers promptly. It is not evidence that the model would be accurate on someone
 Debt age is measured from the **other side's** last message, not the conversation's last
 activity: if the user replied most recently the debt is zero, and using session activity would
 have flattened exactly the case worth surfacing.
+
+## D-034: Expose the decision model as a local primitive, but not over MCP
+
+**Status:** Active
+
+`weflow-cli decide --request <file>` (and `scripts/decide.py`, which also reads stdin) takes a
+caller-supplied `{state, questions}` and returns `{answers, usage, costUsd}` from one decision
+request. The command reads **no local data of its own** - the entire state is whatever the
+caller hands it.
+
+**Reason:** the value is not that this judges better than the caller's own model; it is that a
+batch of judgements becomes affordable. Measured: ~1s for a request regardless of whether it
+carries 2 questions or 12, since `state` dominates the token count, and 20 candidates cost
+around two ten-thousandths of a cent more than 1. So "label 200 items across six dimensions"
+stops being a token-budget decision. Two further properties come from it being non-generative:
+the answers arrive **typed with probabilities** rather than as prose to be parsed, and nothing
+is being *written*, so it is safe to place inside control flow where generated text would be
+unwanted.
+
+**Consequences:**
+
+- **Requests are validated locally.** The service returns `422` for a malformed request, but
+  that error can only say which field is invalid - not what the caller meant. Local validation
+  names the intent: "a `score` needs at least two ordered levels", "a `choice` needs a non-empty
+  criteria object", "a `score` with one level is a constant zero and carries no information".
+- **Deliberately not exposed over MCP this round.** An MCP client - explicitly a separate trust
+  boundary per D-002 - would be able to drive local outbound calls carrying arbitrary text of
+  its choosing. That is a new egress surface and it needs its own decision, not a side effect of
+  adding a convenience tool. `capabilities --json` records `mcpExposed: false` with the reason,
+  so the omission is visible rather than inferred.
+- Follows the `search`/`awaiting` discipline: `--dry-run` validates and echoes the shape with
+  **no egress**, `--yes` runs, and neither given means confirm. `--dry-run` needs no key, on the
+  same reasoning as `awaiting`: a preview exists to answer "is this worth spending?".
+- Honest limitation: this is a *different* model, not a strictly better one, and there is no gold
+  standard behind its numbers. For a single one-off judgement the caller's own model is fine and
+  this is just an extra hop. It pays off at scale, where the alternative is many calls and prose
+  to parse.
+
+## D-035: The assistant's single-round fast path is designed but deliberately not shipped
+
+**Status:** Deferred (design recorded, no code written)
+
+The assistant's ReAct loop costs two LLM round-trips for the common "answer from local data"
+question: round 1 picks a tool and its arguments, round 2 phrases the reply from the result. A
+decision-model pre-router could resolve `{needs_tool, tool, closed-set arguments}` in one ~1s
+call before the loop, execute that tool, and let the very first `callLLM` see the result - turning
+two round-trips into one. Measured elsewhere in this repo, the call model supports it: 12
+questions cost 0.91s against 0.84s for two, so the routing decision is nearly free.
+
+**Why it is not implemented here:** `handleMessage` is a privacy-audited, daemon-resident path.
+It carries the access-control gate, `privacyGate.audit` on every tool call, the daily limit, and
+three-tier memory - and it can only be exercised end to end against a **live** WeChat channel
+(bind by QR, whitelist a sender, run the daemon). None of that is reproducible in the environment
+this was built in, so the change would have shipped unverified into a path that handles the user's
+real messages.
+
+The failure mode is not a crash, which is what makes it worth writing down: if the router picks
+the wrong tool, the model receives a result that does not answer the question and will phrase a
+**confident** reply around it. That is worse than being slow.
+
+**What it would take to land it safely:**
+
+- an opt-in switch on the model of `--classifier` / `--no-rerank` / `--include-all`, **default
+  off**, so live behaviour is unchanged until someone watches it;
+- a routing-confidence threshold that falls back to the normal loop, plus an assertion that the
+  fallback path is bit-identical to today's behaviour;
+- a synthetic harness that drives `handleMessage` with a stubbed `callLLM` and a stubbed tool
+  executor, covering: routing correct, routing wrong (must degrade), routing uncertain (must
+  degrade), and **no tool dispatched without the audit line** - the last one is the security
+  property that must not regress;
+- a way to observe real traffic before trusting it, e.g. run it in log-only mode ("would have
+  routed to X") alongside the normal loop for a week and compare.
+
+**Until then** the loop stays as it is. One extra LLM round-trip is not worth an unverifiable
+change to the path that mediates the user's messages.
 
 ## Decision Template
 

@@ -318,7 +318,27 @@ program
         dailyStats: { cli: 'daily-stats --json' },
         diagnostics: { cli: 'check --json' },
         todos: { cli: 'todos list --json' },
+        awaiting: {
+          cli: 'awaiting --yes',
+          preview: 'awaiting --dry-run --json',
+          readsLocalChat: true,
+          invokesAI: true,
+          writesNothing: true,
+          confirmationRequired: true,
+        },
         knowledge: { cli: 'search <query> --yes --json', preview: 'search <query> --dry-run --json', output: 'json', mcp: 'wechat.search_articles' },
+      },
+      primitives: {
+        decide: {
+          cli: 'decide --request <file> --yes',
+          preview: 'decide --request <file> --dry-run',
+          readsLocalData: false,
+          invokesAI: true,
+          sendsCallerProvidedState: true,
+          confirmationRequired: true,
+          mcpExposed: false,
+          whyNotMcp: 'an MCP client must not be able to drive local outbound calls',
+        },
       },
       workflows: {
         initialization: {
@@ -4941,6 +4961,150 @@ program
         }
       } else {
         await runPython('scripts/annual_report.py', a, opts.apiKey)
+      }
+    })
+
+  // decide —— 本机判断层。一个 state + 一批类型化问题，一次调用。
+  // state 由调用方给，命令自己**不读任何本地数据**；但它是出境调用，所以照 awaiting/search
+  // 的规矩：--dry-run 只校验、--yes 才真跑。这一版**不暴露成 MCP 工具**——那会变成
+  // 远端 MCP 客户端能驱动本机往第三方发任意文本，属于要单独决策的出境面。
+  program
+    .command('decide')
+    .description('本机判断层：一个 state + 一批类型化问题，一次调用返回带概率的答案')
+    .requiredOption('--request <file>', '请求 JSON 的路径（含 state 与 questions）')
+    .option('--model <name>', '模型别名，默认 jev-latest')
+    .option('--dry-run', '只校验请求并回显形状，不调用决策模型')
+    .option('--yes', '确认把 state 发送到已配置的决策模型服务')
+    .option('--json', '输出机器可读结果（本命令的输出本来就是 JSON）')
+    .action(async (opts) => {
+      const { execFile } = await import('child_process')
+      const { promisify } = await import('util')
+      const { readFileSync } = await import('fs')
+      const execFileAsync = promisify(execFile)
+      const pkgRoot = resolvePackageRoot()
+      const decideScript = join(pkgRoot, 'scripts', 'decide.py')
+
+      // 预览里要报"这批几个问题"，所以在这里读一眼；**校验仍然只由脚本做**，
+      // 免得两处校验逻辑各说各话。
+      let questionCount: number | null = null
+      try {
+        const parsed = JSON.parse(readFileSync(opts.request, 'utf8'))
+        if (parsed && typeof parsed === 'object' && parsed.questions
+            && typeof parsed.questions === 'object') {
+          questionCount = Object.keys(parsed.questions).length
+        }
+      } catch {
+        // 读不到或不是 JSON：交给脚本去报一个准确得多的错误。
+      }
+
+      const args = [decideScript, '--request', opts.request,
+                    ...(opts.model ? ['--model', opts.model] : [])]
+      if (opts.dryRun) {
+        args.push('--dry-run')
+      } else if (!opts.yes) {
+        const preview = {
+          success: false, dryRun: false, action: 'decide',
+          code: 'CONFIRMATION_REQUIRED',
+          questionCount, readsLocalData: false, invokesAI: true,
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(preview))
+          process.exit(1)
+        }
+        const { confirmed } = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'confirmed',
+          message: `确认把请求里的 state 发送到已配置的决策模型服务吗？`
+            + (questionCount === null ? '' : `（${questionCount} 个问题）`),
+          default: false,
+        }])
+        if (!confirmed) {
+          console.log(chalk.gray('已取消'))
+          return
+        }
+      }
+
+      try {
+        const { stdout } = await execFileAsync(getPythonCommand(), args, {
+          timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
+          env: pythonProcessEnv(),
+        })
+        process.stdout.write(stdout)
+      } catch (error) {
+        const payload = (error as { stdout?: string }).stdout
+        if (payload && payload.trim()) {
+          // 脚本自己已经给出了结构化的失败，原样透传比自己编一个更有用。
+          process.stdout.write(payload)
+        } else {
+          console.log(JSON.stringify({ success: false, code: 'DECIDE_FAILED',
+            action: 'decide', error: safeSubprocessError(error) }))
+        }
+        process.exit(1)
+      }
+    })
+
+  // awaiting —— 谁在等我回话。读本地聊天并把正文发给决策模型，所以照 search 的规矩：
+  // --dry-run 预览、--yes 才真跑。它**不写任何本地数据**，但仍是一次正文出境，
+  // 而聊天正文比日报的文章正文敏感一档。
+  program
+    .command('awaiting')
+    .description('谁在等我回话：逐会话判断有没有欠下的回复（读取聊天正文并调用决策模型）')
+    .option('--days <n>', '只看最近多少天有动静的会话', '14')
+    .option('--limit <n>', '最多判多少个会话', '40')
+    .option('--min-prob <p>', 'waiting 概率低于此值不算欠账', '0.5')
+    .option('--dry-run', '仅预览会判哪些会话、要发多少字符，不调用决策模型')
+    .option('--yes', '确认把聊天正文发送到已配置的决策模型服务')
+    .option('--json', '输出机器可读结果；执行仍需 --yes')
+    .action(async (opts) => {
+      const { execFile } = await import('child_process')
+      const { promisify } = await import('util')
+      const execFileAsync = promisify(execFile)
+      const pkgRoot = resolvePackageRoot()
+      const script = join(pkgRoot, 'scripts', 'reply_debt.py')
+      const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
+      const limit = parseCliInteger(opts.limit, 'limit', 1, 500, opts.json)
+      const args = [script, '--days', String(days), '--limit', String(limit),
+                    '--min-prob', String(opts.minProb),
+                    ...(opts.json ? ['--json'] : [])]
+
+      if (opts.dryRun) {
+        // 交给脚本自己报数：它才知道要发多少字符。这一步只读本地，零出境。
+        args.push('--dry-run')
+      } else if (!opts.yes) {
+        const preview = {
+          success: false, dryRun: false, action: 'reply-debt.scan',
+          code: 'CONFIRMATION_REQUIRED', days, limit,
+          readsLocalChat: true, invokesAI: true, writesNothing: true,
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(preview))
+          process.exit(1)
+        }
+        const { confirmed } = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'confirmed',
+          message: '确认把最近这些会话的聊天正文发送到已配置的决策模型服务吗？',
+          default: false,
+        }])
+        if (!confirmed) {
+          console.log(chalk.gray('已取消'))
+          return
+        }
+      }
+
+      try {
+        const { stdout } = await execFileAsync(getPythonCommand(), args, {
+          timeout: 600_000, maxBuffer: 50 * 1024 * 1024,
+          env: pythonProcessEnv(),
+        })
+        process.stdout.write(stdout)
+      } catch (error) {
+        if (opts.json) {
+          console.log(JSON.stringify({ success: false, code: 'AWAITING_FAILED', action: 'reply-debt.scan', error: safeSubprocessError(error) }))
+        } else {
+          console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
+        }
+        process.exit(1)
       }
     })
 

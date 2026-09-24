@@ -151,10 +151,13 @@ weflow-cli sync verify <会话>                   # 重读记录范围并与当�
 ### 谁在等我回话
 
 ```powershell
-python scripts/reply_debt.py                     # 最近 14 天有动静的会话
-python scripts/reply_debt.py --days 75 --limit 25 --min-prob 0.45
-python scripts/reply_debt.py --json
+weflow-cli awaiting --dry-run          # 预览：会判哪些会话、要发多少字符（不出境）
+weflow-cli awaiting --yes              # 真跑：最近 14 天有动静的会话
+weflow-cli awaiting --days 75 --limit 25 --min-prob 0.45 --yes
 ```
+
+**它会读取聊天正文并发送到决策模型**，所以照 `search` 的规矩来：`--dry-run` 只读本地、
+零出境；`--yes` 才真跑；都没给时会让你确认。它不写任何本地数据。
 
 每个会话一次决策调用（一次请求里同时问：是否停在我该回的位置、多急、有没有没兑现的
 承诺、涉不涉及钱、属于哪类），所以每条判断都知道它属于哪个人。25 个会话约 5 秒。
@@ -165,8 +168,50 @@ python scripts/reply_debt.py --json
   少于 5 个字会直接标注「证据很薄，这个分数不可当结论」——一个从两个字的末条得出的
   0.69 和一个从整段说明得出的 0.69 不是一回事。
 - 判定"对方在等我"但对话最后一条其实是我发的，会被自检抓出来单列。
+- `--html <路径>` 另外写一份单页 HTML：**自包含、不含任何聊天内容**（只有概率、天数、
+  类别与证据量），所以可以直接发给别人看。页脚写明它不是什么：没有金标准校准过、
+  **概率在阈值附近会抖**（同一批数据两次跑会有出入，别细究 0.45 与 0.55 的区别）、
+  以及证据薄的那几条不足为凭。
 - **没有金标准校准过**，当提示看，不当事实用。图片/语音等非文本消息以类型标签进入判断，
   不会被当成空内容。
+
+### 本机判断层
+
+把"判断"从"生成"里拆出来，做成一条命令行原语：**一个 state、一批类型化问题、一次调用**，
+返回带概率的类型化答案，外加这次调用的 token 数与花费。它**不读任何本地数据**——
+state 是什么完全由你给。
+
+```powershell
+# 从文件（CLI）：
+weflow-cli decide --request req.json --dry-run     # 只校验并回显形状，不出境、不需要 key
+weflow-cli decide --request req.json --yes
+
+# 从 stdin（直接调脚本，管道里更好用）：
+echo '{"state":"...","questions":{"相关":{"type":"noul","instructions":"..."}}}' | python scripts/decide.py
+```
+
+请求格式：
+
+```json
+{"state": "字符串 / JSON 对象 / 数组都行",
+ "questions": {
+   "要退款": {"type": "noul", "instructions": "对方明确要求退款吗？"},
+   "紧急度": {"type": "score", "instructions": "多急？", "criteria": ["不急", "一般", "紧急"]},
+   "部门":   {"type": "choice", "instructions": "转给谁？",
+              "criteria": {"billing": "账单", "tech": "报错"}}
+ }}
+```
+
+**`score` 的 criteria 是零索引的有序数组**——位置即分值，`criteria[0]` 是 0 分。
+只有一档时会被本机拒掉，因为那样 score 恒等于 0，问不出东西。
+
+什么时候值得用它：**一批**判断（比如给 200 个条目各打几个标签），一次请求约 1 秒，
+问题数几乎不影响成本。**一次性的单个判断不值得**——调用方自己的模型就够了，
+多这一跳只是绕路。
+
+它对**不生成文本**这一点是有意的：答案不会以散文形式回来，所以放在控制流里是安全的。
+这一版**没有**把它暴露成 MCP 工具——那会让远端 MCP 客户端能驱动本机往第三方发文，
+属于要单独决策的出境面。
 
 ### 检索与重排
 
