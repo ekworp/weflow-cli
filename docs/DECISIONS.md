@@ -488,6 +488,20 @@ standard - which is exactly why the switch is reversible and why the raw score i
   used. Two consequences worth keeping: real tags appear only for sources *without* a configured
   category, and the earlier "tags never persist" reading was wrong - it described the
   configured-category path, not a defect.
+- **Contract hardening, added later and verified against the live API** rather than
+  against a source reading. Two capabilities this client was not using: `instructions`
+  accepts a **structured object** (`{"goal": …, "rules": […]}`) as well as a string, and
+  every response carries a **`model` field naming the served version** (`jev-1.13.0`) as
+  against the requested alias (`jev-latest`). The served name is now recorded
+  (`usage['model']`, `JevClient.last_model`, and a `decisionModel` key in the daily's
+  `.articles.json`) because an alias can drift while every result still looks correct -
+  the same shape as the bug this decision's own history keeps producing: a plausible
+  value that is silently not the one you think. Every `choice` answer is now validated
+  before use (probabilities present, key set equal to the criteria, values in `[0,1]`,
+  sum ≈ 1, `choice` == argmax); the argmax rule is the load-bearing one, since a
+  non-argmax choice looks exactly like a normal answer. The daily's prompts stay as
+  strings: switching them to the object form would change model behaviour, and the
+  existing cut points were calibrated against the string form.
 
 ## D-032: Use the decision model as a reranker - one request per pass
 
@@ -717,6 +731,69 @@ the wrong tool, the model receives a result that does not answer the question an
 
 **Until then** the loop stays as it is. One extra LLM round-trip is not worth an unverifiable
 change to the path that mediates the user's messages.
+
+**A reference implementation exists, and one of its tricks is directly transferable.** The
+`browser-use` × TypeSafe demo repo (`jev_ultrafast`, MIT, ~1950 lines) ships this pattern in the
+browser domain and publishes its measurements. Its key design point is that a **speculative
+second question cannot see the first answer** - model calls inside one request are mutually
+blind - so the target-selection question has to **state the operation it is assuming** in its own
+instructions ("assuming the operation is TYPE_TEXT, which element is the target"). Each operation's
+target is computed anyway and only the matching one is consumed, which is how "two decisions, one
+round trip" works. That is the same move as writing the judging rule into the criteria text, one
+level up: not just multiple questions, but questions with a **dependency** spelled out.
+
+Its numbers are worth having as a shape rather than a baseline: 17 model requests for one flight
+search, 90,558 input / 6,325 output tokens, 178 ms median latency, and the browser-protocol call
+count dropping 1092 → 101 when one full snapshot replaced hundreds of round trips. It also states
+the boundary this decision already assumed: **DONE is not evidence of success** - their version
+keeps an independent post-check, and a failed development attempt (8.697 s) is recorded rather
+than dropped.
+
+**Its browser path is not portable to this repo's scenarios**, and the design doc says why:
+shadow roots, iframes, canvas, file uploads, new tabs and nested scrolling are unsupported - which
+is most of what the official-account console, n8n and conference-site work consists of. It also
+drives its own stack (browser-harness + CDP + a reused Chrome profile), separate from whatever
+browser automation this repo has. The transferable parts are the **question organisation** above
+and the discipline of publishing measurement boundaries with the numbers, not the transport.
+
+## D-036: Search your own conversations with the decision model selecting query terms, not ranking sessions
+
+**Status:** Active
+
+`scripts/route_cards.py` answers "which conversation was I talking about X in". Two stages:
+the decision model picks the real query words out of the candidate n-grams the question
+produces, and **ranking is local**, by how many messages in each session literally contain
+those words. Retrieval reads WeChat's own `message_fts.db`.
+
+**Reason:** the obvious design - one card per conversation, ask the model which are
+relevant - **was measured and does not work**. As a per-card `noul` every candidate scored
+0.50-0.51, putting a one-message coupon group in the same band as the conference group with
+213 hits and leaving out the session most worth opening; as a per-card `score` (0/1/2) all
+20 candidates scored 1.74-1.76 whether they had 247 hits or 8. Local sorting by hit count
+ranked the same data correctly. The card carries too little for the judgement being asked -
+the model has never seen the conversation - so the shipped split gives ranking to the
+objective local signal and leaves the model the job it demonstrably does well: choosing
+words from a closed candidate list (it kept 会议 at 0.77 and rejected seven fragments at
+0.11-0.40, consistently across runs). That is also the boundary of what it can do at all -
+it cannot generate the search terms, only select them.
+
+**Consequences and boundaries:**
+- **New egress surface, deliberately small**: only the candidate words and the user's
+  question leave the machine. No message text, and - unlike the first design - no
+  conversation names, counts or timestamps either, since the model no longer sees cards.
+  `--keyword` skips the model entirely and keeps the whole path local.
+- Ranking by literal match is the known limit: "聊过上线的事" will not find a conversation
+  that says 部署. That is what the embedding path (`search`) is for; the two are
+  complementary recall paths, and the tool says so instead of pretending to have found
+  nothing relevant.
+- The article-favourite reading of `message_fts.db` is the enabling fact: `acontent` is
+  plaintext and `session_id` is the rowid of that database's own `name2id` table (595
+  sessions), so retrieval needs no index of our own. `MATCH` is unusable
+  (`no such tokenizer: MMFtsTokenizer`), but `LIKE` over 60k rows is instant.
+- A `noul` answer is a **probability float**, not a boolean (measured: 0.98 true, 0.01
+  false). Reading it as a boolean makes every question look answered "no" while the output
+  blames the model - this happened, and the tool now separates "the answer shape changed"
+  from "the score is low" in what it prints.
 
 ## Decision Template
 
