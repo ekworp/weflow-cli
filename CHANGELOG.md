@@ -8,6 +8,42 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Added
 
+- Article bodies are now cached as they are fetched, so a daily run can resume. The run used to be **all-or-nothing**: it fetches every article before writing anything, and the bodies only ever lived in memory, so any interruption discarded the whole day. On a 400-article day that is over an hour of fetching, and on 2026-09-22 it stopped at 105/403 having written nothing. Bodies are now stored under `output/.cache/fetch/<md5(url)>.md`: a re-run fetches only what is missing (a resumed article costs ~0s instead of ~20s, and it does **not** take the 8-12 s throttle sleep, because a cache hit sends no request), and switching between `--no-summary` and normal, or changing the classifier, no longer re-downloads the day. Only successes are cached - a failure would otherwise be remembered forever instead of retried. `--no-fetch-cache` forces a refetch.
+
+- Topic exclusion: `dailyExcludeTopics` (comma-separated, e.g. `新闻,投资,学术`), settable with
+  `weflow-cli config set dailyExcludeTopics "..."`, plus `--exclude-topics` on
+  `generate_ai_report.py` / `generate_html.py` for a one-off override. This is a **display**
+  switch: bodies are fetched and archived as usual, and the topic simply does not appear in the
+  two views. Pre-fetch filtering was measured first and rejected - judging the type from a source
+  name plus a title and digest agreed with the source-level configuration only 60% of the time on
+  217 articles, with 48 false positives and no gold standard - and a skipped fetch is
+  **irreversible**, since nothing gets archived. Excluding at the display layer also means
+  changing your mind costs a regeneration, not a refetch. The exclusion is orthogonal to
+  `--include-all` and to the inclusion score, it is applied identically by the report and the
+  reader page, and all three lists in the report's **我拿不准的** section are filtered, so a
+  report that excludes 新闻 cannot turn around and list 新闻 in its own uncertainty section.
+  Excluding the focus topic is refused with a warning rather than obeyed: an empty subject makes
+  the report either bodyless or exit with "未找到文章", which blames the wrong thing. A misspelled
+  topic name is ignored **with a warning** - a silent no-op would look like the filter working.
+
+- Source-level prior: `~/.weflow-cli/source_topics.json` accumulates how many articles each
+  公众号 has been judged to publish per topic, from what the daily actually archived. A source
+  with enough samples (`SOURCE_PRIOR_MIN_SAMPLES`) dominated by one topic (`SOURCE_PRIOR_SHARE`)
+  is reported at the end of the run, and when that topic is one you exclude the run names it:
+  `来源先验: 甲号 → 新闻（20 篇里 19 篇 = 95%）`. It **only reports - nothing is skipped**,
+  because a pre-fetch skip is irreversible and this table is still growing. The table holds
+  account names, so it lives outside the repository; counts are append-only and only articles
+  that landed on disk are recorded, so the table and `output/` describe the same corpus.
+  `stable_source_topic` returns `None` for "not known yet", and callers must not read that as a
+  default topic. See D-037 and D-038.
+
+- `test/config-keys.test.ts`: every key in `bin`'s `configurableKeys` must also be declared in
+  the `CliConfig` interface, given a default, reset by `clear()` and read back by `load()`.
+  These are the four ways a key can be accepted by `config set` and then quietly not survive a
+  restart.
+
+- `daily --no-summary`: judge without generating. Topic, relevance and the inclusion decision still come from the decision model, but **no LLM call is made at all** - no summaries, no tags, no concepts, no README briefing - so this run needs no DeepSeek key. Articles are still fetched and archived (the body is kept); the md simply carries no `## AI 摘要` section, and `.articles.json` records `summary: ""` rather than quietly substituting the platform's digest, because an empty heading reads as a failed generation and a digest reads as our summary - both claim something that is not there. Verified by running a 4-article day with a **deliberately invalid** DeepSeek key: it completes normally with no 401, i.e. nothing reached the LLM. Wired through `weflow-cli daily --no-summary` and `pipeline.py`; the downstream pipeline steps (action suggestions, wiki compile, AI report) still use an LLM, so a fully LLM-free run adds their `--skip-*` flags, and the pipeline says so when it notices.
+
 - `sync run|status|verify`: a local message-sync checkpoint. `sync run` reads a time window, deduplicates against the previous checkpoint and records what it covered; `sync status` reports coverage without touching the database, so it still works while the database is locked. It does **not** advertise a stable cursor - overlapping windows plus local deduplication is what it offers, per D-027.
 - Per-shard read reporting. Shard open and read failures used to be swallowed by a bare `except: continue`, so "read 31 messages" and "read one shard and silently skipped three" were indistinguishable from the outside. `--report-shards` (opt-in; without it the JSON is byte-identical) surfaces `scanned/opened/failed` and one entry per shard. On the machine this was developed against the report reads `message_0.db` 31 rows and `message_3.db` 1258 - exactly the shape of the shard-read bug fixed in 1.6.4, which was completely invisible at the time.
 - A media coverage report on HTML export: `<prefix>_media.json` beside the parts, with a status and a reason for every media item (`embedded | cached | remote-fetched | missing | unsupported`). The exporter had been computing `COVER_STATE` counters and discarding them, and a media miss showed up only as a bare `[图片]` with no reason recorded. A real 120-message export reports 54 items: 35 embedded, 15 missing, 2 unsupported, 2 remote-fetched, with reasons `not-in-local-cache` and `voice-not-in-media-index`.
@@ -22,6 +58,111 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 - Decision-model calls now record **which model actually served them**, and validate the `choice` contract on the way in. The API returns a `model` field naming the served version (`jev-1.13.0`) as distinct from the requested alias (`jev-latest`), and the daily stores it as `decisionModel` in `.articles.json` - so "production is no longer running what was measured" becomes visible instead of producing results that merely look fine. Every `choice` answer is checked before use: probabilities present, key set equal to the criteria, values in `[0,1]`, sum ≈ 1, and `choice` equal to the argmax; a non-argmax choice is not a wrong-looking answer but a normal-looking wrong one. `instructions` is also confirmed to accept a structured object (`{"goal": …, "rules": […]}`), though the daily's prompts deliberately stay as strings - changing them would move behaviour the cut points were calibrated against.
 
+- When the decision model has judged an article, the LLM prompt no longer asks it to classify too. It used to ask for `【主题】`/`【相关度】` whoever was judging, so on the Jev path those answers were written and thrown away - the fields plus the six-category criteria and the three-level definitions came to 446 characters of prompt per article (57% of the prompt skeleton; about 9% of the total input, since the article body dominates), plus 10-15 output tokens. The **summary, tag and concept requirements are byte-identical between the two prompts** (a test asserts it), so what gets generated does not change; `--classifier llm` and any article whose Jev call failed still get the full prompt, keeping the fallback path byte-identical as D-031 requires. The choice is per article, not per batch - a failed judgement needs the LLM's own topic and relevance. Token savings are estimated from prompt size and output fields, not read from a bill: neither this client nor the decision-model client exposes usage amounts.
+
+- The assistant's two untested core files now have coverage, via a synthetic harness rather than a
+  live channel. `assistantMemory` gets 17 tests (working window, compression past the cap, the
+  degraded path when the LLM refuses to compress, fact extraction cadence and noisy-output parsing,
+  the fact cap, persistence across a restart) and `assistantService.handleMessage` gets 14 (built-in
+  commands without any model call, the ReAct loop feeding a real tool result back, tool-result
+  redaction, the unknown-tool and malformed-arguments paths, the 6-round cap, an LLM failure that
+  must say so, audit lines, and memory wiring), plus 8 for the daemon start path. No network, no
+  WeChat channel, no real home directory: `callLLM` is injected, the tools used are the two that
+  only touch memory (`search_memory` / `save_memory`), and `HOME` is pointed at a temporary
+  directory before the modules are imported. Two invariants the harness exists to hold: a tool
+  result is redacted **before** it can leave the machine, and the audit log never contains message
+  text. One sharp edge was found and **documented instead of changed**: fact de-duplication uses
+  mutual containment, so an existing `事实 1` silently blocks a new `事实 10`.
+
+- 11 of the assistant's 12 tool branches are now executed by tests, through stubs on the exported
+  `chatService` / `wereadService` singletons and a replaced `fetch` - so no database, no network
+  and no real home directory. Before this, no test had ever run a tool branch: only three pure
+  helpers were covered, and the rest of the surface was unverified. The branches now pinned
+  include: the strict-mode body mask applied **inside** `get_messages` (so third-party chat text
+  cannot appear in a tool result), `read_favorite` refusing an unsafe link **without issuing any
+  request at all**, its single retry for WeChat's WAF challenge page and the `content_noencode`
+  fallback, the "deleted by the publisher" case, out-of-range tool arguments becoming a readable
+  parameter error, ambiguous contact names asking for a more precise one (and an exact name
+  winning over a partial match), and a tool that throws internally returning a readable failure
+  instead of rethrowing into the ReAct loop. **Not covered, deliberately**: `get_todos` spawns a
+  Python subprocess against the real database and has no cheap stub point.
+
+- The assistant's resident loop is now driven by tests too - who gets answered and who is denied,
+  without a WeChat channel: `WechatMessageService.prototype` is replaced, the token comes from a
+  stubbed `configService.get`, and the queue is drained by awaiting it. Pinned: an empty allowlist
+  denies everyone with an audit line and **no model call**; a non-text message is ignored without
+  spending quota; an exhausted quota replies "额度已用完" and does not call the model; the quota
+  resets across a date change; two messages are processed strictly in arrival order (the serial
+  queue is what keeps the memory window from interleaving); a group needs all three controls
+  (group allowlist, sender allowlist, @ mention) and is denied with a distinct reason for each
+  missing one; and one message that throws does not take the loop down with it.
+
+- The privacy wiring - which config value decides "this data does not leave the machine" - is now
+  tested. Existing privacy tests called `redactText(text, mode, localInference)` with explicit
+  arguments, so the function was covered while the thing that *derives* that boolean in
+  production was not: `PrivacyGate.isLocalInference()` reads `aiEngine`, and `engineConfig()`
+  decides where the request is actually sent. Pinned: only `ollama`/`lmstudio`/`local` count as
+  local inference and skip redaction; a custom `aiBaseUrl` is still cloud, so swapping in a relay
+  does not quietly stop PII masking; local engines point at `localhost` with `key: null` and a
+  trailing slash on a custom base URL is stripped; and `reviewEvidence` refuses to put chat text
+  on the wire without an explicit `--allow-cloud` (**without issuing any request**), redacts the
+  transcript when it does, and keeps it intact under local inference.
+
+- The assistant's single-round fast path (D-035) is implemented and **off by default**. It asks the local
+  decision layer one question - "must this be answered from local data, and if so which of these nine
+  capabilities" - then pre-dispatches that one tool, so the ReAct loop's first request already sees the
+  result: two model round trips become one. Only tools with closed or empty arguments are routable
+  (`list_sessions`, `get_stats`, `get_daily_report`, `get_sns`/`get_weread`/`get_todos` modes); a question
+  like "summarise my chat with X" needs a free-text argument a closed-set question cannot produce, so it
+  falls back - passing the raw message as the argument would manufacture exactly the failure this
+  decision was written to avoid (a wrong tool, and a confident answer built on an irrelevant result).
+  `config set assistantFastRoute log` records "would have routed to X" and changes nothing; `on` enables
+  it. Every uncertain exit - judge unavailable, non-numeric probability (`Number(true)` is 1, so a boolean
+  `noul` would have routed *certainly*), low confidence, unknown capability - falls back to the previous
+  behaviour rather than to a weaker new one, and a test compares the fallback transcript field by field
+  against the baseline. The dispatch-and-audit step is now one shared implementation, since "no tool
+  dispatched without the audit line" is the property that must not regress. Measured on 17 questions
+  against the real decision layer (`scripts/assistant_route_probe.ts`): 0 wrong routes, 10 routed
+  concretely, ~1.33 s per decision, 2 fell back - with the probe's own expectations, not human labels.
+
+- First-run setup for the assistant now says what to do and, more importantly, **which ID to allowlist is
+  not guessed**. The assistant denies every sender until `assistantWhitelist` is set, so a fresh
+  `login-wechat` used to end in silence: talk to your own bot, get nothing back, and go digging through
+  logs for the reason. Two sources of that ID exist and only one is verified - the login response carries
+  an `ilink_user_id` while the allowlist matches the inbound `from_user_id` (documented as an
+  `@im.wechat` ID), and nothing in this repo connects the two, so the login path does not write the
+  allowlist. Instead, while the allowlist is empty the daemon prints the **first denied direct message's**
+  full sender ID together with the exact `config set` line to run, once, and never for a group (a group's
+  sender is a member, not the person to allowlist). Auto-configuring an allowlist from an unverified
+  identifier would have failed in the worst way available here - non-empty, so it looks configured, and
+  still denying you, with the one-time hint disabled because the list is no longer empty.
+  `assistant log --json` still returns metadata only, never log content.
+
+- The assistant now names **all three** ways out when the strict privacy mode hides chat bodies. It had
+  said only "switch strict mode off", which omits the option that actually matches a privacy worry: a
+  local engine (`aiEngine=ollama`/`lmstudio`) leaves the machine out of it entirely, and strict-mode
+  masking is skipped there by design because nothing is sent anywhere. The system prompt now requires
+  it to list balanced (bodies leave, PII masked), a local engine (nothing leaves), or staying as is -
+  rather than presenting one of them as the only choice.
+
+- A `隐私` built-in command in the assistant: send it and the reply lists the current privacy mode, what the
+  tools actually receive (masked, original, or not sent at all), and the exact `config set` lines to
+  change it - including the local-engine option when inference is in the cloud. It is **read-only on
+  purpose**: a chat message must not be able to weaken a privacy setting, so the mode is changed on the
+  machine, not from inside the conversation.
+
+- The assistant claimed it had called a tool and been blocked by strict mode, **without calling any tool at
+  all** - the audit line read `TURN_DONE 264B tools=0`. Two things changed: the privacy state is now written
+  into the system prompt as a **fact about the current mode** instead of a conditional ("if strict mode hides
+  bodies, then ..."), and a rule says not to conclude anything about tool output before actually calling the
+  tool. **The first explanation for it was wrong, and measurement said so**: this release's notes originally
+  attributed the missing call to that conditional. A probe of the same question against the real model - four
+  prompt variants (current, hypothesis-sentence only, with the model's own previous "blocked" answer seeded
+  into its window, and the complete pre-change prompt) x 8 runs = **32 calls - called the tool 32 times out of
+  32**. The prompt was therefore not the cause, and the cause of that single occurrence is unknown (sampling
+  variance is the likeliest). The changes stay, because stating the current mode as a fact is right on its own
+  terms, but they are **not** presented as a proven fix. What actually caught this was the audit line: a
+  per-turn `tools=N` count turned "the assistant says it looked" into "the assistant did not look".
 ### Changed
 - Image downloads during the daily run are concurrent (6-way). They were sequential at 0.37 s and 135 KB each - about 18 minutes per 190-article day - even though they come from `.qpic.cn`, WeChat's CDN, which a browser fetches in parallel anyway. Same three articles: 17.2 s → 2.1 s. The same change fixed the map: a failed download used to be recorded in `.image_map.json` **before** it was attempted, and the reader injects that map as `window._IMG_MAP`, so the page was told to look for a local file that did not exist. Only files that are actually on disk are mapped now, and duplicates in a page are fetched once (31 image links in one article were 17 distinct images).
 - LLM summaries are generated concurrently, so a 190-article day spends about 2 minutes there instead of 9 (measured 2.27/2.92/2.45 s per article). The calls are **prefetched, not the loop rewritten**: responses are filled back by their original index and the existing loop still does the parsing and the field writes in the same order, so every fallback branch behaves exactly as before - a failed call comes back as an error and the loop re-raises it into its own `except`. The per-article 0.3 s pacing moved into the worker, so the request rate to the provider is unchanged. The stage now prints `摘要完成 N/M 篇，耗时 Xs（6 并发；串行约需 Ys）`, the shape the classification stage already used.
@@ -35,6 +176,34 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 - Two closed vocabularies that the code compares by literal are now declared once instead of twice. The message **anchor columns** (`create_time`, `local_id`, `server_id`) had three copies - a named one, a second literal in the same file's `ORDER BY`, and a third in the exporter - and moved into `nt_common` alongside the other shared NT plumbing. Their **order is behaviour**: one use is a set membership test (order irrelevant) and the other is the sort key, so listing `local_id` first would silently reorder every conversation read. A test pins `create_time` first, the tuple type (a set would let the order follow the interpreter's hash seed), and the literal's absence from both readers. The relevance levels moved to `_utils` beside `TOPICS`, with `DEFAULT_RELEVANCE` naming what an unclassified article is recorded as - the value every failed classification path lands on, and the reason the corpus once read 中 for 2199 of 2201 articles even though 中 reads as a positive judgement rather than "not judged". `extract_todos.py`'s identical `['高','中','低']` is deliberately left uncoupled: that is the `--urgency` vocabulary, which merely shares three characters.
 
 ### Fixed
+- The fetch guard in the assistant (`isSafeUrl`, used by `read_favorite` before it fetches
+  a link found in a favourite) had two holes, found by testing it for the first time. **IPv6 was
+  not handled at all**: `[::ffff:127.0.0.1]` (an IPv4-mapped loopback), `[fd00::1]` and
+  `[fe80::1]` were all allowed, so a favourite could have pointed the assistant - a process
+  holding the local database handle - at loopback or link-local space. In the other direction,
+  the private-range regexes were matched against any hostname, so the legitimate public domain
+  `10.example.com` was refused as unsafe. The dotted-quad checks now apply only when the
+  hostname really is four dotted octets, and IPv6 is refused by prefix (`::`, `::1`, `::ffff:`,
+  `fc00::/7`, `fe80::/10`). Measuring also retired an assumption: Node normalises integer IPv4
+  forms (`2130706433`, `0x7f000001`) to `127.0.0.1` before this function runs, so those were
+  never a bypass - now pinned by a test instead of believed. The guard remains a denylist of
+  known forms, not a proof that an address is publicly routable (NAT64 is uncovered), and the
+  code says so. See D-040.
+
+- `assistant start` now actually starts the daemon, and reports success only when it does. The child
+  was spawned without `--yes` while `assistant run` confirms through `inquirer` on a stdin the
+  daemon had set to `ignore` - so the child died on the prompt while the parent printed
+  `✓ 守护进程已启动 (pid …)` and wrote a pid file. `~/.weflow-cli/` contained **no `assistant.log`
+  and no `assistant.pid` at all**, which is how the documented flow turned out never to have
+  completed. The env marker that appeared to guard the path (`WEFLOW_ASSISTANT_DAEMON=1`) was read
+  by nothing and was constructed as an env **key** containing `=`; both are gone. The parent
+  confirms and passes `--yes` explicitly, and success is now observed: the child is watched for
+  700 ms and a dead one is reported with its exit code and the log tail, **without** writing a pid
+  file. A spawn `'error'` event is handled as well - without a listener Node turns it into an
+  uncaught exception in the caller. Verified live: it now reports
+  `子进程启动后立即退出 (code 1)；日志尾部: Error: 未登录消息通道, 先运行 weflow-cli login-wechat`,
+  which is the actual blocker on that machine (no `wechatOcToken`, empty allowlist). See D-039.
+
 
 - A daily run wrote **two different topics for the same article**. `.articles.json` defaulted a missing topic to `''` while the step that names the folder and writes the md frontmatter defaulted it to `学术` - seven lines apart, neither reporting anything. The 2026-09-04 output shows the split directly: 178 articles, every md under `学术/` carrying `topic: 学术` (including "OpenAI 深夜发布 GPT-6 Astra" and an AI-tool launch), and every entry in that day's `.articles.json` carrying `topic: ""`. Downstream reads the JSON, so the admission gate `topic != FOCUS_TOPIC and relevance != '高'` dropped the whole batch without a word. It is reachable without anything unusual: `daily --no-ai`, or a daily run with no API key, skips classification entirely, so no article has a `topic` key at all while the write phase still runs. The fallback is now one constant (`_utils.DEFAULT_TOPIC`) applied by one function that both normalises and groups (`biz_daily._group_by_topic`), so "the topic used for the folder" and "the topic written to the JSON" cannot be different values by construction. It validates **membership** in `TOPICS` rather than mere emptiness, and the run prints how many articles fell back, so a whole-batch fallback cannot pass as a normal classification. `test/default_topic_test.py` pins the grouping key, the md frontmatter and the JSON entry to the same value, and the fallback literal to one place; the checks were mutation-tested. The **same shape seven lines away** sat in `tags`: the md writer defaulted a missing key to `[topic]` and the JSON writer to `[]`, so those same 09-04 articles read `tags: ['学术']` in the md and `tags: []` in the JSON. Both now call `_tags_for_write`, which follows the convention the codebase already had (three classification paths write `[topic]` themselves) while still keeping a *present but empty* list empty - that is a different case, and collapsing it would just be a new default written in two places.
 - A leaked database handle when a shard opened but its key was rejected: the connection was left open, which on Windows keeps the file locked.

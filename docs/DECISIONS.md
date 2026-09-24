@@ -694,9 +694,9 @@ unwanted.
   this is just an extra hop. It pays off at scale, where the alternative is many calls and prose
   to parse.
 
-## D-035: The assistant's single-round fast path is designed but deliberately not shipped
+## D-035: The assistant's single-round fast path: default-off, and how it got there
 
-**Status:** Deferred (design recorded, no code written)
+**Status:** Active (shipped 2026-09-22 behind a default-off switch; see the update at the end)
 
 The assistant's ReAct loop costs two LLM round-trips for the common "answer from local data"
 question: round 1 picks a tool and its arguments, round 2 phrases the reply from the result. A
@@ -756,6 +756,48 @@ drives its own stack (browser-harness + CDP + a reused Chrome profile), separate
 browser automation this repo has. The transferable parts are the **question organisation** above
 and the discipline of publishing measurement boundaries with the numbers, not the transport.
 
+### Update 2026-09-22: shipped behind a default-off switch
+
+The four prerequisites above are met, so the fast path now exists in
+`src/services/assistantRouter.ts` and is wired into `handleMessage`. It is **off by
+default**: `assistantFastRoute` accepts `off` (default, byte-identical to before), `log`
+(decide, record "would have routed to X", dispatch nothing) and `on`.
+
+What changed versus the deferred design:
+
+- **Only tools with closed or empty arguments are routable.** The design assumed
+  `{tool, arguments}` could be resolved in one call; the arguments cannot, because a
+  `choice` can only pick from a closed set and "which contact", "which keyword" are free
+  text. Nine capabilities over six tools (`list_sessions`, `get_stats`, `get_daily_report`,
+  `get_sns` ×2, `get_weread` ×2, `get_todos` ×2) carry their arguments inside the option
+  text; everything else falls back. Passing the user's whole message as the argument would
+  have manufactured the exact failure this decision was written to avoid.
+- The routing question is a `noul` ("must this be answered from local data?") plus a
+  `choice` over those nine capabilities **plus `none`**, whose criterion covers both "no
+  local data needed" and "local data needed, but not by any of these ways" - without the
+  second half the model is forced to pick among nine wrong options.
+- **Every uncertain exit falls back**, and falling back *is* today's behaviour, not a
+  weaker new one: judge failure, non-numeric probability, sub-threshold confidence, an
+  unknown capability name. `asProbability` refuses booleans (`Number(true)` is `1`, so a
+  `noul: true` would have routed *certainly* - the same misread as the earlier client,
+  in the opposite direction).
+- The dispatch and audit are now **one implementation** (`runToolCall`) shared by the loop
+  and the fast path, because "no tool dispatched without the audit line" is exactly the
+  kind of invariant that rots when written twice.
+
+**Measured** (`scripts/assistant_route_probe.ts`, 17 representative questions, real
+decision layer, 2026-09-22, free period): 15 matched the expectation I wrote in the probe,
+**0 routed to a wrong capability**, 10 routed concretely, ~1.33 s per decision (two
+outliers at 2.6 s and 4.2 s). The two mismatches fell back rather than routing: 我明天该干嘛
+(needs_tool 0.40) and 最近有没有什么书可以读 (0.17) - and for the second one the *probe's*
+expectation is the arguable one, since it asks for a recommendation rather than for what is
+being read. The expectations are mine, not a human-labelled gold standard.
+
+**Still not done, deliberately:** the log-only week on real traffic. That needs the
+daemon running against a live channel, which is the user's to start; `log` mode exists for
+exactly that. Free-text-argument tools remain unroutable until something can select a
+value rather than a label - the same job `route_cards.py` does for conversation search.
+
 ## D-036: Search your own conversations with the decision model selecting query terms, not ranking sessions
 
 **Status:** Active
@@ -794,6 +836,145 @@ it cannot generate the search terms, only select them.
   false). Reading it as a boolean makes every question look answered "no" while the output
   blames the model - this happened, and the tool now separates "the answer shape changed"
   from "the score is low" in what it prints.
+
+## D-037: Topic exclusion lives in the display layer, not in front of the fetch
+
+**Status:** Active
+
+`dailyExcludeTopics` / `--exclude-topics` stop a topic from appearing in the daily report and
+the reader page. Articles are still fetched, judged and archived; the topic is not shown. The
+focus topic (AI) cannot be excluded - asking for it prints a warning and ignores that entry.
+
+**Reason:** the feature was asked for as "decide before fetching whether I want this article".
+That was measured and rejected: from a source name, a title and the platform digest - all that
+exists before a fetch - the judgement agreed with the source-level configuration on **60%** of
+217 articles, and where it disagreed it was mostly wrong in the direction that drops articles
+worth keeping. There is no gold standard either way, so "the model said 新闻" cannot justify a
+dropped fetch. The asymmetry decides it: an unwanted article costs a little space and attention,
+while a wrongly skipped one is **gone** - it was never archived, and re-fetching a 公众号 page
+weeks later is not the same article. The display layer also buys a cheaper correction path:
+changing your mind is a regeneration, not a refetch.
+
+**Consequences and boundaries:**
+- Exclusion is **orthogonal**: it is checked before `--include-all` and before the inclusion
+  score, so no flag combination brings an excluded topic back. All three lists in **我拿不准的**
+  (near-threshold admitted, near-threshold not admitted, low topic confidence) are filtered too.
+  This is not cosmetic: the "not admitted" list is populated by exactly the articles being
+  excluded, so passing the exclusion set to `admits()` there does the opposite and makes them
+  *more* likely to be listed. One predicate (`is_excluded_topic`) serves both directions.
+- The focus topic is protected because excluding it does not produce an empty report, it
+  produces a misleading one: with nothing left, the report exits with "未找到文章，请先运行
+  biz_daily.py" and blames the wrong thing. Unknown names and refused names both print a WARN;
+  silently ignoring either would make an ineffective filter look like a working one.
+- Both views take the same set, and `generate_html.collect_articles` skips an excluded topic
+  directory outright rather than filtering after the scan, so the page and the report cannot
+  disagree about what was excluded.
+- The key is registered in all four `configService` literals plus `bin`'s `configurableKeys`;
+  `test/config-keys.test.ts` asserts every key in that list is declared, defaulted, reset and
+  read back.
+
+## D-038: The source-level prior is recorded from real judgements, and acts on nothing
+
+**Status:** Active
+
+Every daily run appends `(source, topic)` counts for the articles it archived to
+`~/.weflow-cli/source_topics.json`. The run reports which sources are now stable and which of
+them publish a topic you exclude. It does **not** skip anything.
+
+**Reason:** the per-article judgement D-037 rejected is unreliable because its input is thin.
+There is a second signal, but only after the fact: every archived article has a topic decided
+from its **body**, so a source's history answers what a title cannot. That table has to be
+measured rather than authored - a hand-written source-to-topic map would be a guess wearing a
+table's clothes, and D-037 exists because that guess was already measured at 60%. Recording is
+therefore a prerequisite for ever making the skip decision, not the decision itself.
+
+**Consequences and boundaries:**
+- Counts are **append-only**: cumulative counts are the only evidence for "this account is
+  stable", and pruning them destroys the basis for a later decision. A failed write reports the
+  OS error and leaves the run alone - the table is auxiliary data and must not fail a day's
+  daily - but it does report, since a silent failure looks exactly like a table that is growing.
+- Only articles that landed on disk are recorded (matched against `written_urls`), so the table
+  and `output/` describe the same corpus and can be reconciled later. This was a real trap:
+  `topic_groups` is rebuilt for the briefing as topic-to-strings before the end of the run, so
+  recording from it produces an empty table.
+- The file holds 公众号 names, so it lives outside the repository; a test asserts the path is
+  under the home directory and not under the repo. It follows `CONFIG_PATH` at call time, so
+  tests - and any future multi-profile setup - can point it at a temporary directory.
+- `stable_source_topic` returns `None` for "not enough history yet" as distinct from "no topic".
+  The distinction is the point: `None` read as a default topic would skip a source precisely
+  because it is unknown, which is the worst failure this feature has.
+- Thresholds (8 samples, 80% share) are **provisional and uncalibrated**, chosen so the first
+  weeks of data cannot produce a confident wrong answer. Whether a stable source is ever skipped
+  before the fetch remains the user's decision; the numbers are printed each run so it can be
+  made on data rather than on a promise.
+
+## D-039: The daemon confirms at the parent, and reports a child that dies
+
+**Status:** Active
+
+`assistant start` spawns `assistant run` detached. The spawn now passes `--yes`, and
+`startDaemon` observes the child for a short window before reporting success. A dead env marker
+(`WEFLOW_ASSISTANT_DAEMON`) was deleted.
+
+**Reason:** the child was spawned without `--yes`, while `assistant run` confirms through
+`inquirer` - and the daemon gives it `stdin: 'ignore'`, so nobody could ever answer. The child
+died on the prompt (or later, on the missing channel login) while the parent printed
+「✓ 守护进程已启动 (pid …)」 and wrote the pid file. On the machine this was developed against,
+`~/.weflow-cli/` had **no `assistant.log` and no `assistant.pid` at all**: the documented
+`assistant start` flow had never once completed. The env marker that appeared to handle this
+was read by nothing, and was constructed as an env *key* containing `=` (`'…=1'`), so it could
+not have worked even if something read it - a dead mechanism that made the path look guarded.
+
+**Consequences and boundaries:**
+- Confirmation stays **at the parent**: a human typed `assistant start` (or a machine passed
+  `--json --yes`). The child inherits that decision as an explicit argument, not as an ambient
+  env var - an env-var-based bypass would be inherited by every grandchild process, which is
+  exactly the shape the repo's permission rules avoid.
+- The failure is now **observed, not assumed**: the child is watched for `SETTLE_MS` (default
+  700 ms) and a child that has already exited is reported with its exit code and the tail of the
+  daemon log, and **no pid file is written** - writing one would be a claim that it is running.
+- A spawn `'error'` event is now handled; without a listener Node turns it into an uncaught
+  exception in the caller.
+- Verified live: `assistant start` on this machine now says
+  `子进程启动后立即退出 (code 1)；日志尾部: Error: 未登录消息通道, 先运行 weflow-cli login-wechat`.
+  The fix did not break the daemon - it made a broken state visible.
+- The daemon runs `dist/bin/weflow-cli.js` **when it exists**, so source changes need
+  `npm run build` before the daemon reflects them. That precedence is a live operational trap,
+  now written down in OPERATIONS.md.
+- Untested and left untested: the daily quota (`100 条/天`) and the whole `start()` message
+  loop, because both require a logged-in WeChat channel. The per-message logic is covered by a
+  synthetic harness instead (stubbed `callLLM`, local-only tools).
+
+## D-040: The fetch guard is a denylist of known forms, and it says so
+
+**Status:** Active
+
+`assistantTools.isSafeUrl` decides whether the assistant may fetch a URL found in a favourite.
+It is now covered by tests, and two real holes were found and closed: IPv6 forms were not
+handled at all (`[::ffff:127.0.0.1]` - an IPv4-mapped loopback - as well as `[fd00::1]` and
+`[fe80::1]` were **allowed**), while the private-range regexes were matched against any
+hostname, so a legitimate public domain such as `10.example.com` was refused.
+
+**Reason:** the guard runs immediately before a `fetch` made by a process that also holds the
+local database handle, and its failure mode is silent in both directions - a bypass reaches
+loopback or a cloud metadata address, and an over-block merely looks like a broken link
+(`(链接不安全, 拒绝抓取: …)`). Neither raises. Testing it was the only way to find out which
+direction it was wrong in; the measurement also settled an assumption: Node's URL parser
+normalises integer IPv4 forms (`2130706433`, `0x7f000001`) to `127.0.0.1` **before** this
+function sees them, so the dotted-quad check already covered them - that is now a test rather
+than a belief.
+
+**Consequences and boundaries:**
+- IPv6 is handled by prefix: `::`, `::1`, `::ffff:` (IPv4-mapped), `fc00::/7` (unique-local),
+  `fe80::/10` (link-local) are refused. `[0:0:0:0:0:0:0:1]` arrives already normalised to
+  `[::1]`.
+- The dotted-quad private-range checks now apply **only when the hostname really is four
+  dotted octets**, which is what stops `10.example.com` from being caught by `^10\.`.
+- This is a denylist of known forms, **not a proof that an address is publicly routable**.
+  NAT64 (`64:ff9b::/96`) and similar mappings are not covered. The comment in the code says so,
+  so nobody reads the guard as a stronger guarantee than it is.
+- The pure helpers (`isSafeUrl`, `stripTags`, `extractText`, `extractFromChallengePage`) are
+  exported for testing. They take strings and return strings - no side effects, no configuration.
 
 ## Decision Template
 

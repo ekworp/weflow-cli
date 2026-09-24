@@ -12,6 +12,7 @@ import importlib.util
 import io
 import sqlite3
 from pathlib import Path
+import hashlib
 import json
 import sys
 import types
@@ -161,6 +162,215 @@ class SerializableArticleTests(unittest.TestCase):
         self.assertEqual(entry['source'], '某号')
         self.assertEqual(entry['summary'], '摘要')
         self.assertEqual(entry['date'], '2026-09-05')
+
+
+class FetchCacheTests(unittest.TestCase):
+    """抓取缓存 = **断点续传**。
+
+    日报全有全无：要把当天文章全部抓完才写盘，抓取结果只在内存里。一天 400 篇光抓取
+    就一个多小时，任何中断都会让前面的抓取全部作废（2026-09-22 实测停在 105/403，
+    什么都没写出来）。按 URL 缓存正文之后，重跑只抓缺的那些。
+    """
+
+    HTML = ('<html><body><div id="js_content"><p>' + ('足够长的正文内容。' * 20) +
+            '</p></div></body></html>')
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(biz, 'FETCH_CACHE_DIR', self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # fetch_article 失败会重试（3s/6s 退避）——夹具必须桩掉，否则一个失败的用例
+        # 要跑 9 秒（第一版就吃了这个）。
+        sleeper = patch.object(biz.time, 'sleep')
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+        self.network = []
+
+    def serve(self, html=None):
+        # 注意 `payload` 在类外算好：`Resp.read` 里的 `self` 是 Resp 实例，
+        # 不是测试用例——写成 `self.HTML` 会 AttributeError（第一版就是这么错的）。
+        payload = (html if html is not None else self.HTML).encode()
+
+        class Resp:
+            def __init__(self):
+                self.headers = {}      # fetch_article 会读 Content-Encoding（gzip 那次改动）
+
+            def read(self, size=None):
+                return payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            self.network.append(request.full_url)
+            return Resp()
+
+        patcher = patch.object(biz.urllib.request, 'urlopen', fake_urlopen)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_miss_fetches_and_stores(self):
+        self.serve()
+        body, cached = biz.fetch_article_cached('https://mp.weixin.qq.com/s/a')
+        self.assertFalse(cached)
+        self.assertIn('足够长的正文内容', body)
+        self.assertEqual(len(self.network), 1)
+        self.assertEqual(len(list(Path(self.tmp.name).glob('*'))), 1)
+
+    def test_a_hit_does_not_touch_the_network(self):
+        """这条是断点续传的全部价值：第二次跑**一个请求都不发**。"""
+        self.serve()
+        biz.fetch_article_cached('https://mp.weixin.qq.com/s/a')
+        self.network.clear()
+        body, cached = biz.fetch_article_cached('https://mp.weixin.qq.com/s/a')
+        self.assertTrue(cached)
+        self.assertEqual(self.network, [])
+        self.assertIn('足够长的正文内容', body)
+
+    def test_a_different_url_is_a_different_cache_entry(self):
+        self.serve()
+        biz.fetch_article_cached('https://mp.weixin.qq.com/s/a')
+        self.network.clear()
+        _b, cached = biz.fetch_article_cached('https://mp.weixin.qq.com/s/b')
+        self.assertFalse(cached)
+        self.assertEqual(len(self.network), 1)
+
+    def test_a_failure_is_not_cached(self):
+        """失败不落盘，下次照旧重试——把失败缓存起来等于永久记住一次抖动。"""
+        self.serve(html='<html><body>没有正文节点</body></html>')
+        body, cached = biz.fetch_article_cached('https://mp.weixin.qq.com/s/c')
+        self.assertIsNone(body)
+        self.assertFalse(cached)
+        self.assertEqual(list(Path(self.tmp.name).glob('*')), [])
+
+    def test_use_cache_false_refetches_over_an_existing_entry(self):
+        self.serve()
+        biz.fetch_article_cached('https://mp.weixin.qq.com/s/a')
+        self.network.clear()
+        _b, cached = biz.fetch_article_cached('https://mp.weixin.qq.com/s/a', use_cache=False)
+        self.assertFalse(cached)
+        self.assertEqual(len(self.network), 1)
+
+    def test_an_empty_cache_file_is_treated_as_a_miss(self):
+        self.serve()
+        path = Path(self.tmp.name) / (hashlib.md5(b'https://mp.weixin.qq.com/s/a').hexdigest() + '.md')
+        path.write_text('   ', encoding='utf-8')
+        _b, cached = biz.fetch_article_cached('https://mp.weixin.qq.com/s/a')
+        self.assertFalse(cached)
+        self.assertEqual(len(self.network), 1)
+
+
+class SummaryPromptTests(unittest.TestCase):
+    """Jev 判过时给 LLM 的提示词不再要分类字段——省的是**白写的 token**。
+
+    原来无论谁判，提示词都把【主题】【相关度】连"六类判据 + 三档定义"一起塞进去，
+    而 Jev 那条路上这两个答案是丢掉的：每篇约 20 个输出 token + 约 300 个输入 token。
+    一天 400 篇就是十万量级的纯浪费。
+
+    但**摘要要求那一段必须与完整提示词逐字相同**——只许去掉分类那几段，
+    否则生成的摘要/标签会跟着变，那就不是"省 token"而是"换了产物"。
+    """
+
+    ARTICLE = {'title': '标题', 'account_name': '某号', 'fetched_md': '正文' * 100}
+
+    def test_the_shared_summary_rules_are_identical_in_both_prompts(self):
+        """防漂移：这段抄了两份，就必须断言它们一样（同 `TOPIC_ORDER` 那份的做法）。"""
+        def block(text):
+            start = text.index('**摘要要求**：')
+            end = text.index('返回格式（严格）：')
+            return text[start:end]
+        self.assertEqual(block(biz.TOPIC_PROMPT), block(biz.SUMMARY_ONLY_PROMPT))
+
+    def test_judged_prompts_drop_the_classification_fields(self):
+        slim, mt = biz.summary_prompt_for(self.ARTICLE, '', judged=True)
+        self.assertNotIn('【主题】', slim)
+        self.assertNotIn('【相关度】', slim)
+        self.assertIn('【标签】', slim)          # 标签仍要生成
+        self.assertIn('【概念】', slim)
+        self.assertEqual(mt, 2000)
+        # 真的更短：判据表（六类）不在了
+        full, _ = biz.summary_prompt_for(self.ARTICLE, '', judged=False)
+        self.assertLess(len(slim), len(full))
+
+    def test_unjudged_prompts_are_byte_identical_to_the_old_behaviour(self):
+        """回退路径（`--classifier llm`、或单篇 Jev 失败）不能换标准。"""
+        prompt, mt = biz.summary_prompt_for(self.ARTICLE, '', judged=False)
+        expected = (biz.TOPIC_PROMPT + '\n\n标题：标题\n来源：某号'
+                    + '\n\n内容：\n' + self.ARTICLE['fetched_md'][:4000])
+        self.assertEqual(prompt, expected)
+        self.assertEqual(mt, 2000)
+
+    def test_a_category_hint_still_wins_over_judged(self):
+        # 人工配了类别的来源，提示词本来就是"只要摘要"，与是否判过无关。
+        prompt, mt = biz.summary_prompt_for(self.ARTICLE, '学术', judged=True)
+        self.assertIn('来源类别已经确定为「学术」', prompt)
+        self.assertEqual(mt, 1000)
+
+    def test_the_choice_is_per_article_not_per_batch(self):
+        """一篇 Jev 判过、一篇判失败：必须各用各的提示词。
+
+        整批一刀切的话，判失败的那篇就拿不到【主题】/【相关度】的兜底。
+        """
+        seen = []
+
+        def fake_call_ai(prompt, engine, api_key, max_tokens=2000):
+            seen.append(prompt)
+            return '【摘要】x【标签】a'
+
+        import _utils
+        with patch.object(_utils, 'call_ai', fake_call_ai):
+            with patch.object(biz.time, 'sleep'):
+                biz._summarise_articles_parallel(
+                    [dict(self.ARTICLE), dict(self.ARTICLE)], 'deepseek', 'k',
+                    decisions={0: {'topic': 'AI'}})
+        self.assertEqual(len(seen), 2)
+        self.assertNotIn('【主题】', seen[0])      # 判过的：精简
+        self.assertIn('【主题】', seen[1])         # 没判的：完整
+
+
+class NoSummaryModeTests(unittest.TestCase):
+    """`--no-summary`：只要判断、不要生成。
+
+    这条路的卖点是"不调 LLM 也能有分类"，所以两件事必须成立：**判定函数不再要求
+    LLM key**，以及**产物里不出现任何假装是摘要的东西**（空标题像"生成失败"，
+    本地 digest 冒充摘要则更糟）。
+    """
+
+    def test_the_plan_no_longer_requires_an_llm_key(self):
+        """没有 DeepSeek key 时，`--no-summary` 下 Phase 2 仍要跑（因为要判断）。
+
+        改之前这里是 `skip`——那会让"只用 Jev 分类"静默变成"整段不跑"。
+        """
+        self.assertEqual(biz.classifier_plan(False, 'auto', '', 'deepseek', needs_llm=False),
+                         'jev')
+        self.assertEqual(biz.classifier_plan(False, 'llm', '', 'deepseek', needs_llm=False),
+                         'llm')
+
+    def test_the_plan_still_skips_under_no_ai(self):
+        # 总闸优先：--no-ai 时哪怕 --no-summary 也给 skip（两处一起给也一样）。
+        for needs_llm in (True, False):
+            with self.subTest(needs_llm=needs_llm):
+                self.assertEqual(
+                    biz.classifier_plan(True, 'auto', 'key', 'deepseek', needs_llm=needs_llm),
+                    'skip')
+
+    def test_needing_an_llm_key_is_still_the_default(self):
+        # 别把默认改掉了：正常模式下没有 key 就是整段不跑。
+        self.assertEqual(biz.classifier_plan(False, 'auto', '', 'deepseek'), 'skip')
+
+    def test_no_summary_means_no_summary_section_in_the_markdown(self):
+        """没有摘要就不写那一段——空标题像"生成失败"，digest 冒充摘要更糟。"""
+        self.assertEqual(biz.summary_section(''), '')
+        self.assertEqual(biz.summary_section(None), '')
+        self.assertEqual(biz.summary_section('   \n  '), '')
+        self.assertIn('## AI 摘要', biz.summary_section('一段摘要'))
+        self.assertIn('一段摘要', biz.summary_section('一段摘要'))
 
 
 class SummaryPrefetchTests(unittest.TestCase):

@@ -438,6 +438,51 @@ weflow-cli config set typesafeApiKey "..."   # 机器绑定加密保存，和 de
 weflow-cli config set typesafeApiKey ""      # 清空即回到 LLM 解析路径
 ```
 
+### 不想看某一类：排除主题
+
+```powershell
+weflow-cli config set dailyExcludeTopics "新闻,投资,学术"   # 留空即不排除
+weflow-cli config set dailyExcludeTopics ""
+```
+
+**这是展示层开关，不是抓取层的**：正文照常抓取、照常归档，只是不出现在日报报告和
+日报页里。所以改主意不用重抓——改配置重新生成一遍就行。
+
+为什么不做成"拉之前就判类型、不想要的不拉"：实测过，拉之前只有来源+标题+平台摘要，
+按它判类型和你配的来源类别一致率只有 60%（217 篇里 48 篇误伤），而且**排除不可逆**——
+没抓就没归档，而公众号页隔几周再看已不是同一篇。宁可多看一眼，不可丢掉一篇。
+
+几条边界，写下来免得踩：
+
+- 写错主题名会被忽略，但会**打一行 WARN**（静默忽略会让人以为过滤生效了）；
+- **焦点主题（AI）不能排除**：排掉它不会得到空报告，而会得到一份会走错方向的报告——
+  没有文章时它报的是"未找到文章，请先运行 biz_daily.py"。同样 WARN 后忽略；
+- 排除和 `--include-all`、收录分是**正交**的：任何参数组合都不会把排掉的类带回来；
+  报告末尾"我拿不准的"那三份清单也一起过滤，不会一边说不要新闻、一边在下面列新闻。
+
+单个脚本上想临时看一次（不动配置）：
+
+```powershell
+python scripts/generate_ai_report.py --date 2026-09-05 --exclude-topics "新闻,投资"
+python scripts/generate_html.py --date 2026-09-05 --exclude-topics "新闻,投资"
+```
+
+### 来源级先验：哪个号一贯发哪一类
+
+日报跑完会在本地累加一张表（**仓库外**，`~/.weflow-cli/source_topics.json`）：每个公众号
+被判断过多少篇、各属于哪一类。跑完会打两行，其中一行点名"已经稳到能判、且正好是你不
+想看的那些类"的来源：
+
+```
+来源先验: 今天记了 187 篇，表里共 42 个来源（~/.weflow-cli/source_topics.json）
+来源先验: 这些来源已经稳到能判，且正落在你配的排除主题里（只报数，不跳过）:
+    某某号 → 新闻（24 篇里 23 篇 = 96%）
+```
+
+**它只报数，不跳过任何东西**：跳过是不可逆的，而这张表还在长。等某个来源攒够样本
+（默认 8 篇、单一类占比 ≥80%）再由你决定要不要拿它做拉取前的筛选。计数只增不减——
+它是你事后判断"这号稳不稳"的唯一依据。
+
 - 相关度会写进 frontmatter 的 `relevance`（仍是「高/中/低」三个字），并额外写入
   `relevanceScore`（原始分值）与 `topicConfidence`（主题的置信度）。那三档的切点是
   暂定的，原始分留着，将来重新校准时不用重跑历史日报。
@@ -453,6 +498,7 @@ weflow-cli config set typesafeApiKey ""      # 清空即回到 LLM 解析路径
 - 分类要把文章标题与正文发往 `api.typesafe.ai`——和生成摘要发给 DeepSeek 是同一类动作，
   想完全不出网就用 `weflow-cli daily --no-ai`。
 - 排查用 `python scripts/biz_daily.py --date <日期> --classifier llm`（强制老路径）对比。
+- 只要判断、不要生成（连 DeepSeek key 都不需要）：`weflow-cli daily --no-summary`。摘要/标签/简报一律不生成，md 里不会有 `## AI 摘要` 段；主题与相关度仍由 Jev 判断。流水线里下游步骤（行动建议/概念编译/AI 报告）仍会用 LLM，要全关再加 `--skip-classify --skip-wiki --skip-ai-report`。
 
 启动指定日期阅读器：
 
@@ -481,7 +527,71 @@ weflow-cli assistant start
 weflow-cli assistant status
 ```
 
+### 助手能读到多少：隐私三档，以及本地引擎这个例外
+
+| `assistantPrivacy` | 工具拿到的聊天正文 | 出境 |
+| --- | --- | --- |
+| `strict`（默认） | 换成 `[内容N字已按严格模式屏蔽]` | 不出 |
+| `balanced` | **原文**，但电话/证件/邮箱/密钥/链接被打成 `[电话]` 这类占位 | 出（到当前模型） |
+| `open` | 原文，什么都不打 | 出 |
+
+**换本地引擎时严格模式的屏蔽会自动让路**：`aiEngine=ollama` 或 `lmstudio` 时数据不出机器，
+`maskMessageBodyText` 直接返回原文，不需要动 `assistantPrivacy`。所以"我想让它读得到聊天内容，
+但又不想把内容发出去"的正解是**换引擎**，不是降档——降档等于把原文交给第三方。
+
+```powershell
+weflow-cli config set assistantPrivacy balanced   # 降档（正文会出境，PII 打码）
+weflow-cli config set aiEngine ollama             # 或换本地引擎（内容不出机器）
+```
+
+在微信里发「**隐私**」可以随时问出当前档位、工具实际拿到的是原文还是被屏蔽、以及该执行哪条命令
+（它只报不改——**不让一条微信消息能改隐私档位**，那等于把隐私开关搬进对话里）。
+
+**改完必须重启助手**：配置是**启动时**读进进程内存的（`configService.get` 不回读磁盘），
+所以对一个正在跑的助手，外部 `config set` 不生效——`assistant stop` 再 `assistant start`。
+
 助手默认拒绝所有发送者，需明确设置 `assistantWhitelist`。群聊还需要群白名单、成员白名单和 @ 门槛；项目不通过客户端自动化或非官方协议拉群。
+
+**第一次启用**：扫码一次，剩下的它会告诉你。
+
+1. `weflow-cli login-wechat` —— 扫码登录消息通道（这一步只能人来做：iLink 只有扫码这一条官方登录路）；
+2. `weflow-cli assistant start`；
+3. 从你的微信给机器人发一条消息。**助手会拒绝它**（白名单为空 = 拒绝所有人），但日志里会出现一行
+   `[首次配置]`，带着**你自己的发送者 ID** 和该执行的那条 `config set assistantWhitelist` ——
+   照抄执行即可。之后它就开始回话了。
+
+为什么不让登录自己把白名单写好：登录响应给的是 `ilink_user_id`，而白名单要的是入站消息里的
+`from_user_id`（文档里写成 `@im.wechat ID`），**这两者是不是同一个值这个仓库里没有任何东西验证过**。
+猜错的后果是"白名单非空、看着配好了、却仍然拒你"，而且提示也不会再出现（白名单已经不空了）——
+所以这里宁可多一次复制粘贴。真值在第 3 步那条消息里，它自己会来。
+
+想让助手先"只看不答"式地跑一段（记下它本来会怎么走，行为不改）：`config set assistantFastRoute log`。
+
+**启动前先确认两件事**，否则 `assistant start` 会如实地告诉你它起不来：
+
+1. **消息通道要已登录**（`weflow-cli login-wechat`）。没登录时子进程会退出，启动命令会把
+   退出码和日志尾部原样报出来：`子进程启动后立即退出 (code 1)；日志尾部: Error: 未登录消息通道…`。
+   这句话出现在终端里就说明机制是对的，**问题在通道，不在守护进程**。
+2. **改了源码要先 `npm run build`**。守护进程优先运行 `dist/bin/weflow-cli.js`，只要这个文件
+   存在就不会用 `bin/weflow-cli.ts`；不重建，守护进程跑的还是旧的编译产物。
+
+助手还有一个**默认关闭**的单轮快路径（D-035）：先用本机判断层问一次"这条要不要查本机数据、
+查哪一项"，把那个工具先跑掉，于是模型第一轮就看得到结果（两次往返变一次）。
+
+```powershell
+weflow-cli config set assistantFastRoute log   # 灰度：只记"本来会走哪条"，行为一个字不改
+weflow-cli config set assistantFastRoute on    # 打开
+weflow-cli config set assistantFastRoute off   # 关（默认）
+```
+
+灰度期看两个地方：`assistant log` 里的 `[快路径/只记] 路由到 X（...）`，以及
+`~/.weflow-cli/assistant_audit.log` 里的 `FASTROUTE_WOULD` / `FASTROUTE_SKIP`（回退时那行会写
+明原因：不需要查本机数据、置信度不足、能力名不认识…）。只有参数是固定集合的工具会被路由；
+像"总结一下我和某某的聊天"这种要点名某个人的，一律回退到原来的循环——这是刻意的，硬凑参数
+会让模型拿着不相关的结果自信作答。
+
+启动失败时**不会**留下 pid 文件 —— 写 pid 就等于对外宣称它在运行。排查用
+`weflow-cli assistant status`（不碰数据库）与 `weflow-cli assistant log`。
 
 ## 7. 常见问题
 

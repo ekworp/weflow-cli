@@ -31,7 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import (call_deepseek, load_config, decrypt_lock, get_api_key,
                     write_with_frontmatter, format_wikilinks,
                     TOPICS, TOPIC_CRITERIA, DEFAULT_TOPIC,
-                    RELEVANCE_NAMES, DEFAULT_RELEVANCE)
+                    RELEVANCE_NAMES, DEFAULT_RELEVANCE,
+                    excluded_topics, record_source_topics, load_source_topics,
+                    source_prior_candidates, source_topics_path)
 
 try:
     from sqlcipher3 import dbapi2 as sqlcipher
@@ -235,7 +237,7 @@ JEV_WORKERS = 6
 IMAGE_WORKERS = 6
 
 
-def classifier_plan(no_ai, classifier, deepseek_key, engine):
+def classifier_plan(no_ai, classifier, deepseek_key, engine, needs_llm=True):
     """这次日报用哪条判断路径。返回 `'skip' | 'jev' | 'llm'`。
 
     这是 D-031 那句"`--classifier` 是一条命令回滚"的**全部实现**——三条分支此前
@@ -245,12 +247,18 @@ def classifier_plan(no_ai, classifier, deepseek_key, engine):
     * `'jev'` 只是**意图**，不是结果——没有 key、或 key 解不开时，建客户端会失败，
       由调用方按 `classifier == 'jev'` 决定要不要告警，然后安静退回老路（`auto` 的语义）；
     * `'skip'` 让**整块 Phase 2 都不执行**：`--no-ai`，或 `dailyAiEnabled=false`
-      （那个配置项在更早处被折进 `no_ai`），或 deepseek 引擎但没 key。
+      （那个配置项在更早处被折进 `no_ai`）。
+
+    `needs_llm=False`（`--no-summary`：只要判断、不要生成）时，**不再要求 LLM key**——
+    那一层的 key 校验是为了调 LLM 生成摘要，而这条路上根本不生成。少了这一句，
+    "没有 DeepSeek key 也能只用 Jev 分类"这个诉求会静默变成"整段不跑"。
 
     单独成函数是为了能**离线枚举**这几种组合——它们决定"有没有数据出境"，
     不该只靠读代码确认。
     """
-    if no_ai or not (deepseek_key or engine != 'deepseek'):
+    if no_ai:
+        return 'skip'
+    if needs_llm and not (deepseek_key or engine != 'deepseek'):
         return 'skip'
     return 'jev' if classifier in ('auto', 'jev') else 'llm'
 
@@ -314,12 +322,16 @@ SUMMARY_WORKERS = 6
 SUMMARY_SECONDS_PER_ARTICLE = 2.5
 
 
-def summary_prompt_for(article, category_hint):
-    """这一篇要发的提示词与 `max_tokens`。跟着 `category_hint` 走两条不同分支。
+def summary_prompt_for(article, category_hint, judged=False):
+    """这一篇要发的提示词与 `max_tokens`。
 
-    抽出来是为了让"取摘要"能并发：配了类别的来源用短提示词（`max_tokens=1000`），
-    其余的用完整提示词（`2000`）。两条分支的文本与串行版本逐字相同——搬动的是
-    **调用位置**，不是内容。
+    三条分支：
+    * 配了类别的来源 → 短提示词（只要摘要，`max_tokens=1000`）；
+    * `judged=True`（Jev 已经判过这一篇）→ `SUMMARY_ONLY_PROMPT`，不再要它写主题/相关度；
+    * 其余（`--classifier llm`，或单篇 Jev 失败退回来的）→ 完整的 `TOPIC_PROMPT`，
+      **与旧行为逐字节一致**，回退路径不能换标准。
+
+    抽出来是为了让"取摘要"能并发：搬动的是**调用位置**，不是内容。
     """
     content = article.get('fetched_md') or article.get('local_text', '')
     if category_hint:
@@ -331,12 +343,14 @@ def summary_prompt_for(article, category_hint):
 
 正文：
 {content[:4000]}''', 1000)
-    prompt = TOPIC_PROMPT + f'\n\n标题：{article["title"]}\n来源：{article["account_name"]}'
+    base = SUMMARY_ONLY_PROMPT if judged else TOPIC_PROMPT
+    prompt = base + f'\n\n标题：{article["title"]}\n来源：{article["account_name"]}'
     prompt += f'\n\n内容：\n{content[:4000]}'
     return prompt, 2000
 
 
-def _summarise_articles_parallel(articles, engine, api_key, workers=SUMMARY_WORKERS):
+def _summarise_articles_parallel(articles, engine, api_key, workers=SUMMARY_WORKERS,
+                                 decisions=None):
     """把每篇的 LLM 调用先并发跑完，返回与 `articles` 等长的 `(response, error)`。
 
     **只有网络等待是并发的**：调用方仍按原顺序串行地解析与落字段，所以每篇的写入
@@ -360,7 +374,11 @@ def _summarise_articles_parallel(articles, engine, api_key, workers=SUMMARY_WORK
 
     def one(index):
         article = articles[index]
-        prompt, max_tokens = summary_prompt_for(article, article.get('source_category', ''))
+        # 逐篇判断，不是整批一刀切：Jev 判过的那篇用精简提示词，判失败的仍用完整提示词
+        # （它要靠 LLM 的【主题】/【相关度】兜底）。
+        judged = bool((decisions or {}).get(index))
+        prompt, max_tokens = summary_prompt_for(article, article.get('source_category', ''),
+                                               judged=judged)
         try:
             return index, call_ai(prompt, engine, api_key, max_tokens=max_tokens), None
         except Exception as exc:            # 交给调用方那条原有的 except 分支
@@ -408,6 +426,29 @@ TOPIC_PROMPT = f"""对文章分类、深度摘要、打标签，并评估与读�
 返回格式（严格）：
 【主题】AI
 【相关度】高
+【标签】tag1, tag2, tag3
+【摘要】【核心观点】一句话。【关键细节】1. 要点一；2. 要点二；3. 要点三
+【概念】概念名|一句话说明, 概念名|一句话说明"""
+
+# Jev 已经判过主题与相关度时，给 LLM 的提示词改成这一份：**不再要它输出那两个字段**。
+#
+# 原来无论谁判，提示词都把【主题】【相关度】连"六类判据 + 三档定义"一起塞进去，
+# 而 Jev 那条路上这两个答案是白写的——每篇约 20 个输出 token，加上那几段判据约
+# 300 个输入 token，一天 400 篇就是十来万 token 的纯浪费。
+#
+# **摘要要求那一段与 `TOPIC_PROMPT` 逐字相同**（有测试钉住）——只动分类那几段，
+# 生成的摘要/标签/概念不受影响。`--classifier llm`、以及单篇 Jev 失败退回来的那些，
+# 仍然用完整的 `TOPIC_PROMPT`，回退路径与旧行为逐字节一致（D-031 的约束）。
+SUMMARY_ONLY_PROMPT = f"""为文章写深度摘要、打标签，并抽取概念。
+
+【读者定位】环境科学研究生，研究方向是计算机与环境的交叉领域（环境模型、大气污染模拟、遥感反演、环境大数据分析、LCA等），关注AI工具如何提升科研效率。
+
+**摘要要求**：
+- 【摘要】写一段完整的深度摘要（150-300字），不要只写一两句
+- 格式：【核心观点】一句话概括中心思想。【关键细节】列出3-5个具体要点（工具/方法/数据/结论/人物/事件等），每个要点一句话
+- 摘要不需要包含分类/相关度/标签信息，那些由上面的字段处理
+
+返回格式（严格）：
 【标签】tag1, tag2, tag3
 【摘要】【核心观点】一句话。【关键细节】1. 要点一；2. 要点二；3. 要点三
 【概念】概念名|一句话说明, 概念名|一句话说明"""
@@ -498,6 +539,16 @@ def _decode_body(raw: bytes, content_encoding: str) -> str:
     return raw.decode('utf-8', errors='ignore')
 
 
+def summary_section(summary):
+    """md 正文里的摘要段。**空就不写这一段**（`--no-summary` 就是这种情况）。
+
+    为什么要单独一条规则：没有摘要时，把标题写上去会看起来像"摘要生成失败"，而用
+    本地 digest 顶上又会看起来像 AI 写的摘要——两者都是把不存在的东西说成存在。
+    判据用"去空白后非空"，顺带挡住空串与纯空白。
+    """
+    return f'## AI 摘要\n\n{summary}\n\n' if str(summary or '').strip() else ''
+
+
 def fetch_article(url: str, max_retries: int = 3) -> str | None:
     """Fetch WeChat article with WeChat browser UA to bypass WAF.
     Retries up to max_retries times if content is too short."""
@@ -586,6 +637,41 @@ def fetch_article(url: str, max_retries: int = 3) -> str | None:
             pass
     print(f'  [WARN] 抓取失败: {last_result} (scrapling 未安装，无 fallback)')
     return None
+
+
+FETCH_CACHE_DIR = os.path.join(SCRIPT_DIR, 'output', '.cache', 'fetch')
+
+
+def fetch_article_cached(url: str, use_cache: bool = True) -> tuple[str | None, bool]:
+    """抓正文，带本地缓存。返回 `(markdown 或 None, 是否命中缓存)`。
+
+    **为什么需要它**：日报是**全有全无**的——要把当天的文章**全部抓完**才进 Phase 3
+    写盘，抓取结果只存在内存里。一天 400 篇光是抓取（10s/篇 + 8–12s 节流）就一个多
+    小时，任何中断（被收走、网络断、手滑）都会把前面的抓取全部作废。2026-09-22 那天
+    实测停在 105/403，什么都没写出来。
+    按 URL 缓存正文之后：**重跑只抓缺的那些**，也顺带让"改代码 / 换分类器 /
+    `--no-summary` 与正常模式之间切换"重跑同一天几乎免费。
+
+    **只缓存成功**：失败的下次照旧重试（`None` 不落盘）。
+    """
+    path = os.path.join(FETCH_CACHE_DIR, hashlib.md5(url.encode()).hexdigest() + '.md')
+    if use_cache and os.path.isfile(path) and os.path.getsize(path) > 0:
+        try:
+            with open(path, encoding='utf-8') as fh:
+                body = fh.read()
+            if body.strip():
+                return body, True
+        except OSError:
+            pass                      # 读不了就当没缓存，走网络
+    body = fetch_article(url)
+    if body and body.strip():
+        try:
+            os.makedirs(FETCH_CACHE_DIR, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(body)
+        except OSError:
+            pass                      # 缓存写不进去不该让这一天的日报失败
+    return body, False
 
 
 def _download_one_image(url: str, local_path: Path) -> bool:
@@ -766,6 +852,11 @@ def main():
     parser.add_argument('--api-key', help='AI API key (或设环境变量 DEEPSEEK_API_KEY)')
     parser.add_argument('--engine', default='deepseek', help='AI 引擎: local/deepseek/claude/ollama')
     parser.add_argument('--no-ai', action='store_true', help='关闭摘要、分类和日报简报的 AI 调用')
+    parser.add_argument('--no-fetch-cache', action='store_true',
+                        help='忽略正文抓取缓存，强制重新抓取（默认命中缓存，用于续跑与重跑）')
+    parser.add_argument('--no-summary', action='store_true',
+                        help='只要判断、不要生成：完全跳过 LLM 调用（摘要/标签/概念/简报），'
+                             '主题与相关度仍由 Jev 判断；因此**不需要 DeepSeek key**')
     parser.add_argument('--classifier', choices=['auto', 'llm', 'jev'], default='auto',
                         help='主题/相关度由谁判断：auto=配了 TypeSafe key 就用 Jev（默认），'
                              'llm=沿用 LLM 解析路径，jev=强制 Jev')
@@ -794,7 +885,9 @@ def main():
     # API key — only required for cloud engines
     engine = args.engine or 'deepseek'
     api_key = args.api_key or os.environ.get('DEEPSEEK_API_KEY', '') or get_api_key(config)
-    if not args.dry_run and engine in ('deepseek', 'claude') and not api_key:
+    # `--no-summary` 下不生成任何文字，也就不需要 LLM key——这条校验是"要调 LLM"的前提，
+    # 不是"要跑 Phase 2"的前提。不改这一句，"没有 DeepSeek 也能只用 Jev 分类"会被它挡死。
+    if not args.dry_run and not args.no_summary and engine in ('deepseek', 'claude') and not api_key:
         print(f'[ERROR] --engine {engine} 需要 API key。请通过 --api-key、环境变量或配置文件提供')
         sys.exit(1)
     # Auto-detect local engine if no api_key and engine is deepseek
@@ -920,36 +1013,51 @@ def main():
 
     # ====== Phase 1: Fetch all articles ======
     print(f'=== Phase 1: 抓取 {len(articles)} 篇文章 ===\n')
+    cache_hits = 0
     for i, a in enumerate(articles):
         t, n, ti = a['time'], a['account_name'], a['title']
         print(f'[{i+1}/{len(articles)}] [{t}] {n} - {ti[:50]}')
 
         if a['url']:
             delay = FETCH_DELAY_MIN + random.random() * (FETCH_DELAY_MAX - FETCH_DELAY_MIN)
-            md = fetch_article(a['url'])
+            md, cached = fetch_article_cached(a['url'], use_cache=not args.no_fetch_cache)
             if md:
                 a['fetched_md'] = md
-                print(f'  OK ({len(md)}字, {delay:.1f}s)')
+                if cached:
+                    cache_hits += 1
+                    print(f'  OK ({len(md)}字, 缓存)')
+                else:
+                    print(f'  OK ({len(md)}字, {delay:.1f}s)')
             else:
                 print(f'  FAIL, 回退本地缓存')
-            time.sleep(delay)
+            # **命中缓存就不睡**：节流是为了少打扰上游，而缓存命中根本没有请求。
+            # 这也正是"重跑快"的来源——续跑那部分几乎是瞬时的，且与节流同向。
+            if not cached:
+                time.sleep(delay)
         elif a.get('local_text'):
             print(f'  无URL, 使用本地缓存')
+
+    if cache_hits:
+        print(f'  抓取完成：{len(articles) - cache_hits} 篇走网络，'
+              f'{cache_hits} 篇命中本地缓存（少发 {cache_hits} 次请求）')
 
     # ====== Phase 2: AI summary + topic classification ======
     # **实际服务我们的判断模型**（如 `jev-1.13.0`），不是请求的别名（`jev-latest`）。
     # 别名会漂：今天跑的和测过的可能不是同一个东西，而结果看起来一切正常。落盘它，
     # 是为了让这件事**可见**。（没走 Jev 时保持 None，如实表示"没用判断模型"。）
     decision_model = None
-    plan = classifier_plan(args.no_ai, args.classifier, api_key, engine)
+    plan = classifier_plan(args.no_ai, args.classifier, api_key, engine,
+                           needs_llm=not args.no_summary)
     if plan != 'skip':
-        print(f'\n=== Phase 2: AI 摘要 + 主题分类 (engine={engine}) ===\n')
+        stage = '只分类（--no-summary）' if args.no_summary else 'AI 摘要 + 主题分类'
+        print(f'\n=== Phase 2: {stage} (engine={engine}) ===\n')
         from _utils import call_ai
         from jev_client import create_client
         # 判断交给 Jev，生成留给 LLM。没配 key 就整条走老路（auto 的语义）。
         jev_client = create_client(config=config) if plan == 'jev' else None
         if jev_client is not None:
-            print(f'  分类：Jev（model={jev_client.model}，生成摘要仍用 {engine}）')
+            tail = '本次不生成摘要' if args.no_summary else f'生成摘要仍用 {engine}'
+            print(f'  分类：Jev（model={jev_client.model}，{tail}）')
         elif args.classifier == 'jev':
             print('  [WARN] --classifier jev 但没找到 TypeSafe key，本次退回 LLM 解析路径')
         # 先把分类并发跑完，再进串行的摘要循环。分类对摘要没有任何依赖，
@@ -957,11 +1065,31 @@ def main():
         decisions = _classify_articles_parallel(articles, jev_client, TOPICS)
         if jev_client is not None:
             decision_model = jev_client.last_model
-        # 先把每篇的 LLM 调用并发跑完，再进下面这个串行循环做解析与落字段。
-        # 解析是纯本地操作，并发的价值全在网络等待上；这样循环体本身不用重写，
-        # 每条兜底分支的行为也就与串行版本一致。
-        prefetched = _summarise_articles_parallel(articles, engine, api_key)
-        for i, a in enumerate(articles):
+        if args.no_summary:
+            # **只要判断、不要生成**：不调 LLM，也不留摘要。`prefetched = None` 让下面
+            # 那个串行循环整段跳过——它是围绕 LLM 响应写的，没有响应就没有它的事。
+            judged = 0
+            for i, a in enumerate(articles):
+                if _apply_decision(a, decisions.get(i)):
+                    judged += 1
+                # **明确写空**而不是留着不写：md 那条路的缺省是本地 digest、json 那条路
+                # 另有缺省，写空才能让两边都如实表示"没有摘要"，而不是拿平台摘要冒充。
+                a['summary'] = ''
+            print(f'  判出 {judged}/{len(articles)} 篇；未生成：摘要、标签、概念')
+            if jev_client is None:
+                print('  [WARN] 没有 TypeSafe key，本次**没有任何判断**——只抓取与归档，'
+                      '主题与相关度保持默认值')
+            prefetched = None
+        else:
+            # 先把每篇的 LLM 调用并发跑完，再进下面这个串行循环做解析与落字段。
+            # 解析是纯本地操作，并发的价值全在网络等待上；这样循环体本身不用重写，
+            # 每条兜底分支的行为也就与串行版本一致。
+            prefetched = _summarise_articles_parallel(articles, engine, api_key,
+                                                      decisions=decisions)
+        # `--no-summary` 时 prefetched 是 None，这个循环整段不跑（循环体是围绕 LLM
+        # 响应写的）。用变量而不是把循环体缩进进 if，是为了让 diff 只碰这一行。
+        pending = list(enumerate(articles)) if prefetched is not None else []
+        for i, a in pending:
             t, n, ti = a['time'], a['account_name'], a['title']
             content = a.get('fetched_md') or a.get('local_text', '')
             if content and len(content.strip()) > 50:
@@ -1165,7 +1293,7 @@ def main():
             if a['url']:
                 body_parts.append(f'> 原文：[阅读原文]({a["url"]})\n')
             body_parts.append('\n---\n\n')
-            body_parts.append(f'## AI 摘要\n\n{summary}\n\n')
+            body_parts.append(summary_section(summary))
 
             if concepts:
                 body_parts.append(format_wikilinks(concepts))
@@ -1273,7 +1401,9 @@ def main():
                 break
 
         highlight_text = '\n'.join(highlights[:25])
-        if highlight_text and not args.no_ai:
+        # `--no-summary` 同样跳过简报的 LLM 调用（它是"生成"）：落到下面那条由标题拼的
+        # 确定性兜底上。兜底路径本来就在（AI 失败时走它），所以这里不新增一种产物形状。
+        if highlight_text and not args.no_ai and not args.no_summary:
             try:
                 briefing_prompt = f"""你是公众号日报助手。基于今天 {len(all_articles)} 篇文章（{topic_summary}），生成一段200字以内的今日简报。
 
@@ -1378,6 +1508,32 @@ def main():
                     processed[fp] = art.get('title', '')[:50]
     with open(state_file, 'w', encoding='utf-8') as f:
         json.dump(processed, f, ensure_ascii=False, indent=2)
+
+    # === 来源级先验：把今天**真正归档了的**判断累加进本地表 ===
+    #
+    # 记"盘上真有的"（按 written_urls 对回来）而不是"抓过的"：这样这张表和 output/
+    # 里的语料一一对应，哪天想重算也重算得出来。
+    #
+    # 它**只记账，不跳过任何东西**。跳过是不可逆的，而这张表还在长；等某个来源
+    # 攒够了样本（见 _utils.SOURCE_PRIOR_MIN_SAMPLES），再决定要不要拿它做拉取前的筛。
+    pairs = [(a.get('account_name', ''), a.get('topic', '')) for a in articles
+             if a.get('url') and a['url'] in written_urls]
+    if pairs:
+        summary = record_source_topics(pairs)
+        if summary['error']:
+            # 说清楚"没写进去"：静默失败会让人以为表在长，实际一直没动。
+            print(f'  [WARN] 来源先验没写进去（{summary["error"]}）—— 不影响今天的日报')
+        else:
+            print(f'  来源先验: 今天记了 {summary["added"]} 篇，表里共 {summary["sources"]} 个来源'
+                  f'（{source_topics_path()}）')
+        exclude = excluded_topics(config)
+        rows = source_prior_candidates(load_source_topics(), exclude)
+        if rows:
+            print('  来源先验: 这些来源已经稳到能判，且正落在你配的排除主题里'
+                  '（只报数，不跳过）:')
+            for source, topic, ratio, total in rows[:5]:
+                print(f'    {source} → {topic}（{total} 篇里 {round(ratio * total)} 篇'
+                      f' = {ratio:.0%}）')
 
 
 if __name__ == '__main__':

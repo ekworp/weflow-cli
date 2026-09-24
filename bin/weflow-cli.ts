@@ -967,7 +967,9 @@ const configurableKeys = [
   'dashscopeApiKey', 'favPassphrase',
   'wereadApiKey',
   'assistantPrivacy', 'assistantWhitelist', 'assistantGroupWhitelist',
-  'assistantGroupRequireMention', 'dailySources', 'dailySourceCategories', 'dailyAiEnabled',
+  'assistantGroupRequireMention', 'assistantFastRoute',
+  'dailySources', 'dailySourceCategories',
+  'dailyExcludeTopics', 'dailyAiEnabled',
   'emoticonSeed',
 ] as const
 
@@ -1056,6 +1058,7 @@ configCmd
     console.log(`微信账号: ${config.wxid || chalk.gray('(未设置)')}`)
     console.log(`公众号日报来源: ${configService.get('dailySources') || chalk.gray('(全部公众号)')}`)
     console.log(`公众号日报 AI: ${configService.get('dailyAiEnabled') === 'false' ? '已关闭' : '已开启'}`)
+    console.log(`公众号日报排除主题: ${configService.get('dailyExcludeTopics') || chalk.gray('(不排除)')}`)
   })
 
 configCmd
@@ -1990,12 +1993,26 @@ program
       process.exit(1)
     }
     if (!opts.yes) {
-      const { confirmed } = await inquirer.prompt([{
-        type: 'confirm',
-        name: 'confirmed',
-        message: token ? '已有登录状态，确认启动重新登录吗？' : '确认启动人工扫码登录吗？',
-        default: false,
-      }])
+      // stdin 不是终端时（管道、计划任务、会话里的 `!` 前缀执行）inquirer 会抛 ExitPromptError——
+      // 屏幕上是一条堆栈而不是一句话。这里把它变成解释：扫码登录必须在真实终端里跑。
+      // 与守护进程那条 `--yes` 是同一类毛病：交互确认被塞进一个没人能回答的 stdin。
+      let confirmed = false
+      try {
+        const answer = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'confirmed',
+          message: token ? '已有登录状态，确认启动重新登录吗？' : '确认启动人工扫码登录吗？',
+          default: false,
+        }])
+        confirmed = !!answer.confirmed
+      } catch (error: any) {
+        if (error?.name === 'ExitPromptError' || /force closed the prompt/.test(String(error?.message))) {
+          console.log(chalk.yellow('当前环境没有可交互的终端。扫码登录必须在真实终端窗口里执行，'))
+          console.log(chalk.yellow('或者加 --yes 跳过这个确认（扫码那一步仍然要人来做）。'))
+          process.exit(1)
+        }
+        throw error
+      }
       if (!confirmed) {
         console.log(chalk.gray(token ? '保持当前登录状态' : '已取消'))
         return
@@ -2023,6 +2040,20 @@ program
       if (session.status === 'confirmed') {
         console.log(chalk.green('\n✓ 登录成功!'))
         console.log(chalk.gray('  消息通道登录状态已安全保存'))
+        // 助手的白名单为空时**拒绝所有人**：登录完对着自己的机器人说话，什么都不会回来。
+        // 所以这里必须说清"下一步该干什么"。
+        // 只打在人看的这条路上——`--json` 那条路照旧不返回账号标识。
+        console.log('')
+        console.log(chalk.cyan('  助手默认拒绝所有人（白名单为空）。'))
+        // 这里**不**替用户写白名单：登录响应给的是 ilink_user_id，而白名单要的是入站消息里
+        // 那个 from_user_id（文档里写成 <@im.wechat ID>），两者是不是同一个值**没有被验证过**
+        // ——猜错的后果是"白名单非空、看着配好了、却仍然拒你"。真值在第一条被拒的消息里，
+        // 所以让它自己现形（见 assistant log 的 [首次配置] 那行）。
+        console.log(chalk.gray('  启用方式：先 assistant start，从你的微信给机器人发一条消息，'))
+        console.log(chalk.gray('  日志里会出现一行 ' + chalk.cyan('[首次配置]')
+          + chalk.gray(' 带着你自己的发送者 ID 和该执行的命令。')))
+        console.log(chalk.gray('  只想先看它「本来会怎么答」而不改行为：')
+          + chalk.cyan('weflow-cli config set assistantFastRoute log'))
       } else {
         console.log(chalk.red(`\n✗ 登录失败: ${session.error || '超时'}`))
       }
@@ -3738,6 +3769,7 @@ program
         .option('--skip-html', '跳过 HTML 阅读器生成')
         .option('--skip-ai-report', '跳过 AI 深度阅读报告')
         .option('--no-ai', '关闭全部 AI 调用，保留抓取和本地输出')
+  .option('--no-summary', '只判断不生成：biz_daily 不调 LLM 写摘要/标签/简报（判断仍走 Jev）')
         .option('--ai-report-range <n>', 'AI 报告覆盖最近 N 天', '1')
         .option('--dry-run', '仅预览步骤，不读取聊天数据、调用网络或写入文件')
         .option('--yes', '确认运行流水线')
@@ -3820,6 +3852,7 @@ program
           if (opts.skipHtml) args.push('--skip-html')
           if (opts.skipAiReport) args.push('--skip-ai-report')
           if (noAi) args.push('--no-ai')
+          if (opts.noSummary && !noAi) args.push('--no-summary')
 
           try {
             if (!opts.json) console.log(chalk.cyan('\n启动端到端流水线...\n'))
@@ -5252,6 +5285,7 @@ program
   .option('--dry-run', '仅预览文章，不调用 AI 或写入日报')
   .option('--yes', '确认执行日报生成；JSON 模式需要此选项')
   .option('--no-ai', '关闭本次日报的所有 AI 处理')
+  .option('--no-summary', '只判断不生成：不调 LLM 写摘要/标签/简报（主题与相关度仍由 Jev 判断），无需 DeepSeek key')
   .option('--json', '输出机器可读的最终结果；运行日志写入 stderr')
   .action(async (opts) => {
     const { spawn } = await import('child_process')
@@ -5284,6 +5318,8 @@ program
     const runPipeline = (targetDate: string): Promise<number> => new Promise((resolve) => {
       const args = [pipeline, '--date', targetDate, '--engine', noAi ? 'local' : 'deepseek', '--interest', 'AI', '--skip-wiki']
       if (noAi) args.push('--no-ai')
+      // 与 --no-ai 不同：这一条保留判断（Jev），只关掉 LLM 的文字生成。
+      if (opts.noSummary && !noAi) args.push('--no-summary')
       for (const source of opts.source || []) args.push('--source', source)
       if (opts.skipClassify) args.push('--skip-classify')
 
@@ -5488,7 +5524,7 @@ assistantCmd
       process.exit(1)
     }
     const { startDaemon } = await import('../src/services/assistantDaemon.js')
-    const r = startDaemon()
+    const r = await startDaemon()
     if (opts.json) {
       console.log(JSON.stringify(r.started
         ? { success: true, started: true, pid: r.pid, ...preview }

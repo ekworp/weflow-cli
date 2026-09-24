@@ -8,6 +8,7 @@
  *     └─ 隐私关卡: 工具结果脱敏后才出境到云端 LLM (本地引擎则完全不出境)
  */
 import { WechatMessageService } from './wechatMessageService.js'
+import { decideRoute, type FastRouteMode } from './assistantRouter.js'
 import { configService } from './configService.js'
 import { AssistantMemory, type ChatTurn } from './assistantMemory.js'
 import { privacyGate } from './assistantPrivacy.js'
@@ -29,7 +30,9 @@ const BASE_PROMPT = `你是"第二大脑", 运行在用户自己的电脑上, �
 - 用户让你记住某事时, 用 save_memory 工具保存
 - 回复用微信聊天风格, 简洁, 不用 markdown 符号
 - 数据不足时直说需要什么, 不要瞎猜
-- 回复控制在 300 字内, 列表类可放宽`
+- 回复控制在 300 字内, 列表类可放宽
+- **必须真的调用过工具之后**才能对结果下结论。没调工具就说「内容被屏蔽了」「我查到了」
+  都是编造, 审计里会留下 tools=0。`
 
 interface ApiMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -39,6 +42,10 @@ interface ApiMessage {
 }
 
 export class AssistantService {
+  constructor(options: { routeDecider?: (request: unknown) => Promise<any> } = {}) {
+    this.routeDecider = options.routeDecider
+  }
+
   private svc: WechatMessageService | null = null
   private memory = new AssistantMemory()
   private running = false
@@ -47,6 +54,8 @@ export class AssistantService {
   /** 每日用量计数 (内存态, 重启重置 — 配额护栏防烧钱, 无需持久精确) */
   private dailyCount = 0
   private dailyDate = new Date().toDateString()
+  /** 快路径的判断调用。留出注入点：测试用假判断层驱动，不联网、不 spawn Python */
+  private routeDecider: ((request: unknown) => Promise<any>) | undefined
 
   private engineConfig(): { url: string; model: string; key: string | null; local: boolean } {
     const engine = String(configService.get('aiEngine') || 'deepseek')
@@ -141,9 +150,31 @@ export class AssistantService {
     }
   }
 
-  /** 组装系统提示: 基础人格 + L2 摘要 + L3 事实 */
+  /** 当前的隐私状态，作为**事实**写进系统提示。
+   *
+   *  曾经这里是一段写死的假设句（「若因严格模式读不到正文…」），实测撞了车：模型把它当成
+   *  当前状态，于是**一次工具都没调**就回用户"我调了工具，但内容被严格模式挡掉了"——
+   *  审计里 `tools=0`，是编造。现在按实际档位说，且与"没调工具不许下结论"那条配套。
+   */
+  private privacyStateLine(): string {
+    const mode = privacyGate.mode()
+    const local = privacyGate.isLocalInference()
+    if (local) {
+      return '[隐私] 本地推理：数据不出这台机器，工具结果里的聊天正文是原文，可以如实引用。'
+    }
+    if (mode === 'strict') {
+      return '[隐私] 当前 strict 模式：第三方聊天正文会以「[内容N字已按严格模式屏蔽]」的形式出现在'
+        + '工具结果里，那时你只能看到时间与字数。遇到这种情况如实说明，并给出三条路：'
+        + '①改 balanced（正文发给当前模型，电话/证件/邮箱/密钥/链接仍打码）；'
+        + '②改用本地模型 aiEngine=ollama/lmstudio（数据不出机器，屏蔽自动不生效）；③保持现状。'
+    }
+    return `[隐私] 当前 ${mode} 模式：工具结果里的聊天正文是原文（电话/证件/邮箱/密钥/链接已打成`
+      + '占位符），可以直接引用，不必声称被屏蔽。'
+  }
+
+  /** 组装系统提示: 基础人格 + 隐私状态 + L2 摘要 + L3 事实 */
   private buildSystemPrompt(userId: string): string {
-    const parts = [BASE_PROMPT]
+    const parts = [BASE_PROMPT, this.privacyStateLine()]
     const summary = this.memory.summary(userId)
     if (summary) parts.push(`\n[此前对话摘要]\n${summary}`)
     const facts = this.memory.facts(userId)
@@ -154,6 +185,100 @@ export class AssistantService {
   }
 
   /** 单条消息处理: 指令路由 → ReAct 循环 → 记忆更新 */
+  /** 白名单为空的首次配置提示是否已经打过了（只打一次，别把日志刷满） */
+  private firstRunHintShown = false
+
+  /** 白名单为空时，把"该把谁加进去"连同**完整**的发送者 ID 打一行。
+   *
+   *  为什么可以打完整的 ID：填白名单用的就是这个值，而它只在入站消息里出现——登录响应给的
+   *  `ilink_user_id` 与它是不是同一个值**没有验证过**，所以不能拿登录来猜（猜错的后果是
+   *  "白名单非空、看着配好了、却仍然拒你"）。启发式在这里正好用得上：真值自己会来。
+   *
+   *  三条自我约束：白名单非空时不提示（那时人已经配过了）、只对**直聊**提示（群里的
+   *  sender_id 是群成员，把它加进白名单是错的）、只提示一次。
+   *  `assistant log --json` 照旧只回元数据，不返回日志内容。
+   */
+  private maybeAnnounceWhitelistBootstrap(access: { reason: string }, msg: WechatInboundMessage,
+                                          onLog?: (line: string) => void): void {
+    if (this.firstRunHintShown) return
+    if (String(configService.get('assistantWhitelist') || '').trim()) return
+    if (access.reason !== 'direct-not-whitelisted') return
+    this.firstRunHintShown = true
+    const line = '[首次配置] 白名单为空，所以谁都没回。若刚才这条是你本人发的，执行：'
+      + ` weflow-cli config set assistantWhitelist "${msg.senderId}"`
+    onLog?.(line)
+    appendLog(line)
+    privacyGate.audit('WHITELIST_BOOTSTRAP_HINT', 0, 'whitelist-empty')
+  }
+
+  /** 快路径开关。默认 `off`：不改行为，直到有人愿意盯着它（D-035） */
+  private fastRouteMode(): FastRouteMode {
+    const raw = String(configService.get('assistantFastRoute') || '').trim().toLowerCase()
+    return raw === 'on' || raw === 'log' ? raw : 'off'
+  }
+
+  /** 执行一次工具调用：脱敏、审计、把结果塞回对话。
+   *
+   *  快路径与 ReAct 循环**共用这一份**：D-035 里那条不可回归的安全属性是「没有审计行就不得
+   *  派发工具」，两条路各写一遍，早晚有一条会漏。
+   */
+  private async runToolCall(userId: string, messages: ApiMessage[], callId: string,
+                            name: string, args: Record<string, any>): Promise<void> {
+    const raw = await executeTool(name, args, { userId, memory: this.memory })
+    const { safe, redactions } = privacyGate.redact(raw)
+    privacyGate.audit(`TOOL:${name}`, raw.length, redactions ? `redacted=${redactions}` : '')
+    messages.push({ role: 'tool', tool_call_id: callId, content: safe })
+  }
+
+  /** 快路径：先问一次「该查哪个能力」，把这一个工具执行掉，于是循环第一轮就看得到结果。
+   *
+   *  返回派发了几个工具（0 = 回退）。**任何不确定都回退**，而回退就是原样跑循环——不是
+   *  「另一个更差的兜底」。`log` 模式下只算不派发，用来在真实流量上观察它本来会怎么走。
+   */
+  private async maybeFastRoute(userId: string, text: string, messages: ApiMessage[]): Promise<number> {
+    const mode = this.fastRouteMode()
+    if (mode === 'off') return 0
+
+    let decision
+    try {
+      decision = await decideRoute(text, { runDecide: this.routeDecider })
+    } catch (error: any) {
+      appendLog(`[快路径] 路由异常，按原样回退: ${error?.message ?? error}`)
+      return 0
+    }
+
+    if (!decision.capability) {
+      appendLog(`[快路径] 回退: ${decision.reason}`)
+      privacyGate.audit('FASTROUTE_SKIP', 0, decision.reason.slice(0, 120))
+      return 0
+    }
+
+    if (mode === 'log') {
+      // 灰度期：只记「本来会走哪条」，行为一个字不改
+      appendLog(`[快路径/只记] ${decision.reason}`)
+      privacyGate.audit('FASTROUTE_WOULD', 0, `${decision.capability.name} ${decision.model}`)
+      return 0
+    }
+
+    const callId = `fastroute-${Date.now()}`
+    appendLog(`[快路径] ${decision.reason}`)
+    privacyGate.audit('FASTROUTE_HIT', 0, `${decision.capability.name} ${decision.model}`)
+    messages.push({
+      role: 'assistant',
+      content: '',
+      tool_calls: [{
+        id: callId,
+        type: 'function',
+        function: {
+          name: decision.capability.tool,
+          arguments: JSON.stringify(decision.capability.args),
+        },
+      }],
+    })
+    await this.runToolCall(userId, messages, callId, decision.capability.tool, decision.capability.args)
+    return 1
+  }
+
   async handleMessage(userId: string, text: string, kind: string): Promise<string> {
     if (kind !== 'text') return '目前只支持文字消息哦'
 
@@ -168,12 +293,32 @@ export class AssistantService {
         '「记住: 我的项目叫weflow-cli」',
         '', '记忆: 三层 (窗口/摘要/长期事实), 重启不丢',
         '隐私: 数据库不出本机, 出境内容自动脱敏',
-        '', '指令: 记忆 | 清空记忆'].join('\n')
+        '', '指令: 记忆 | 隐私 | 清空记忆'].join('\n')
     }
     if (t === '清空记忆' || t === '重置') {
       this.memory.reset(userId)
       privacyGate.audit('MEMORY_RESET', 0, userId.slice(0, 8))
       return '✓ 对话记忆已清空, 重新开始'
+    }
+    if (t === '隐私' || t === 'privacy') {
+      // 只读：把当前档位和改法说清楚。**不让一条微信消息直接改隐私档位**——
+      // 那等于把隐私开关搬进对话里，而配置本来就是用户在自己电脑上显式设定的东西。
+      const mode = privacyGate.mode()
+      const local = privacyGate.isLocalInference()
+      const lines = [`隐私模式: ${mode}${local ? '(本地推理, 数据不出机器)' : '(云端推理)'}`]
+      lines.push(`工具拿到的聊天正文: ${local ? '原文(不出机器)'
+        : mode === 'strict' ? '被屏蔽, 只剩时间与字数'
+        : mode === 'open' ? '原文, 不脱敏'
+        : '原文, 但电话/证件/邮箱/密钥/链接会打码'}`)
+      lines.push('在电脑上改(改完要重启助手):')
+      lines.push('weflow-cli config set assistantPrivacy balanced   # 正文出境, PII 打码')
+      lines.push('weflow-cli config set assistantPrivacy open       # 全不打码')
+      lines.push('weflow-cli config set assistantPrivacy strict     # 正文不出境')
+      if (!local) {
+        lines.push('或者换本地模型, 内容根本不出机器:')
+        lines.push('weflow-cli config set aiEngine ollama')
+      }
+      return lines.join(String.fromCharCode(10))
     }
     if (t === '记忆') {
       const facts = this.memory.facts(userId)
@@ -197,6 +342,7 @@ export class AssistantService {
     let reply = ''
     let toolCalls = 0
     try {
+      toolCalls += await this.maybeFastRoute(userId, t, messages)
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const data = await this.callLLM(messages, TOOL_DEFS)
         const msg = data.choices?.[0]?.message
@@ -208,10 +354,7 @@ export class AssistantService {
             toolCalls++
             let args: Record<string, any> = {}
             try { args = JSON.parse(tc.function?.arguments || '{}') } catch { /* 参数容错 */ }
-            const raw = await executeTool(tc.function?.name || '', args, { userId, memory: this.memory })
-            const { safe, redactions } = privacyGate.redact(raw)
-            privacyGate.audit(`TOOL:${tc.function?.name}`, raw.length, redactions ? `redacted=${redactions}` : '')
-            messages.push({ role: 'tool', tool_call_id: tc.id, content: safe })
+            await this.runToolCall(userId, messages, tc.id, tc.function?.name || '', args)
           }
           continue
         }
@@ -256,6 +399,7 @@ export class AssistantService {
         if (!access.allowed) {
           privacyGate.audit(`DENY_${access.reason.toUpperCase().replace(/-/g, '_')}`, 0, sessionId.slice(0, 12))
           onLog?.(`  → 拒绝: ${sessionId.slice(0, 12)}… ${access.reason} (未回复, 不耗 LLM)`)
+          this.maybeAnnounceWhitelistBootstrap(access, msg, onLog)
           return
         }
         if (msg.messageKind !== 'text') {
