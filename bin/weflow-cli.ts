@@ -326,6 +326,17 @@ program
           writesNothing: true,
           confirmationRequired: true,
         },
+        draft: {
+          cli: 'draft <会话> --yes --json',
+          preview: 'draft <会话> --dry-run --json',
+          readsLocalChat: true,
+          invokesAI: true,
+          // **它不发送任何东西**：只产出候选文本，回不回由人决定。
+          // 这条要能被机器读到——`sendsNothing` 比 `writesNothing` 更要紧。
+          writesNothing: true,
+          sendsNothing: true,
+          confirmationRequired: true,
+        },
         knowledge: { cli: 'search <query> --yes --json', preview: 'search <query> --dry-run --json', output: 'json', mcp: 'wechat.search_articles' },
       },
       primitives: {
@@ -413,6 +424,17 @@ program
           preview: 'assistant <start|stop> --dry-run --json',
           execute: 'assistant <start|stop> --yes --json',
           confirmationRequired: true,
+        },
+        localPanel: {
+          status: 'panel --status --json',
+          ask: 'panel --ask "<text>" --yes --json',
+          preview: 'panel --dry-run --json',
+          execute: 'panel --yes --json',
+          confirmationRequired: true,
+          opensLocalWindow: true,
+          loopbackOnly: true,
+          // 关掉窗口**不会**停掉助手——这件事必须能被机器读到，别让调用方以为退出即结束
+          keepsAssistantRunningAfterClose: true,
         },
         messageChannelAuthentication: {
           loginPreview: 'login-wechat --dry-run --json',
@@ -967,7 +989,7 @@ const configurableKeys = [
   'dashscopeApiKey', 'favPassphrase',
   'wereadApiKey',
   'assistantPrivacy', 'assistantWhitelist', 'assistantGroupWhitelist',
-  'assistantGroupRequireMention', 'assistantFastRoute',
+  'assistantGroupRequireMention', 'assistantFastRoute', 'assistantPanelUser',
   'dailySources', 'dailySourceCategories',
   'dailyExcludeTopics', 'dailyAiEnabled',
   'emoticonSeed',
@@ -5164,6 +5186,70 @@ program
       }
     })
 
+  // draft：判断在前、起草在后、**绝不发送**
+  program
+    .command('draft <talker>')
+    .description('帮我起草回复：先判断（意图/风险/该不该给实质），再起草候选 —— **只产出文本，不发送**')
+    .option('--count <n>', '要几条候选', '3')
+    .option('--gate-commitment', '承诺未兑现时也拒绝起草（默认只在提示词里约束）')
+    .option('--dry-run', '仅预览会发多少字符给哪两个模型，不调用')
+    .option('--yes', '确认把这段对话发送到判断模型与生成模型')
+    .option('--json', '输出机器可读结果；执行仍需 --yes')
+    .action(async (talker: string, opts) => {
+      const { execFile } = await import('child_process')
+      const { promisify } = await import('util')
+      const execFileAsync = promisify(execFile)
+      const pkgRoot = resolvePackageRoot()
+      const script = join(pkgRoot, 'scripts', 'draft_reply.py')
+      const count = parseCliInteger(opts.count, 'count', 1, 5, opts.json)
+      const args = [script, '--talker', String(talker), '--count', String(count),
+                    // 脚本自己有第二道闸门（`--yes` 才真的把对话发出去），所以要透传——
+                    // 漏了这一行，CLI 确认过了、脚本仍然拒绝（实测踩到过）
+                    ...(opts.yes ? ['--yes'] : []),
+                    ...(opts.gateCommitment ? ['--gate-commitment'] : []),
+                    ...(opts.json ? ['--json'] : [])]
+
+      if (opts.dryRun) {
+        // 交给脚本自己报数（它才知道这段对话有多少字符）。这一步只读本地，零出境。
+        args.push('--dry-run')
+      } else if (!opts.yes) {
+        const preview = {
+          success: false, dryRun: false, action: 'draft-reply',
+          code: 'CONFIRMATION_REQUIRED', talker, count,
+          readsLocalChat: true, invokesAI: true, writesNothing: true, sendsNothing: true,
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(preview))
+          process.exit(1)
+        }
+        const { confirmed } = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'confirmed',
+          message: '确认把这段对话发送到判断模型与生成模型吗？（只会产出候选文本，不会替你发送）',
+          default: false,
+        }])
+        if (!confirmed) {
+          console.log(chalk.gray('已取消'))
+          return
+        }
+      }
+
+      try {
+        const { stdout } = await execFileAsync(getPythonCommand(), args, {
+          timeout: 300_000, maxBuffer: 50 * 1024 * 1024,
+          env: pythonProcessEnv(),
+        })
+        process.stdout.write(stdout)
+      } catch (error) {
+        if (opts.json) {
+          console.log(JSON.stringify({ success: false, code: 'DRAFT_FAILED', action: 'draft-reply', error: safeSubprocessError(error) }))
+        } else {
+          console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
+        }
+        process.exit(1)
+      }
+    })
+
   // todos
   const todosCmd = program
     .command('todos')
@@ -5579,13 +5665,23 @@ assistantCmd
     const token = configService.get('wechatOcToken')
     const aiKey = configService.get('deepseekApiKey')
     const { privacyGate } = await import('../src/services/assistantPrivacy.js')
+    const { readEndpoint } = await import('../src/panel/endpoint.js')
     const wl = String(configService.get('assistantWhitelist') || '').trim()
     const groups = String(configService.get('assistantGroupWhitelist') || '').trim()
+    // 端点是**运行态**的权威来源：它由守护进程原子写出，而且读取端会探活（进程没了就当没有）。
+    // 它能回答一个配置回答不了的问题：**通道到底接上了没有**。
+    // `messageChannelLoggedIn` 说的只是"配了 token 吗"——token 配了而进程以本机模式跑着，
+    // 这两个字段会一个 true 一个 false，今天完全没有别的办法区分。
+    const endpoint = alive ? readEndpoint() : null
     if (opts.json) {
       console.log(JSON.stringify({
         success: true,
         daemonRunning: alive,
         messageChannelLoggedIn: !!token,
+        channelActive: !!endpoint && endpoint.channel === 'wechat',
+        mode: endpoint ? endpoint.channel : null,
+        panelPort: endpoint ? endpoint.port : null,
+        memoryBucket: endpoint ? endpoint.memoryBucket : null,
         aiConfigured: privacyGate.isLocalInference() || !!aiKey,
         localInference: privacyGate.isLocalInference(),
         privacyMode: privacyGate.mode(),
@@ -5597,6 +5693,12 @@ assistantCmd
     }
     console.log(`守护进程: ${alive ? chalk.green(`运行中 (pid ${pid})`) : chalk.gray('未运行')}`)
     console.log(`消息通道: ${token ? chalk.green('已登录') : chalk.red('未登录 (先 login-wechat)')}`)
+    if (endpoint) {
+      console.log(`  └ 实际接入: ${endpoint.channel === 'wechat' ? chalk.green('微信') : chalk.yellow('仅本机入口')}`
+        + `｜本机入口 http://127.0.0.1:${endpoint.port}｜记忆桶 ${endpoint.memoryBucket}`)
+    } else if (alive) {
+      console.log(chalk.gray('  └ 本机入口未启动（看 assistant log 里的“本机入口启动失败”）'))
+    }
     console.log(`LLM 大脑: ${aiKey ? chalk.green('DeepSeek 已配置') : chalk.gray('未配置 (config set deepseekApiKey)')}`)
     console.log(`隐私模式: ${chalk.cyan(privacyGate.mode())}${privacyGate.isLocalInference() ? chalk.green(' (本地推理, 数据不出境)') : chalk.gray(' (工具结果脱敏后出境)')}`)
     console.log(`白名单: ${wl ? chalk.green(`${wl.split(/[,;\s]+/).filter(Boolean).length} 人`) : chalk.red('未设置 (默认拒绝所有人; config set assistantWhitelist "<@im.wechat ID>")')}`)
@@ -5694,6 +5796,193 @@ assistantCmd
     const assistant = new AssistantService()
     console.log(chalk.cyan('第二大脑前台运行中... (Ctrl+C 退出)'))
     await assistant.start((line) => console.log(chalk.gray(line)))
+  })
+
+/**
+ * 本机面板：不登录微信也能跟助手说话的入口。
+ *
+ * **它只是客户端**：消息走守护进程的回环端点，于是两个入口共用一个大脑
+ * （同一份记忆、同一条配额、同一条串行队列）。面板自己起一个 `AssistantService` 会变成
+ * 第二个大脑——那是这个功能最容易走错的一步。
+ */
+program
+  .command('panel')
+  .description('打开本机面板窗口 (Electron 悬浮球；没有 Electron 就降级用 Edge --app)')
+  .option('--status', '只看状态，不打开窗口')
+  .option('--ask <text>', '在命令行里问一句（面板减去像素）')
+  .option('--dry-run', '仅预览，不启动窗口或守护进程')
+  .option('--yes', '确认打开')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { readEndpoint, endpointFile } = await import('../src/panel/endpoint.js')
+    const { panelStatus, panelAsk, panelPair } = await import('../src/panel/client.js')
+
+    // ---------------------------------------------------------- 只读：状态
+    if (opts.status) {
+      const endpoint = readEndpoint()
+      if (!endpoint) {
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'PANEL_NOT_RUNNING', error: '本机入口没在运行（先 weflow-cli assistant start）' }))
+        else console.log(chalk.gray('本机入口没在运行（先 weflow-cli assistant start）'))
+        process.exit(1)
+      }
+      const r = await panelStatus(endpoint)
+      if (opts.json) {
+        console.log(JSON.stringify(r.ok
+          ? { success: true, port: endpoint.port, ...r.data }
+          : { success: false, code: r.code }))
+        return
+      }
+      if (!r.ok) { console.log(chalk.yellow(`读状态失败: ${r.code}`)); return }
+      const d = r.data
+      console.log(`本机入口: ${chalk.green(`http://127.0.0.1:${endpoint.port}`)}`)
+      console.log(`接入: ${d.channelActive ? '微信 + 本机' : '仅本机入口'}｜今日 ${d.quota.used}/${d.quota.limit}｜LLM ${d.aiConfigured ? '已配置' : '未配置'}`)
+      console.log(chalk.gray(`记忆桶: ${d.memoryBucket}`))
+      if (d.memoryNote) console.log(chalk.gray(`  ${d.memoryNote}`))
+      return
+    }
+
+    // ---------------------------------------------------------- 在命令行里问一句
+    if (opts.ask !== undefined) {
+      const text = String(opts.ask || '').trim()
+      if (!text) {
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', error: '--ask 不能为空' }))
+        else console.log(chalk.red('--ask 不能为空'))
+        process.exit(1)
+      }
+      if (opts.json && !opts.yes) {
+        console.log(JSON.stringify({ success: false, code: 'CONFIRMATION_REQUIRED', error: '这会真的问助手（可能调用 AI 并占用配额），用 --yes 确认' }))
+        process.exit(1)
+      }
+      const endpoint = readEndpoint()
+      if (!endpoint) {
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'PANEL_NOT_RUNNING', error: '本机入口没在运行（先 weflow-cli assistant start）' }))
+        else console.log(chalk.yellow('本机入口没在运行（先 weflow-cli assistant start）'))
+        process.exit(1)
+      }
+      const r = await panelAsk(endpoint, text)
+      if (opts.json) {
+        console.log(JSON.stringify(r.ok
+          ? { success: true, status: r.data.status, reply: r.data.reply }
+          : { success: false, code: r.code, error: r.error }))
+        if (!r.ok) process.exit(1)
+        return
+      }
+      console.log(r.ok ? r.data.reply : chalk.yellow(`没成: ${r.code}`))
+      return
+    }
+
+    // ---------------------------------------------------------- 打开窗口
+    const { resolveElectronBinary, resolveBrowserBinary, electronLaunchArgs,
+            browserLaunchArgs, browserProfileDir } = await import('../src/panel/launch.js')
+    const { isDaemonAlive, startDaemon } = await import('../src/services/assistantDaemon.js')
+    const { weflowHome } = await import('../src/panel/endpoint.js')
+
+    const electron = resolveElectronBinary({
+      packageRoot: resolvePackageRoot(),
+      localAppData: process.env.LOCALAPPDATA,
+      programFiles: process.env.ProgramFiles,
+    })
+    const browser = electron.found ? { found: null } : resolveBrowserBinary({
+      programFiles: process.env.ProgramFiles,
+      programFilesX86: process.env['ProgramFiles(x86)'],
+      localAppData: process.env.LOCALAPPDATA,
+    })
+    const shell: 'electron' | 'browser' | 'none' = electron.found ? 'electron' : browser.found ? 'browser' : 'none'
+    const running = isDaemonAlive().alive
+
+    const preview = {
+      action: 'panel.open',
+      shell,
+      daemonRunning: running,
+      // 明确声明后果：面板会需要一个守护进程；关掉窗口**不会**顺手把它停掉
+      willStartDaemon: !running,
+      keepsRunningAfterClose: true,
+      endpointFile: endpointFile(),
+    }
+    if (opts.dryRun) {
+      if (opts.json) console.log(JSON.stringify({ success: true, dryRun: true, ...preview }))
+      else console.log(chalk.cyan(`将打开面板（${shell === 'none' ? '没有可用的窗口程序，只会打印地址' : shell}）`
+        + `${running ? '' : '，并启动本机助手守护进程'}`))
+      return
+    }
+    if (opts.json && !opts.yes) {
+      console.log(JSON.stringify({ success: false, code: 'CONFIRMATION_REQUIRED', error: '使用 --yes 确认打开面板', ...preview }))
+      process.exit(1)
+    }
+
+    // 守护进程没起来就先起，并**轮询到真的就绪**——不要相信 spawn 的返回值
+    // （`startDaemon` 里没有 `child.unref()`，stdio 又是 pipe；照抄 daily-reader 的 30×100ms 循环）
+    if (!running) {
+      const started = await startDaemon()
+      if (!started.started && !started.error?.includes('已经运行')) {
+        const msg = `本机助手启动失败: ${started.error ?? '未知原因'}`
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'ASSISTANT_START_FAILED', error: msg, ...preview }))
+        else console.log(chalk.red(msg))
+        process.exit(1)
+      }
+    }
+    let endpoint = readEndpoint()
+    for (let attempt = 0; attempt < 30 && !endpoint; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      endpoint = readEndpoint()
+    }
+    if (!endpoint) {
+      const msg = '本机入口还没就绪（看 weflow-cli assistant log 里的“本机入口启动失败”，端口可能被占）'
+      if (opts.json) console.log(JSON.stringify({ success: false, code: 'PANEL_NOT_READY', error: msg, ...preview }))
+      else console.log(chalk.red(msg))
+      process.exit(1)
+    }
+
+    const { spawn } = await import('child_process')
+    let launched: string
+    let url: string | null = null
+    if (electron.found) {
+      // argv 里**什么都没有**：不带 token、不带端口、不带 URL（命令行对同机任何进程可见）
+      const child = spawn(electron.found, electronLaunchArgs(join(resolvePackageRoot(), 'resources', 'panel')), {
+        detached: true, stdio: 'ignore', windowsHide: true,
+      })
+      child.unref()
+      launched = 'electron'
+    } else if (browser.found) {
+      // 浏览器那条路只能靠一次性口令：它单次使用、60 秒过期，所以进命令行与浏览器历史都不算泄漏
+      const pair = await panelPair(endpoint)
+      if (!pair.ok) {
+        const msg = `换一次性口令失败: ${pair.code}`
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'PAIR_FAILED', error: msg, ...preview }))
+        else console.log(chalk.red(msg))
+        process.exit(1)
+      }
+      url = pair.data.url
+      const child = spawn(browser.found, browserLaunchArgs({ url, profileDir: browserProfileDir(weflowHome()) }), {
+        detached: true, stdio: 'ignore', windowsHide: true,
+      })
+      child.unref()
+      launched = 'browser'
+    } else {
+      // 两条路都没有：**别静默什么都不做**，把地址交出去
+      const pair = await panelPair(endpoint)
+      url = pair.ok ? pair.data.url : `http://127.0.0.1:${endpoint.port}/panel`
+      launched = 'none'
+    }
+
+    if (opts.json) {
+      // 展开在前、实际结果在后：`preview.shell` 是"打算用哪个"，这里是"实际用了哪个"，
+      // 两者可能不同（例如打算用 Electron 但 spawn 之后没起来）——以后者为准
+      console.log(JSON.stringify({ ...preview, success: true, shell: launched, port: endpoint.port, url }))
+      return
+    }
+    if (launched === 'electron') {
+      console.log(chalk.green(`✓ 面板已启动（记忆桶 ${endpoint.memoryBucket}）`))
+      console.log(chalk.gray('  关掉窗口只是隐藏；助手仍在后台跑，要停它用 weflow-cli assistant stop'))
+    } else if (launched === 'browser') {
+      console.log(chalk.green('✓ 已用浏览器打开面板窗口'))
+      console.log(chalk.yellow('  注意：这条路给不了悬浮球——浏览器窗口不能无边框/置顶，也没有托盘与快捷键。'))
+      console.log(chalk.gray('  想要真·悬浮球：npm i -g electron 之后再跑一次'))
+    } else {
+      console.log(chalk.yellow('没找到 Electron，也没找到 Edge/Chrome。自己打开这个地址即可：'))
+      console.log(chalk.cyan(`  ${url}`))
+      console.log(chalk.gray('  想要悬浮球：npm i -g electron'))
+    }
   })
 
 program

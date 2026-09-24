@@ -1127,6 +1127,104 @@ log at all.
   creates `~/.weflow-cli` if it is missing, or a fresh machine would silently record nothing. That was
   caught by the feature's own tests.
 
+## D-045: The local panel is a token-gated loopback endpoint on the existing daemon, and the panel is only a client
+
+**Status:** Active
+
+The assistant gained a second entrance: a small always-on-top panel window on the same machine, so
+talking to it does not require logging into the WeChat channel. It is implemented as a
+**loopback-only HTTP endpoint inside the assistant daemon** (`src/panel/server.ts`), plus a client
+(`weflow-cli panel`, the page under `resources/panel/`, and an Electron shell). The panel holds no
+assistant of its own: every turn goes through the daemon's existing `runTurn` — the same allowlist
+path for WeChat, the same daily quota counter, the same serial queue, the same memory file.
+
+**Reason:** the quota counter, the serial queue and the instance fields it protects (`turnCalls`,
+`lastReasoning`) are **in-process state**. A panel that built its own `AssistantService` would get a
+second quota (each entrance 100/day, total unbounded), a second queue protecting nothing, and two
+processes writing the same user's memory window (the file's read-merge-write protects *other* users,
+but for the same `userId` it is still last-writer-wins). The cheapest correct shape was therefore one
+host process with two entrances.
+
+**Consequences and boundaries:**
+- **Loopback only, not configurable** (continuing D-004), plus two gates the reader does not have.
+  `scripts/fav_server.py` has **no token at all** and its origin check **allows a request with no
+  Origin header**; copying that here would hand an endpoint that reads chat data to any local program.
+  So: **every request carries a token** (`/api/status` included), Origin is a second gate (present but
+  not allowlisted → 403 even with a correct token; **absent → allowed**, because `file://` renderers
+  and `curl` look like that), and POSTs must be `application/json`.
+- **The token is per-run and lives in a file next to the pid file** (`assistant_endpoint.json`, atomic
+  write, read-merge not needed). It is **not** claimed to be protected by file permissions: on Windows
+  `fs.chmod` / `mode: 0600` do essentially nothing, and what actually helps is the default ACL on
+  `%USERPROFILE%\.weflow-cli\`. The token's real job is to stop **other local programs and any web
+  page**, not a same-user process willing to read that directory — such a process can already read the
+  database. **Cleanup is not relied on**: `stopDaemon` sends SIGTERM and Node does not run handlers for
+  it, so the file is expected to be left behind; readers probe `kill(pid, 0)` and then verify the
+  `service` + `startedAt` fields before trusting a port.
+- **The panel's identity is a memory bucket, and the bucket decides whether it is "one brain".**
+  Memory facts are stored per `userId`, so sharing means using the same string as the WeChat DM. The
+  bucket resolves to the **single** entry of `assistantWhitelist` when there is exactly one; with zero
+  or several it does **not guess** — it falls back to a `panel` bucket and the interface says so, and
+  `assistantPanelUser` pins the choice. Note what is inference and what is observed: the chain
+  (DM `conversationId` == `senderId` == the allowlist value) is sound in the code, but it has **never
+  been observed on a real inbound WeChat message** — the channel on this machine has never completed a
+  login. The panel displays its resolved bucket so the first real message can be compared by eye.
+- **Credentials never enter a command line.** Windows exposes any process's argv to any local user
+  (`wmic process get commandline`), so the Electron path passes **no** arguments and reads the
+  endpoint file itself, then installs the token as an `HttpOnly` cookie before loading the page. The
+  browser fallback cannot do that, so it uses a **one-time, 60-second, single-use code** from
+  `/api/pair` — a code in argv or in browser history is spent, a token there would not be.
+- **`AssistantService.start()` no longer refuses to start without a channel.** It used to throw
+  `未登录消息通道` before doing anything, so "not logged into WeChat" meant "no assistant at all"
+  (recorded in PROJECT_STATE as a field observation). Now the channel is optional and the local
+  entrance still comes up. The cost is that `assistant start` can now report success with an empty
+  channel, so `assistant status` gained `channelActive` / `mode` / `panelPort` / `memoryBucket` —
+  `messageChannelLoggedIn` only ever meant "is a token configured".
+- **The panel authenticates by token, not by the WeChat allowlist.** Reusing `evaluateAssistantAccess`
+  would deny the panel when the allowlist is empty (i.e. by default) and, worse, print the
+  "run `config set assistantWhitelist <id>`" bootstrap hint telling the user to add **their own panel
+  identity** to the WeChat allowlist. The allowlist answers "who may talk to me in WeChat"; it is not
+  the right gate for the person sitting at the machine.
+- **Verified on Windows 11 with Electron 42** (the binary had to be downloaded first - it was
+  declared but not installed, so the browser fallback was the only path for a while): the ball window
+  measures 76x76 with no caption (frameless) and `WS_EX_TOPMOST` set, the renderer loads the page and
+  authenticates **through the cookie** (visible in the daemon log as `[panel] 界面已加载（cookie）`),
+  and the ball is visible on screen - confirmed by eye, because **GDI screen capture does not capture a
+  transparent layered window**, so a screenshot showing nothing at that spot is a false negative.
+  The interactive paths were then driven **without** a click: over the DevTools protocol the ball was
+  really clicked (the window measured 421x560, always-on-top dropped) and collapsed again (77x76,
+  always-on-top restored); the global hotkey was verified differentially - a second Electron app
+  registering the same chord gets `false` while the panel runs and `true` once it stops, so the panel
+  genuinely holds it. Driving it that way found **two real bugs that a screenshot could never have
+  shown**: `setMode` locked the window non-resizable *before* resizing it, and Windows ignores
+  `setSize` on a non-resizable window, so collapsing left the window at chat size (a giant ball); and
+  the `ready-to-show` listener was attached *after* `await loadURL`, so when that event fired during
+  the load it was never replayed and the window stayed hidden - geometry and style all measured
+  correct, only `IsWindowVisible` was false. A third bug came out of exercising what the tray items *do* rather than clicking them: the
+  "quit and stop the assistant" action spawned the CLI as `spawn(electron, [cli.cjs, …])`, which
+  fails with `error: unknown command '…\cli.cjs'` because commander in Electron's Node mode does not
+  skip `process.argv[1]`. The repository already knew this (`bin/weflow-cli-electron.cjs` documents
+  it); the working form is `-e "import('file:///…')" -- <args>`, with the path passed through
+  `pathToFileURL` because this checkout's directory name is non-ASCII. Verified by running that exact
+  shape: the daemon stops and both the pid file and the endpoint file are cleaned up. The one thing
+  still unverified is a **click on the tray menu itself** - its contents are pinned by static
+  assertions, and each item's effect has been exercised directly.
+- **Placement and drag were then closed too, and they were not merely untested - they were wrong.**
+  The window was created without `x`/`y`, so it landed wherever Windows put it (measured 815,418,
+  mid-left) - not "a ball in the corner". It now defaults to the primary work area's bottom-right
+  corner, **remembers where it was dragged** (`~/.weflow-cli/panel_position.json`, atomic write), and
+  falls back to the corner when the remembered spot is unreachable (a monitor was unplugged, or the
+  ball was dragged off-screen). Expanding to the chat window and collapsing back both re-fit into the
+  work area, because a 420x560 window opened at a bottom-right corner would otherwise hang off the
+  screen. Two details worth keeping: the listener is `move`, not `moved` - `moved` fires on
+  `WM_EXITSIZEMOVE`, which a programmatic move never produces (measured: the window moved and the
+  position file was not written) - and only the **ball's** position is saved, since the ball is the
+  anchor and the chat window's geometry is transient.
+  The arithmetic lives in `resources/panel/ball-position.cjs` so it can be tested in CI with
+  **synthetic monitor layouts** - negative-x second displays, a removed display, a rect larger than
+  the work area - because **this machine has one monitor and cannot produce those**. What that does
+  not cover: a real second display. The code path is exercised with synthetic coordinates; plugging
+  in a second monitor is still an unperformed experiment.
+
 ## D-044: "You have no todos" and "todos were never extracted" are different answers
 
 **Status:** Active
@@ -1156,6 +1254,88 @@ hypothetical: on this machine `~/.weflow-cli/todos.json` does not exist at all, 
   information, which is what made this look like a tool defect rather than a missing feature.
 - Not fixed: nothing here makes extraction happen. The pipeline that would run it on a schedule is the
   same open question as the daily report's (no scheduled task is registered on this machine).
+
+## D-046: Atomic writes retry a busy target, and fall back to writing in place
+
+**Status:** Active
+
+`writeFileAtomic` (`src/utils/atomicWrite.ts`) writes `<target>.tmp` and renames it over the target, as
+before - but when the rename fails with `EPERM` / `EACCES` / `EBUSY` it retries five times with a short
+synchronous backoff, and if the target is still busy it **writes the target directly** instead of giving
+up. Both `AssistantMemory.save()`, `configService.save()` and the panel's endpoint file go through it.
+
+**Reason:** on Windows, `renameSync` over a file that **another handle has open** fails with `EPERM` -
+measured: a second handle opening the target read-only is enough, and the rename succeeds the moment that
+handle closes. Antivirus, search indexers and other readers produce that state briefly and routinely. The
+callers all swallow the failure (they record a reason and carry on), so the result was a **silent lost
+write**: one full-suite run here saved the memory file and the file came back without its `version` field,
+with the test itself green the other three times. "Saved" and "never saved" must not look the same.
+
+**Consequences and boundaries:**
+- The fallback gives up **atomicity** for that one write, not correctness of the bytes: the same string is
+  written either way, so a reader never sees a half-written file. What is lost is the guarantee that the
+  replacement is instantaneous.
+- If the other handle holds the file with a deny-write share mode, the direct write fails too and the error
+  propagates, exactly as before. The fallback is best-effort, not a guarantee - do not describe it as one.
+- Deciding to fix this was not cosmetic: this repository already treats a silently failed save as a defect
+  (there is a CHANGELOG entry about `MEMORY_SAVE_FAILED`), and the flake was the same class of thing
+  arriving from the filesystem instead of the code.
+
+## D-047: Drafted replies produce text and stop there, the risk gate rides on the binary questions, and the assistant path masks before the script sees anything
+
+**Status:** Active
+
+`draft` (CLI) and the assistant tool `draft_reply` ask a decision model seven typed questions about one
+conversation (intent / need / action / should this get substance / risk 0-9 / money / unfulfilled
+commitment), refuse when the answer is money **or** risk >= 7, otherwise generate N candidate replies and
+rank them. The output is **text only** - there is no path from here into WeChat, no input-box filling, no
+key simulation, no focus stealing. `capabilities --json` declares `sendsNothing: true` alongside
+`writesNothing`.
+
+**Reason:** the pattern comes from reading `jev-chat-jarvis` (an Android assistant that reads the screen
+through accessibility, decides, and drafts three replies into the input box without ever sending). Two
+things it does *not* do are the two things worth doing here, and both were read from its source rather than
+assumed: its danger level (0-9) is consumed **only** as a badge colour - it never refuses a draft, degrades
+or blocks - and its judgement result is **not** in the drafting prompt (`ReplyClient.draft` takes no
+`Analysis`), so "draft with the judgement's sense of proportion" is missing. Its "never send" is its
+boundary; here sending was already structurally unreachable (`TOOL_DEFS` has no send tool, D-008), so the
+risk this feature adds is not a mis-send but **making it easier to send a message the user will regret** -
+which is what the gate is for.
+
+**Consequences and boundaries:**
+- **The gate rides on the binary questions, not on the 0-9 score.** `money` is a hard refusal; `risk >= 7`
+  is a refusal whose advice is taken from the `action` answer ("go read the earlier history first"). The
+  0-9 band is calibrated in wording but its **threshold is picked, not calibrated**, so it explains
+  ("risk 8/9: it has already turned into a fight") and does not decide alone. `commitment` deliberately
+  does **not** refuse by default - "I promised and went quiet" is exactly when a draft is most useful - it
+  constrains the prompt instead; `--gate-commitment` makes it a hard refusal, which is the trade this
+  record exists so someone can reverse.
+- **The English criteria are borrowed, and that choice is unverified here.** The question set follows the
+  reference implementation, which was calibrated against a 30-conversation Chinese set in its own
+  (intimate-relationship) domain; the criteria are English because its `TASK.md` states the model's main
+  training language is English. `reply_debt.py` still asks its own money/commitment questions in **Chinese**
+  and those two are reused **verbatim**, so this repo now runs two wording conventions against one model
+  with **no A/B run**. Recorded as an open question, not as a settled choice.
+- **Two input paths, and the mask asymmetry is deliberate.** The CLI reads the database itself and does
+  **not** mask - the user ran it explicitly and the preview states how many characters go to which models
+  (same as `awaiting`). The assistant tool masks every message through `privacyGate` and hands the result
+  to the same script **over stdin**; Python has no redaction implementation at all (`scripts/` contains
+  only two unrelated bit-masks), and the one implementation lives in TypeScript. `strict` mode **refuses**
+  the tool outright rather than drafting from a body masked into "content N characters", because that
+  produces a fluent answer built on nothing.
+- **`isLocalInference()` is deliberately *not* an escape hatch here**, unlike `look_at_image`. That image
+  really does go to the local model, so "local inference" is a valid bypass there; drafting's egress is the
+  **script's own** two remote calls (`jev_client` over HTTP, `_utils.call_deepseek` hard-wired to DeepSeek),
+  which `aiEngine` does not touch. The first implementation copied the bypass from `look_at_image` and a
+  test caught it: with `aiEngine=ollama` + `assistantPrivacy=strict` the transcript was handed to the
+  script. Verified by measurement, then removed.
+- **The panel only gets a copy button**, on the assistant's turns. It copies the whole reply rather than
+  per-candidate lines: the visible reply is the model's own rendering, so guessing which lines are
+  candidates would sometimes copy half a sentence. A failed clipboard write says so and selects the text
+  instead of claiming success.
+- Group chats are out of scope (the reference implementation documents the same limit, and local group
+  semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
+  draft right", so the feature records what it judged and says so rather than claiming calibration.
 
 ## Decision Template
 

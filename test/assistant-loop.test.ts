@@ -19,6 +19,12 @@ import { join } from 'node:path'
 const HOME = mkdtempSync(join(tmpdir(), 'weflow-assistant-loop-'))
 process.env.HOME = HOME
 process.env.USERPROFILE = HOME
+// 这些用例会真的把助手的本机端点起起来（`start()` 里就会起）。
+// 端口给 0 让内核分配：否则每个用例都去抢生产端口 8766，用例之间也互相抢。
+process.env.WEFLOW_PANEL_PORT = '0'
+
+/** 收尾用：所有 `start()` 过的实例都要 stop，否则文件进程退不出去 */
+const boots: any[] = []
 
 const { AssistantService } = await import('../src/services/assistantService.js')
 const { WechatMessageService } = await import('../src/services/wechatMessageService.js')
@@ -73,6 +79,7 @@ async function boot(overrides: Record<string, string> = {}): Promise<Session> {
   setConfig({ wechatOcToken: 'fake-token', wechatOcAccountId: 'bot-1', ...overrides })
   llmCalls = 0
   const svc: any = new AssistantService()
+  boots.push(svc)
   svc.callLLM = async () => { llmCalls++; return { choices: [{ message: { content: '收到' } }] } }
   const logs: string[] = []
   await svc.start((line: string) => logs.push(line))
@@ -87,19 +94,33 @@ async function boot(overrides: Record<string, string> = {}): Promise<Session> {
   }
 }
 
+/** 每个 boot 出来的实例都要收尾：`start()` 会真的把本机端点起起来，
+ *  不 stop 就留下一个活着的监听，这个**文件进程**会因此退不出去
+ *  （node:test 会把整个文件报成 failed，而里面每条用例都是绿的——我踩过）。 */
 test.beforeEach(installFakeChannel)
-test.after(() => { ;(configService as any).get = realGet })
+test.after(async () => {
+  for (const s of boots) s.stop()
+  await new Promise(r => setTimeout(r, 100))
+  ;(configService as any).get = realGet
+})
 
-test('没登录消息通道时立刻报错，而且不开始轮询', async () => {
+test('没登录消息通道时**降级启动**：本机入口可用，但不去轮询', async () => {
+  // 这条**改过行为**（原断言是"抛错 '未登录消息通道'"）。理由是被实测记录打脸的：
+  // 本机的 `assistant start` 从来没成功启动过一次，日志尾部就是那句抛错——也就是
+  // "没登录微信" == "助手整个起不来"。现在没有 token 只是没有微信这个入口，
+  // 本机入口照样能用；`isChannelActive()` 让 status 能区分"配了 token"与"通道真的接上了"。
   setConfig({})
-  try {
-    const svc: any = new AssistantService()
-    await svc.start()
-    assert.fail('应该抛错')
-  } catch (error: any) {
-    assert.match(error.message, /未登录消息通道/)
-  }
-  assert.equal(polling, false)
+  const svc: any = new AssistantService()
+  boots.push(svc)          // 这条没走 boot()，收尾得自己登记（漏了它就留下一个活着的端点）
+  const logs: string[] = []
+  await svc.start((line: string) => logs.push(line))
+
+  assert.equal(polling, false, '没有通道就不该去轮询')
+  assert.equal(svc.isChannelActive(), false, '通道没接上')
+  assert.equal(svc.isRunning(), true, '降级启动了，running 必须是 true——否则每一轮都静默 no-op')
+  assert.ok(logs.some(l => /消息通道未登录/.test(l)), `要说清它没接通道：${logs.join(' | ')}`)
+  assert.ok(logs.some(l => /本机入口模式/.test(l)), '启动行不该谎报一个 bot 账号')
+  assert.doesNotMatch(logs.join(' '), /bot:/, '没有通道时不许报 bot 账号')
 })
 
 test('白名单为空：谁都拒，不回复、不调模型、留审计行', async () => {
