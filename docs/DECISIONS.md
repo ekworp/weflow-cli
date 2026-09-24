@@ -348,6 +348,174 @@ only answer that stays honest, and it is visible because every in-tree window ca
   unified with `nt_decrypt` here; only the failure mode was fixed on both sides. The two copies are
   pinned together by a test, so the next person to change one is told about the other.
 
+## D-031: Judgement goes to a decision model, generation stays with the LLM
+
+**Status:** Active
+
+The daily pipeline's article **topic** (6-way) and **relevance** (3-level) are now decided by
+TypeSafe's Jev (`POST https://api.typesafe.ai/v1/systemone`, `scripts/jev_client.py`), a model that
+returns typed answers with probabilities instead of text. The LLM still **generates** the summary,
+tags and concepts - that is what it is for, and Jev cannot generate at all. When no TypeSafe key is
+configured, the previous "prompt for a format then parse it with two regexes" path runs unchanged.
+
+**Reason:** the old path was not merely inaccurate, it was inert. Measured over the 2201 stored
+articles, `relevance` is the default `中` in **2199** of them - and the code says why:
+`biz_daily.py` assigned it on only two of five paths, the `category_hint` path hard-coded `'中'`,
+and the exception and short-content paths never assigned it at all, leaving it to the writer's
+`fm.get('relevance', '中')`. So `generate_ai_report.py:123`'s gate
+(`if topic != FOCUS_TOPIC and relevance != '高': continue`) had only ever filtered on topic;
+the "relevance" dimension had never once admitted an article. **That sentence was itself too
+generous, and a later check corrected it**: the gate lived only in the markdown-scan
+*fallback* loader. The primary loader (`.articles.json`, which exists on every normal run)
+returned every article unfiltered, so the documented rule was not being applied at all. Topic fared little better: it is
+`学术` in **zero** articles on a normal day and in **100%** of them on 2026-09-04/05, which is the
+signature of the `except` branch's `topic = source_category or '学术'` fallback.
+
+A 60-article comparison was run before switching (`scripts/jev_probe.py`, stratified across topics
+and days, sent state = title + body only): agreement with the stored labels was 58.6%, and the
+disagreements ran **against** the stored labels almost everywhere - `习近平向第八届中俄能源商务论坛
+致贺信` stored as 学术 against Jev's 政治, a `人民日报·夜读` cooking essay stored as 政治 against
+Jev's 文学 (the body was read to confirm), a `Nature Climate Change` paper stored as AI against
+Jev's 学术. **This is not an accuracy measurement** - the labels are the DeepSeek output, not a gold
+standard - which is exactly why the switch is reversible and why the raw score is kept.
+
+**Consequences:**
+
+- `--classifier {auto,llm,jev}` (default `auto`) keeps one-flag rollback and lets anyone re-run a
+  date both ways. `auto` means "Jev if a key is configured, otherwise the old path".
+- **The LLM prompt is deliberately unchanged.** It still asks for `【主题】`/`【相关度】` that we now
+  ignore. That keeps the fallback *byte-identical to the old behaviour* rather than a new, worse
+  fallback; the cost is roughly 20 wasted output tokens per article. Slimming the prompt is a
+  follow-up, not this change.
+- Two **additive** frontmatter keys: `relevanceScore` (raw) and `topicConfidence` (0-1). Downstream
+  compares `relevance` as a literal string and ignores unknown keys. Without these the probability -
+  the entire new information - would be discarded at the write step.
+- The three-level cut points (`<0.5` 低, `<1.5` 中, else 高) are **provisional and uncalibrated**.
+  They are derived from the zero-indexed score scale, and the raw score is stored so recalibrating
+  does not require re-running a day's report.
+- **Classification runs before the generation loop, concurrently.** The two stages have no
+  dependency in either direction, so their ordering was only ever historical. Measured: 12
+  real articles in 3.3s at 6 workers against ~12s one at a time. The dependency that *does*
+  exist is positional - `decisions[k]` must belong to `articles[k]` - so the eligibility test
+  in the concurrent stage is kept character-for-character identical to the loop's, and any
+  article that fails still occupies its own key with a `None` rather than being absent (an
+  absent key would let the loop treat a neighbour's judgement as its own). Concurrency is
+  kept at 6 deliberately: the service is new enough to return `529` under load, and raising
+  the fan-out buys retries rather than throughput.
+- The client is **fail-loud** (`JevError` with the HTTP status and a 400-character truncated body,
+  never the key); the caller is **fail-soft** (per article, printing a WARN and falling back). One
+  unclassifiable article must not abort a day's report - but a client must not disguise a failure
+  as a plausible-looking answer either.
+- **New data egress**: article titles and bodies now also go to `api.typesafe.ai`. Article text
+  already went to DeepSeek for summarisation, so this is a new vendor rather than a new category,
+  but it is a vendor that did not exist before 2026-09-15. Configuring `typesafeApiKey` is the
+  opt-in; `daily --no-ai` remains the way to keep everything local.
+- The key is a first-class config field (`typesafeApiKey`, in `ENCRYPTED_KEYS`, settable via
+  `config set`), and Python reads it through `_utils.get_typesafe_key()`. That function returns an
+  empty string rather than raising when the ciphertext cannot be decrypted - `configService`'s
+  `lockDecrypt()` silently returns `''` in the same situation, and a config copied from another
+  machine must degrade to the old path rather than crash the daily run.
+- **The report's admission question is now asked directly.** `worth_including` (a `noul`) rides
+  along in the same request - measured at 0.91s for 12 questions versus 0.84s for 2, with `state`
+  dominating the tokens, so the marginal question is essentially free - and lands in frontmatter as
+  `includeScore`. The gate used to be `relevance != '高'`, which asks "how useful is this to the
+  reader" and then reads the answer as "put it in today's report". Those are different questions and
+  no threshold tuning can reconcile them. The two scores do diverge in practice: an award
+  announcement scored `relevance` 0.79 but `includeScore` 0.03 (related to the field, nothing to
+  use today), and two engineering posts landed at 0.48/0.63 - close enough to the cut point to show
+  the probability is not saturated at the ends.
+- **Both loaders now share one predicate** (`admits()`), with `--include-all` to revert to
+  collecting everything. This is a real behaviour change on the primary path: the report will
+  contain fewer non-focus articles than before, because before it contained *all* of them. Articles
+  written before `includeScore` existed fall back to the old `relevance == '高'` rule, so
+  regenerating an old date does not silently swap its article set.
+- An unused question is worse than no question. `is_research_paper` was added in the first cut of
+  this change and never read by anything - the same "compute it and throw it away" shape as the
+  exporter's old `COVER_STATE` counters. It was removed and replaced by `worth_including`.
+- **Not done, deliberately**: the other eight "ask the LLM then parse the text" call sites (assistant
+  tool routing, long-term memory extraction, todo urgency, monthly-report task detection, ...),
+  the `tags` field, and `TOPICS` being duplicated across five files. The first group was never
+  measured on Chinese; the others are separate defects with their own blast radius.
+
+## D-032: Use the decision model as a reranker - one request per pass
+
+**Status:** Active
+
+`semantic_search.rerank()` takes the top 20 hits from the first-stage search, asks one
+`noul` question per candidate in a **single** request, and reorders by the returned
+probabilities. `search` calls it before slicing to `top_k`; `--no-rerank` restores the
+previous behaviour exactly.
+
+**Reason:** the retrieval stage had no second pass at all. `search()` scored by cosine
+similarity and took `argsort[:top_k]` - one line, no reranking. Embeddings answer "is this
+semantically near the query", not "does this actually answer it", and the keyword fallback
+(used whenever embeddings are unavailable or return zero vectors) answers something cruder
+still. Reranking is the purest form of what this model does, and the cost model makes it
+viable: measured 0.84s for 2 questions against 0.91s for 12, since `state` dominates the
+token count. **One pass over 20 candidates is ~1 second, not 20 round trips.**
+
+**Consequences:**
+
+- **Numbering is the hazard.** If question `c3` gets answered against candidate `c5`, the
+  most relevant hit sinks to the bottom and the result looks like an ordinary "the model
+  thought it was irrelevant" outcome. Nothing errors. So every candidate carries an
+  explicit `【候选k】` label in the `state`, and the request also asks a `choice` for
+  "which candidate best answers this" purely as a **cross-check**: if the single choice
+  disagrees with the argmax of the per-candidate scores, a warning is printed. The check
+  only warns - it does not reorder, because one wrong answer should not be able to swap
+  the whole list.
+- Verified live before shipping: the relevant article was planted at position 4 of 8 and
+  came out first at 0.94 against 0.01-0.04 for the rest, with the self-check agreeing.
+- `score` keeps its meaning (cosine similarity or keyword count) and the new value goes to
+  `rerankScore` - the same additive-key rule as `relevanceScore` and `includeScore`.
+- A candidate the model did not score is ordered **after** the scored ones and carries no
+  `rerankScore`: "unknown" and "irrelevant" are different answers, and collapsing them
+  would silently reorder on a partial response.
+- Fail-soft: no client, fewer than two candidates, or any error returns the original order.
+  Reranking is an improvement to search, not a precondition for it.
+- **Transient failures are retried.** The client got a live `HTTP 529 system_overloaded`
+  while this was being built; TypeSafe's own reference implementation retries transient
+  provider failures twice by default. `JevClient` now retries 429/5xx/529 with a
+  deliberately short backoff (worst case ~2.4s), because the daily pipeline calls it once
+  per article and a long backoff would stretch an already overloaded run into tens of
+  minutes - time the caller should be spending on its fallback path.
+
+## D-033: Every machine judgement shown to a person carries its evidence
+
+**Status:** Active
+
+`scripts/reply_debt.py` asks, once per conversation, whether the thread is sitting on a reply
+the user owes (`waiting`), how urgent it is, whether a promise is outstanding, whether money or
+delivery is involved, and what kind of conversation it is. Results are ranked and printed with
+their probabilities. Two rules came out of building it, and both are general:
+
+1. **A message with no text must be labelled, not left blank.** WeChat stores images, voice
+   notes, videos and stickers with an empty `message_content`. Unlabelled, they entered the
+   state as a line reading `对方：` with nothing after it - and the model returned a confident
+   `0.48` for "is this person waiting on me" **from an empty line**. Every such message now
+   carries its type (`[图片]` / `[语音]` / `[非文本 localType=N]`). Measured effect: that same
+   conversation dropped to `0.40` and moved out of the result set. A model asked to judge
+   nothing will still answer; supplying the type is what stops it.
+2. **A judgement shown to a human must carry how thin its evidence was.** "Waiting 0.69" derived
+   from a two-character last message is not the same claim as one derived from a full
+   explanation, and the model cannot tell the difference - it only sees text. So each row prints
+   `证据：对方末条 N 字 · 对方实质发言 M 条`, and anything resting on fewer than five characters
+   is marked as too thin to act on.
+
+**Also:** `waiting` has one mechanically checkable failure mode - claiming the other side is
+waiting while the last message in the transcript is the user's own. That contradiction is
+detected and reported. It is the only part of this output that can be falsified without reading
+the messages by hand, which is exactly why it is worth checking.
+
+**Honest limitations:** there is no gold standard, so every number is a prompt, not a fact. On
+the machine this was developed on the tool reports **two** candidates at 0.54 and 0.62 out of 25
+recent conversations, with nine more between 0.30 and 0.45 marked uncertain and three filtered
+out as customer-service or marketing - a modest result, and the right one for someone who
+answers promptly. It is not evidence that the model would be accurate on someone else's data.
+Debt age is measured from the **other side's** last message, not the conversation's last
+activity: if the user replied most recently the debt is zero, and using session activity would
+have flattened exactly the case worth surfacing.
+
 ## Decision Template
 
 

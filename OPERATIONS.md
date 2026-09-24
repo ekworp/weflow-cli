@@ -148,6 +148,42 @@ weflow-cli sync verify <会话>                   # 重读记录范围并与当�
 
 **没有"稳定游标"**：`sync` 提供的是重叠窗口 + 本地去重，不是可直接续传的游标（D-027 要求所有后端都支持后才能宣称）。边界消息被重复读取是**预期行为**，会被去重吸收。
 
+### 谁在等我回话
+
+```powershell
+python scripts/reply_debt.py                     # 最近 14 天有动静的会话
+python scripts/reply_debt.py --days 75 --limit 25 --min-prob 0.45
+python scripts/reply_debt.py --json
+```
+
+每个会话一次决策调用（一次请求里同时问：是否停在我该回的位置、多急、有没有没兑现的
+承诺、涉不涉及钱、属于哪类），所以每条判断都知道它属于哪个人。25 个会话约 5 秒。
+`waiting` 概率低于 `--min-prob` 的不算欠账；判定为客服/推销/通知类的不计入（但会报数量，
+免得看起来像没扫到）。
+
+- **每行都会打印它的证据有多薄**：`证据：对方末条 N 字 · 对方实质发言 M 条`。
+  少于 5 个字会直接标注「证据很薄，这个分数不可当结论」——一个从两个字的末条得出的
+  0.69 和一个从整段说明得出的 0.69 不是一回事。
+- 判定"对方在等我"但对话最后一条其实是我发的，会被自检抓出来单列。
+- **没有金标准校准过**，当提示看，不当事实用。图片/语音等非文本消息以类型标签进入判断，
+  不会被当成空内容。
+
+### 检索与重排
+
+```powershell
+weflow-cli search "PM2.5 对植物用水效率的影响"
+weflow-cli search "..." --no-rerank     # 只按向量/关键词相似度，不调决策模型
+```
+
+检索分两段：第一段算相似度取回 20 条候选，第二段用**一次**决策请求给每条候选问一个
+"是否真的回答了这个问题"，按概率重排后返回 `--top-k` 条（默认 10）。第二段约 1 秒，
+与候选数基本无关。
+
+- 返回里 `score` 仍是相似度（含义没变），重排的分数在 `rerankScore`。
+- 没配 `typesafeApiKey`、连接失败或服务过载（529）时，**原序返回并打一行 WARN**，
+  检索本身不会因此失败。瞬时错误会自动重试最多 2 次。
+- 想确认重排有没有帮上忙：同一个查询跑一次带重排、一次 `--no-rerank` 对比顺序即可。
+
 ### 语音消息转文字
 
 HTML 里放不出语音：微信语音是 **SILK v3** 格式，浏览器不支持，ffmpeg 也没有 SILK 解码器（只有 AMR）。所以语音转文字是让语音消息在导出里能携带信息的唯一办法。
@@ -258,6 +294,32 @@ weflow-cli config show
 ```powershell
 weflow-cli config set dailySourceCategories '{"公众号A":"新闻","公众号B":"政治"}'
 ```
+
+### 文章分类用谁判断
+
+主题与相关度默认由 TypeSafe 的 Jev 决策模型判断（`choice` 选主题、`score` 打相关度，
+返回概率而不是一段要解析的文字）。配了 key 就用，没配就沿用原来的 LLM 解析路径：
+
+```powershell
+weflow-cli config set typesafeApiKey "..."   # 机器绑定加密保存，和 deepseekApiKey 一样
+weflow-cli config set typesafeApiKey ""      # 清空即回到 LLM 解析路径
+```
+
+- 相关度会写进 frontmatter 的 `relevance`（仍是「高/中/低」三个字），并额外写入
+  `relevanceScore`（原始分值）与 `topicConfidence`（主题的置信度）。那三档的切点是
+  暂定的，原始分留着，将来重新校准时不用重跑历史日报。
+- 同一批问题里还问了一个**「该不该收进今天的日报」**（`includeScore`，0~1）。
+  日报的收录门用它，而不是拿相关度顶替——相关度答的是"对读者的实用价值"，
+  答不了"今天该不该收它"。切点默认 `0.5`，同样暂定；`generate_ai_report.py`
+  里那个 `INCLUDE_THRESHOLD` 改起来不用重跑历史数据。想一次收全部：
+  `python scripts/generate_ai_report.py --date <日期> --include-all`。
+- `includeScore` 出现之前写下的老文章没有这个字段，会退回旧的
+  「相关度 = 高才收」规则，所以**重新生成旧日期的报告不会突然换一批文章**。
+- 单篇分类失败（网络、鉴权、超时）只影响那一篇，会打印一行 WARN 并退回 LLM 解析路径，
+  不会让整天的日报中断。
+- 分类要把文章标题与正文发往 `api.typesafe.ai`——和生成摘要发给 DeepSeek 是同一类动作，
+  想完全不出网就用 `weflow-cli daily --no-ai`。
+- 排查用 `python scripts/biz_daily.py --date <日期> --classifier llm`（强制老路径）对比。
 
 启动指定日期阅读器：
 
