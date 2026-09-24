@@ -157,7 +157,7 @@ python scripts/quality_eval.py score <该文件>   # 准确率 + 校准曲线 + 
 
 按会话逐个判，一个会话一份 state、一次请求问 **5** 个问题，所以**每条判断都知道它属于哪个会话**。
 
-> ⚠️ 模块 docstring（`reply_debt.py:9-12`）写的是"6 个问题"，**代码是 5 个**（`build_questions` `155-174`），测试也钉的是 5 个（`test/reply_debt_test.py:142-147`）。这是 docstring 的笔误，不是被删掉了一个——git 初版 `7612060` 同样是 5 个。**不要为了对齐 docstring 去加第六个问题。**
+> ⚠️ 模块 docstring（`reply_debt.py:9-12`）写的是"6 个问题"，**代码是 5 个**（`build_questions` `155-174`），测试也钉的是 5 个（`test/reply_debt_test.py:142-147`）。这是 docstring 的笔误，不是被删掉了一个——`reply_debt.py` 最初那一版同样是 5 个。**不要为了对齐 docstring 去加第六个问题。**
 
 五个问题是：`waiting`（noul，对方是否在等我回应）、`urgency`（score，4 档）、`commitment`（noul，我承诺过而没下文的）、`money`（noul，硬承诺）、`kind`（choice，`KINDS` `54-61`）。
 
