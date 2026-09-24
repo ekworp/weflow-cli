@@ -28,7 +28,9 @@ from pathlib import Path
 
 # 公共工具
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _utils import call_deepseek, load_config, decrypt_lock, get_api_key, write_with_frontmatter, format_wikilinks
+from _utils import (call_deepseek, load_config, decrypt_lock, get_api_key,
+                    write_with_frontmatter, format_wikilinks,
+                    TOPICS, TOPIC_CRITERIA)
 
 try:
     from sqlcipher3 import dbapi2 as sqlcipher
@@ -48,16 +50,20 @@ except ImportError:
 # ====== Config ======
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(os.path.expanduser('~'), '.weflow-cli', 'config.json')
+# 配置一律走 _utils.load_config()（它自己解析路径）。这里原先还有一份 CONFIG_PATH，
+# 定义了但没人用过。
 DB_PATH = None  # auto-detect from config
 OUTPUT_ROOT = os.path.join(SCRIPT_DIR, 'output', 'biz-daily')
-MAX_ARTICLES = 50  # 最多抓取篇数
+# 这里曾有一个 MAX_ARTICLES = 50，注释写着"最多抓取篇数"——**它从来没有被读过**。
+# 真正生效的是 --limit（默认 0 = 不限），所以一天 150–270 篇是常态。一个写着上限
+# 却不生效的常量，比没有它更误导人。
 FETCH_TIMEOUT = 15
 DEEPSEEK_TIMEOUT = 60
 FETCH_DELAY_MIN = 8   # 最小抓取间隔 (秒)
 FETCH_DELAY_MAX = 12  # 最大抓取间隔 (秒)
 
-TOPICS = ['AI', '学术', '新闻', '文学', '投资', '政治']
+# TOPICS 现在从 _utils 导入（见文件头的 import）——分类法只有一份定义，
+# 因为"散文写的枚举"已经漂过一次：这里曾硬编码五类，而 TOPICS 是六类。
 
 
 def load_source_categories(config: dict) -> dict[str, str]:
@@ -113,6 +119,30 @@ def _guess_topic(article: dict) -> str:
 
     # Default: news
     return '新闻'
+
+
+def _serializable_article(article, date_str):
+    """一篇文章 -> `.articles.json` 里的那条记录。
+
+    **判断的原始概率必须一起写进去。** 报告优先读这个文件，只把概率写进 md 的
+    frontmatter 的话，它们在报告那条主路径上等于不存在——真的发生过：日报末尾的
+    "我拿不准的"永远只输出一句"没有概率字段"，而 frontmatter 里明明有。
+    """
+    entry = {
+        'title': article.get('title', ''),
+        'source': article.get('account_name', ''),
+        'date': date_str,
+        'time': article.get('time', ''),
+        'topic': article.get('topic', ''),
+        'relevance': article.get('relevance', '中'),
+        'tags': article.get('tags', []),
+        'summary': article.get('summary', article.get('digest', '')),
+        'url': article.get('url', ''),
+    }
+    for key in ('relevanceScore', 'topicConfidence', 'includeScore'):
+        if article.get(key) is not None:
+            entry[key] = round(float(article[key]), 3)
+    return entry
 
 
 def _classify_with_jev(client, title, body, topics):
@@ -197,12 +227,8 @@ TOPIC_PROMPT = f"""对文章分类、深度摘要、打标签，并评估与读�
 
 【主题】必须且只能是：{' / '.join(TOPICS)} 中的一个词。
 
-判断规则：
-- AI：AI大模型/Agent/编程/开源/科技产品/工具教程
-- 投资：股票基金/融资/经济分析/商业市场
-- 新闻：时事政策/社会热点/娱乐/招聘促销/会议通知
-- 文学：散文小说/美食旅游/生活随笔/历史文化
-- 学术：科研论文/期刊文章/实验室成果/学术会议/高校研究（环境/气候/地理/海洋/生态/化学/材料/生物医学等）
+判断规则（每一类都必须落到其中一条）：
+{chr(10).join('- %s：%s' % (name, desc) for name, desc in TOPIC_CRITERIA.items())}
 
 【相关度】对上述读者的实用价值：
 - 高：可直接用于科研（新工具/新方法/数据源/代码库）
@@ -210,7 +236,7 @@ TOPIC_PROMPT = f"""对文章分类、深度摘要、打标签，并评估与读�
 - 低：信息性阅读（纯新闻/娱乐/文学）
 
 **分类关键**：
-- 【主题】只写一个词（AI/学术/新闻/文学/投资），不要写其他文字
+- 【主题】只写一个词（{'/'.join(TOPICS)}），不要写其他文字
 - 【相关度】只写一个词（高/中/低）
 - 科研论文、期刊文章优先归学术；AI技术/工具/产品归AI
 
@@ -868,20 +894,7 @@ def main():
         topic_groups[t].append(a)
 
     # --- 写入结构化 JSON：一次提取，多次复用（供 AI 报告等下游使用） ---
-    serializable = []
-    for a in articles:
-        entry = {
-            'title': a.get('title', ''),
-            'source': a.get('account_name', ''),
-            'date': date_str,
-            'time': a.get('time', ''),
-            'topic': a.get('topic', ''),
-            'relevance': a.get('relevance', '中'),
-            'tags': a.get('tags', []),
-            'summary': a.get('summary', a.get('digest', '')),
-            'url': a.get('url', ''),
-        }
-        serializable.append(entry)
+    serializable = [_serializable_article(a, date_str) for a in articles]
 
     json_path = out_dir / '.articles.json'
     try:

@@ -1,8 +1,7 @@
 """
 weflow-cli 公共工具函数 — 供 biz_daily / classify_daily / chat_report 等共用。
 """
-import os, json, base64, socket, urllib.request, hashlib, time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os, json, base64, socket, urllib.request, hashlib
 from functools import wraps
 
 
@@ -340,62 +339,31 @@ def clear_cache(cache_subdir: str = ''):
         fpath = os.path.join(target, fname)
         if os.path.isfile(fpath):
             os.unlink(fpath)
-
-
-# ======================================================================
-# 并发 API 调用 — 替代串行 + time.sleep() 模式
-# ======================================================================
-
-def parallel_map(func, items, max_workers: int = 3, delay: float = 0.1,
-                 desc: str = '') -> list:
-    """并发执行函数，自动控制并发数和速率。
-
-    Args:
-        func: 接受单个 item 的函数，返回结果
-        items: 待处理的列表
-        max_workers: 最大并发数（默认 3，避免 API 限流）
-        delay: 每个任务提交后的延迟（秒），用于速率控制
-        desc: 进度描述（用于日志输出）
-
-    Returns:
-        与 items 顺序对应的结果列表
-    """
-    results = [None] * len(items)
-    errors = [None] * len(items)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_idx = {}
-        for idx, item in enumerate(items):
-            future = executor.submit(func, item)
-            future_to_idx[future] = idx
-            if delay > 0:
-                time.sleep(delay)
-
-        done_count = 0
-        total = len(items)
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                results[idx] = future.result()
-            except Exception as e:
-                errors[idx] = e
-                if desc:
-                    print(f'  [{desc}] 第 {idx+1}/{total} 项失败: {e}')
-            done_count += 1
-            if desc and done_count % 10 == 0:
-                print(f'  [{desc}] 进度: {done_count}/{total}')
-
-    # 报告错误统计
-    fail_count = sum(1 for e in errors if e is not None)
-    if fail_count > 0 and desc:
-        print(f'  [{desc}] 完成: {total - fail_count} 成功, {fail_count} 失败')
-
-    return results
-
-
 # ======================================================================
 # Config Decrypt
 # ======================================================================
+
+# ======================================================================
+# 主题分类法 —— **唯一一处定义**
+#
+# 列表与定义都收在这里，因为「散文写的枚举会漂」在这个仓库里已经真的发生过：
+# `biz_daily.TOPIC_PROMPT` 的第一行按 TOPICS 生成了六类，但同一段提示词后面两处
+# 提醒是硬编码的五类（少了政治），判断规则里也没有政治那一栏——而政治在语料里占 26%。
+# 两条路径（LLM 提示词 / 决策模型的判据）现在读同一张表，所以它们不可能再对不上。
+#
+# **顺序有意义**：`generate_ai_report` 按这个顺序给报告分栏。
+TOPICS = ['AI', '学术', '新闻', '文学', '投资', '政治']
+
+# 每一类的判据。既生成提示词里的判断规则，也直接作为 Jev 的 choice criteria。
+TOPIC_CRITERIA = {
+    'AI': 'AI大模型/Agent/编程/开源/科技产品/工具教程',
+    '投资': '股票基金/融资/经济分析/商业市场',
+    '新闻': '时事政策/社会热点/娱乐/招聘促销/会议通知',
+    '文学': '散文小说/美食旅游/生活随笔/历史文化',
+    '学术': '科研论文/期刊文章/实验室成果/学术会议/高校研究',
+    '政治': '党政理论/政策解读/领导人讲话/官方评论',
+}
+
 
 def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
