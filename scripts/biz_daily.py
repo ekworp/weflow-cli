@@ -230,6 +230,29 @@ def _classify_with_jev(client, title, body, topics):
 # 把它排在那条串行的 LLM 循环里一篇一篇等。并发数克制一些：服务 2026-09-15 才上线，
 # 打满了会返回 529（已实测遇到过），并发拉高只会换来一堆重试。
 JEV_WORKERS = 6
+# 图片并发。取的是 qpic.cn（微信 CDN），浏览器本来就并发取图；串行只是实现选择。
+# 实测每张 0.37s、135 KB、一篇 14–31 张，串行下来 190 篇约 18 分钟。
+IMAGE_WORKERS = 6
+
+
+def classifier_plan(no_ai, classifier, deepseek_key, engine):
+    """这次日报用哪条判断路径。返回 `'skip' | 'jev' | 'llm'`。
+
+    这是 D-031 那句"`--classifier` 是一条命令回滚"的**全部实现**——三条分支此前
+    没有任何测试，而回滚承诺就压在它们上面：
+
+    * `'llm'` 必须**不碰 Jev**（一键回退，也是"同一天两条路各跑一遍"的做法）；
+    * `'jev'` 只是**意图**，不是结果——没有 key、或 key 解不开时，建客户端会失败，
+      由调用方按 `classifier == 'jev'` 决定要不要告警，然后安静退回老路（`auto` 的语义）；
+    * `'skip'` 让**整块 Phase 2 都不执行**：`--no-ai`，或 `dailyAiEnabled=false`
+      （那个配置项在更早处被折进 `no_ai`），或 deepseek 引擎但没 key。
+
+    单独成函数是为了能**离线枚举**这几种组合——它们决定"有没有数据出境"，
+    不该只靠读代码确认。
+    """
+    if no_ai or not (deepseek_key or engine != 'deepseek'):
+        return 'skip'
+    return 'jev' if classifier in ('auto', 'jev') else 'llm'
 
 
 def _classify_articles_parallel(articles, client, topics, workers=JEV_WORKERS):
@@ -284,6 +307,78 @@ def _apply_decision(article, decision, set_topic=True):
     if decision.get('includeScore') is not None:
         article['includeScore'] = decision['includeScore']
     return True
+
+
+SUMMARY_WORKERS = 6
+# 单篇摘要的实测耗时（3 篇串行 2.27/2.92/2.45s，含网络）。只用来报「串行约需多少秒」。
+SUMMARY_SECONDS_PER_ARTICLE = 2.5
+
+
+def summary_prompt_for(article, category_hint):
+    """这一篇要发的提示词与 `max_tokens`。跟着 `category_hint` 走两条不同分支。
+
+    抽出来是为了让"取摘要"能并发：配了类别的来源用短提示词（`max_tokens=1000`），
+    其余的用完整提示词（`2000`）。两条分支的文本与串行版本逐字相同——搬动的是
+    **调用位置**，不是内容。
+    """
+    content = article.get('fetched_md') or article.get('local_text', '')
+    if category_hint:
+        return (f'''请只为下面这篇公众号文章生成一段 50-300 字的中文摘要。
+来源类别已经确定为「{category_hint}」，不要重新判断或改写文章分类，不要输出主题、标签、相关度或概念字段。
+
+标题：{article["title"]}
+来源：{article["account_name"]}
+
+正文：
+{content[:4000]}''', 1000)
+    prompt = TOPIC_PROMPT + f'\n\n标题：{article["title"]}\n来源：{article["account_name"]}'
+    prompt += f'\n\n内容：\n{content[:4000]}'
+    return prompt, 2000
+
+
+def _summarise_articles_parallel(articles, engine, api_key, workers=SUMMARY_WORKERS):
+    """把每篇的 LLM 调用先并发跑完，返回与 `articles` 等长的 `(response, error)`。
+
+    **只有网络等待是并发的**：调用方仍按原顺序串行地解析与落字段，所以每篇的写入
+    顺序、以及失败时走哪条兜底分支，都与串行版本一致。这一层不碰 article dict。
+
+    资格判断必须与调用方**逐字一致**（`content and len(content.strip()) > 50`），
+    否则会出现"并发跑了、主循环却不认为该跑"的错位——那正是 `_classify_articles_parallel`
+    里用下标对齐要防的东西，这里同样按**原下标**回填。
+
+    实测（12 篇）：串行约 12s → 6 路约 3s。串行时每篇后睡 0.3s 的节奏挪到了
+    worker 里（每个请求照样睡一次），所以对上游的请求速率没有变密。
+    """
+    results = [(None, None)] * len(articles)
+    jobs = [i for i, a in enumerate(articles)
+            if (a.get('fetched_md') or a.get('local_text', ''))
+            and len((a.get('fetched_md') or a.get('local_text', '')).strip()) > 50]
+    if not jobs:
+        return results
+
+    from _utils import call_ai
+
+    def one(index):
+        article = articles[index]
+        prompt, max_tokens = summary_prompt_for(article, article.get('source_category', ''))
+        try:
+            return index, call_ai(prompt, engine, api_key, max_tokens=max_tokens), None
+        except Exception as exc:            # 交给调用方那条原有的 except 分支
+            return index, None, exc
+        finally:
+            time.sleep(0.3)
+
+    started = time.time()
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for index, response, error in pool.map(one, jobs):
+            results[index] = (response, error)
+
+    ok = sum(1 for response, _error in results if response is not None)
+    # 与分类那段同一个形状：并发之后逐篇日志不再说明什么，但三件事必须看得见——
+    # 成了几篇、实际耗时、串行本来要多久。
+    print(f'  摘要完成 {ok}/{len(jobs)} 篇，耗时 {time.time() - started:.1f}s'
+          f'（{workers} 并发；串行约需 {len(jobs) * SUMMARY_SECONDS_PER_ARTICLE:.0f}s）')
+    return results
 
 
 TOPIC_PROMPT = f"""对文章分类、深度摘要、打标签，并评估与读者的相关度。
@@ -382,6 +477,27 @@ WECHAT_UA = (
     'MicroMessenger/8.0.38(0x18002633) NetType/WIFI Language/zh_CN'
 )
 
+def _decode_body(raw: bytes, content_encoding: str) -> str:
+    """按 `Content-Encoding` 解压响应体。认不出来就原样解码。
+
+    **只认我们主动要求的两种**（`gzip`/`deflate`）——请求里声明的就是这两种，
+    服务器不该回别的；真回了不认识的，退回原样解码而不是抛错：那就会走
+    `fetch_article` 的重试与回退，把一次"少传了字节"的优化变成"抓不到文章"。
+    """
+    enc = (content_encoding or '').strip().lower()
+    if enc == 'gzip':
+        import gzip
+        raw = gzip.decompress(raw)
+    elif enc == 'deflate':
+        import zlib
+        # 裸 deflate（无 zlib 头）是这里的常见形态，先按裸的试，再退回带头的。
+        try:
+            raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+        except zlib.error:
+            raw = zlib.decompress(raw)
+    return raw.decode('utf-8', errors='ignore')
+
+
 def fetch_article(url: str, max_retries: int = 3) -> str | None:
     """Fetch WeChat article with WeChat browser UA to bypass WAF.
     Retries up to max_retries times if content is too short."""
@@ -395,9 +511,16 @@ def fetch_article(url: str, max_retries: int = 3) -> str | None:
                 'Origin': 'https://mp.weixin.qq.com',
                 'Accept': 'text/html,application/xhtml+xml',
                 'Accept-Language': 'zh-CN,zh;q=0.9',
+                # **`urllib` 默认不发这个头**，于是服务器只好把整页未压缩地传过来。
+                # 微信文章页是 3–4 MB（大量内联 JS/CSS），实测同一篇：不发头 33–40s，
+                # 发了 gzip 后 0.7–0.8 MB / 6–10s——正文一模一样（解压后同尺寸，
+                # `js_content` 与 `rich_media_content` 都在）。传的字节更少，
+                # 上游压力是**变小**的，与"按篇节流"同一个方向。
+                'Accept-Encoding': 'gzip, deflate',
             })
             with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
-                html = resp.read().decode('utf-8', errors='ignore')
+                raw = resp.read()
+                html = _decode_body(raw, resp.headers.get('Content-Encoding', ''))
 
             # Validate: article content must include js_content div
             if 'js_content' not in html and 'rich_media_content' not in html:
@@ -465,31 +588,50 @@ def fetch_article(url: str, max_retries: int = 3) -> str | None:
     return None
 
 
-def download_images_to_local(markdown: str, images_dir: Path) -> tuple[str, dict]:
-    """Download mmbiz images to local directory. Returns (markdown, url_mapping)."""
+def _download_one_image(url: str, local_path: Path) -> bool:
+    """取一张图。成功返回 True；失败**不抛**——一张图挂了不该影响这一篇的其它图。"""
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://mp.weixin.qq.com/',
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read(10 * 1024 * 1024)  # max 10MB
+        if data:
+            local_path.write_bytes(data)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def download_images_to_local(markdown: str, images_dir: Path,
+                             workers: int = IMAGE_WORKERS) -> tuple[str, dict]:
+    """Download mmbiz images to local directory. Returns (markdown, url_mapping).
+
+    **并发取图**（`IMAGE_WORKERS`）：串行只是实现选择，实测 190 篇约 18 分钟。
+
+    只登记**真的在本地存在**的文件。原先每张图在下载前就写进映射，于是下载失败的
+    也留一条——而映射会被注入阅读器（`window._IMG_MAP`，见 `generate_html.py`），
+    让页面去找一个不存在的文件。保留远程链接才是对的：阅读器按远程取照样能看。
+    """
     url_mapping = {}  # remote_url -> local_rel_path
 
     if not markdown:
         return markdown, url_mapping
 
-    # Create images directory
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find all image URLs in markdown
-    img_pattern = re.compile(r'!\[(.*?)\]\((https?://[^)]+)\)')
-    img_matches = img_pattern.findall(markdown)
-
+    img_matches = re.compile(r'!\[(.*?)\]\((https?://[^)]+)\)').findall(markdown)
     if not img_matches:
         return markdown, url_mapping
 
-    downloaded_count = 0
-    for alt, url in img_matches:
+    targets, seen = [], set()
+    for _alt, url in img_matches:
         # Process any qpic.cn (mmbiz/mmecoa) images
-        if '.qpic.cn' not in url:
+        if '.qpic.cn' not in url or url in seen:
             continue
-
-        # Generate filename from URL hash
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        seen.add(url)                     # 同一张图在页面上可能出现多次，只取一次
         ext = '.jpg'  # default
         if '.png' in url or 'wx_fmt=png' in url:
             ext = '.png'
@@ -497,33 +639,28 @@ def download_images_to_local(markdown: str, images_dir: Path) -> tuple[str, dict
             ext = '.gif'
         elif '.webp' in url or 'wx_fmt=webp' in url:
             ext = '.webp'
+        local_filename = f'{hashlib.md5(url.encode()).hexdigest()[:12]}{ext}'
+        targets.append((url, images_dir / local_filename, f'images/{local_filename}'))
 
-        local_filename = f'{url_hash}{ext}'
-        local_path = images_dir / local_filename
-        rel_path = f'images/{local_filename}'
-
-        # Store mapping
-        url_mapping[url] = rel_path
-
-        # Skip if already downloaded
+    downloaded_count = 0
+    todo = []
+    for url, local_path, rel_path in targets:
+        # Skip if already downloaded——重跑同一天时这一步就把它们全跳过了
         if local_path.exists() and local_path.stat().st_size > 0:
+            url_mapping[url] = rel_path
             downloaded_count += 1
-            continue
+        else:
+            todo.append((url, local_path, rel_path))
 
-        # Download image
-        try:
-            req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://mp.weixin.qq.com/',
-            })
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read(10 * 1024 * 1024)  # max 10MB
-                if len(data) > 0:
-                    local_path.write_bytes(data)
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = {pool.submit(_download_one_image, url, path): (url, rel_path)
+                       for url, path, rel_path in todo}
+            for future in as_completed(futures):
+                url, rel_path = futures[future]
+                if future.result():
+                    url_mapping[url] = rel_path
                     downloaded_count += 1
-        except Exception as e:
-            # Keep original URL if download fails
-            pass
 
     if downloaded_count > 0:
         print(f'  图片下载: {downloaded_count}张')
@@ -804,12 +941,13 @@ def main():
     # 别名会漂：今天跑的和测过的可能不是同一个东西，而结果看起来一切正常。落盘它，
     # 是为了让这件事**可见**。（没走 Jev 时保持 None，如实表示"没用判断模型"。）
     decision_model = None
-    if not args.no_ai and (api_key or engine != 'deepseek'):
+    plan = classifier_plan(args.no_ai, args.classifier, api_key, engine)
+    if plan != 'skip':
         print(f'\n=== Phase 2: AI 摘要 + 主题分类 (engine={engine}) ===\n')
         from _utils import call_ai
         from jev_client import create_client
         # 判断交给 Jev，生成留给 LLM。没配 key 就整条走老路（auto 的语义）。
-        jev_client = create_client(config=config) if args.classifier in ('auto', 'jev') else None
+        jev_client = create_client(config=config) if plan == 'jev' else None
         if jev_client is not None:
             print(f'  分类：Jev（model={jev_client.model}，生成摘要仍用 {engine}）')
         elif args.classifier == 'jev':
@@ -819,22 +957,22 @@ def main():
         decisions = _classify_articles_parallel(articles, jev_client, TOPICS)
         if jev_client is not None:
             decision_model = jev_client.last_model
+        # 先把每篇的 LLM 调用并发跑完，再进下面这个串行循环做解析与落字段。
+        # 解析是纯本地操作，并发的价值全在网络等待上；这样循环体本身不用重写，
+        # 每条兜底分支的行为也就与串行版本一致。
+        prefetched = _summarise_articles_parallel(articles, engine, api_key)
         for i, a in enumerate(articles):
             t, n, ti = a['time'], a['account_name'], a['title']
             content = a.get('fetched_md') or a.get('local_text', '')
             if content and len(content.strip()) > 50:
                 try:
                     category_hint = a.get('source_category', '')
+                    response, call_error = prefetched[i]
+                    if call_error is not None:
+                        # 调用是并发阶段做的，异常在那里被捕获了。这里重新抛出，
+                        # 让下面原有的 `except` 接管——兜底行为与串行版本一致。
+                        raise call_error
                     if category_hint:
-                        summary_prompt = f'''请只为下面这篇公众号文章生成一段 50-300 字的中文摘要。
-来源类别已经确定为「{category_hint}」，不要重新判断或改写文章分类，不要输出主题、标签、相关度或概念字段。
-
-标题：{a["title"]}
-来源：{a["account_name"]}
-
-正文：
-{content[:4000]}'''
-                        response = call_ai(summary_prompt, engine, api_key, max_tokens=1000)
                         a['topic'] = category_hint
                         a['tags'] = [category_hint]
                         a['summary'] = response.strip()[:1000]
@@ -843,12 +981,8 @@ def main():
                         _apply_decision(a, decisions.get(i), set_topic=False)
                         a['concepts'] = []
                         print(f'[{i+1}/{len(articles)}] [{t}] {n} - [{category_hint}] 固定来源类别，仅生成摘要')
-                        time.sleep(0.3)
                         continue
-                    prompt = TOPIC_PROMPT + f'\n\n标题：{a["title"]}\n来源：{a["account_name"]}'
-                    prompt += f'\n\n内容：\n{content[:4000]}'
-                    response = call_ai(prompt, engine, api_key, max_tokens=2000)
-
+                    # （提示词与调用已移到 `_summarise_articles_parallel`，响应在上面取。）
                     # 判断来自开头那轮并发分类；没拿到才回落到下面的解析。
                     decision = decisions.get(i)
 
@@ -925,7 +1059,6 @@ def main():
                         a['summary'] = response[:300]
 
                     print(f'[{i+1}/{len(articles)}] [{t}] {n} - [{a.get("topic","?")}] tags={a.get("tags",[])} ({len(a.get("summary",""))}字)')
-                    time.sleep(0.3)
                 except Exception as e:
                     a['summary'] = a.get('digest', '') or content[:300]
                     a['topic'] = a.get('source_category') or DEFAULT_TOPIC

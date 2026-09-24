@@ -12,6 +12,7 @@ import importlib.util
 import io
 import sqlite3
 from pathlib import Path
+import json
 import sys
 import types
 import unittest
@@ -160,6 +161,311 @@ class SerializableArticleTests(unittest.TestCase):
         self.assertEqual(entry['source'], '某号')
         self.assertEqual(entry['summary'], '摘要')
         self.assertEqual(entry['date'], '2026-09-05')
+
+
+class SummaryPrefetchTests(unittest.TestCase):
+    """摘要阶段的**预取**：并发只发生在网络等待上，解析与落字段仍由主循环串行做。
+
+    这个设计的全部价值就是"循环体不用重写、每条兜底分支行为不变"。所以测试重点不是
+    快，而是那两条前提不被破坏：**这一层不碰 article dict**，以及**失败要以异常的形式
+    交回主循环**（主循环的 `except` 才知道该走哪条兜底）。
+    """
+
+    def setUp(self):
+        # worker 里每篇睡 0.3s（保持对上游的请求节奏）。测试不该真的等。
+        patcher = patch.object(biz.time, 'sleep')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.calls = []
+
+    def install(self, fail_on=()):
+        def fake_call_ai(prompt, engine, api_key, max_tokens=2000):
+            self.calls.append({'prompt': prompt, 'max_tokens': max_tokens})
+            if len(self.calls) in fail_on:
+                raise RuntimeError('llm down')
+            return '【摘要】好的\n【标签】a, b'
+        import _utils
+        patcher = patch.object(_utils, 'call_ai', fake_call_ai)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def articles(self, n_long=2, n_short=1):
+        out = [{'title': '标题%d' % i, 'account_name': '某号',
+                'fetched_md': '正文' * 200} for i in range(n_long)]
+        out += [{'title': '短%d' % i, 'account_name': '某号', 'fetched_md': '太短'}
+                for i in range(n_short)]
+        out += [{'title': '没正文', 'account_name': '某号'}]
+        return out
+
+    def test_only_eligible_articles_are_called_and_results_align_by_index(self):
+        self.install()
+        arts = self.articles()
+        results = biz._summarise_articles_parallel(arts, 'deepseek', 'k')
+        self.assertEqual(len(results), len(arts))          # 与 articles 等长
+        self.assertEqual(len(self.calls), 2)               # 只问了够长的那两篇
+        self.assertIsNotNone(results[0][0])
+        self.assertIsNotNone(results[1][0])
+        self.assertEqual(results[2], (None, None))         # 太短：没问
+        self.assertEqual(results[3], (None, None))         # 没正文：没问
+
+    def test_it_does_not_touch_the_articles(self):
+        """这是整个设计的前提：并发层只回填结果表，文章的写入全在主循环里。
+
+        一旦这里顺手改了 article，串行版本的写入顺序与兜底分支就不再等价了。
+        """
+        self.install()
+        arts = self.articles()
+        before = json.loads(json.dumps(arts, ensure_ascii=False, default=str))
+        biz._summarise_articles_parallel(arts, 'deepseek', 'k')
+        self.assertEqual(json.loads(json.dumps(arts, ensure_ascii=False, default=str)), before)
+
+    def test_a_failed_call_comes_back_as_an_error_not_an_exception(self):
+        """失败必须以 `(None, error)` 交回，好让主循环原有的 `except` 接管。
+
+        这里若直接抛，主循环就永远看不到——那些兜底字段（summary/topic/tags）也就
+        不会写，文章会带着空字段进 Phase 3。
+        """
+        self.install(fail_on=(1,))
+        results = biz._summarise_articles_parallel(self.articles(), 'deepseek', 'k')
+        self.assertIsNone(results[0][0])
+        self.assertIsInstance(results[0][1], RuntimeError)
+        self.assertIsNotNone(results[1][0])           # 另一篇不受影响
+
+    def test_the_prompt_follows_the_category_hint(self):
+        """配了类别的来源走短提示词、max_tokens 1000；其余走完整提示词、2000。"""
+        self.install()
+        hinted = [{'title': 'T', 'account_name': 'A', 'fetched_md': '正文' * 200,
+                   'source_category': '学术'}]
+        plain = [{'title': 'T', 'account_name': 'A', 'fetched_md': '正文' * 200}]
+        biz._summarise_articles_parallel(hinted, 'deepseek', 'k')
+        biz._summarise_articles_parallel(plain, 'deepseek', 'k')
+        self.assertEqual(self.calls[0]['max_tokens'], 1000)
+        self.assertEqual(self.calls[1]['max_tokens'], 2000)
+        self.assertNotIn('【主题】', self.calls[0]['prompt'])   # 短提示词不要分类字段
+        self.assertIn('【标签】', self.calls[1]['prompt'])      # 完整提示词要
+
+    def test_nothing_eligible_means_no_calls(self):
+        self.install()
+        results = biz._summarise_articles_parallel([{'title': 'x'}], 'deepseek', 'k')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(results, [(None, None)])
+
+
+class ImageDownloadTests(unittest.TestCase):
+    """图片并发取图，以及**映射必须指向真的存在的文件**。
+
+    并发是实测的收益：同一批 17.2s → 2.1s，190 篇从约 18 分钟降到约 3 分钟。
+    但更要紧的是映射那条：原先每张图在**下载前**就登记，于是下载失败的也留一条，
+    而映射会被注入阅读器（`window._IMG_MAP`）——页面于是去找一个不存在的文件，
+    比保留远程链接更糟。
+    """
+
+    MD = ('![a](https://mmbiz.qpic.cn/a.jpg)\n'
+          '![b](https://mmbiz.qpic.cn/b.png)\n'
+          '![a 又一次](https://mmbiz.qpic.cn/a.jpg)\n'
+          '![外面的](https://example.com/x.jpg)')
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name) / 'images'
+        self.requested = []
+
+    def install(self, failing=()):
+        class Resp:
+            def read(self, size=None):
+                return b'x' * 64
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            url = request.full_url
+            self.requested.append(url)
+            if url in failing:
+                raise OSError('boom')
+            return Resp()
+
+        patcher = patch.object(biz.urllib.request, 'urlopen', fake_urlopen)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_every_distinct_qpic_image_lands_once(self):
+        self.install()
+        _md, mapping = biz.download_images_to_local(self.MD, self.dir)
+        self.assertEqual(sorted(self.requested),
+                         ['https://mmbiz.qpic.cn/a.jpg', 'https://mmbiz.qpic.cn/b.png'])
+        self.assertEqual(len(list(self.dir.glob('*'))), 2)
+        self.assertEqual(len(mapping), 2)
+        # 非 qpic 的图不管（原样留在正文里，按远程取）
+        self.assertNotIn('https://example.com/x.jpg', mapping)
+
+    def test_every_mapping_entry_names_a_file_that_exists(self):
+        self.install()
+        _md, mapping = biz.download_images_to_local(self.MD, self.dir)
+        for rel_path in mapping.values():
+            with self.subTest(rel_path=rel_path):
+                self.assertTrue((Path(self.tmp.name) / rel_path).exists())
+
+    def test_a_failed_image_is_not_mapped_and_does_not_break_the_others(self):
+        self.install(failing={'https://mmbiz.qpic.cn/a.jpg'})
+        _md, mapping = biz.download_images_to_local(self.MD, self.dir)
+        self.assertNotIn('https://mmbiz.qpic.cn/a.jpg', mapping)
+        self.assertIn('https://mmbiz.qpic.cn/b.png', mapping)
+
+    def test_a_rerun_makes_no_requests_at_all(self):
+        """重跑同一天时**一张图都不再请求**——这是"先检查存在"那个 early-return 的价值。
+
+        （第一版这里我写成"只会再请求 b.png"，其实第一次调用已经把两张都下下来了；
+        断言写错的是我，不是代码。桩也必须在调用之前装好，否则那次调用就是真实网络请求。）
+        """
+        self.install()
+        _md, first = biz.download_images_to_local(self.MD, self.dir)
+        self.assertEqual(len(first), 2)
+        self.requested.clear()
+        _md, second = biz.download_images_to_local(self.MD, self.dir)
+        self.assertEqual(self.requested, [])
+        self.assertEqual(second, first)
+
+
+class DecodeBodyTests(unittest.TestCase):
+    """响应体解压。加这个的原因是一次实测：微信文章页 3–4 MB，`urllib` 默认不发
+    `Accept-Encoding`，于是整页未压缩地传——同一篇 33–40s，发了 gzip 后 6–10s。
+    少传的字节就是省下的时间，上游压力反而更小。
+    """
+
+    TEXT = '中文正文' * 50
+
+    def test_gzip(self):
+        import gzip
+        self.assertEqual(biz._decode_body(gzip.compress(self.TEXT.encode()), 'gzip'), self.TEXT)
+
+    def test_gzip_is_case_insensitive(self):
+        import gzip
+        self.assertEqual(biz._decode_body(gzip.compress(self.TEXT.encode()), 'GZIP'), self.TEXT)
+
+    def test_raw_deflate(self):
+        import zlib
+        c = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+        raw = c.compress(self.TEXT.encode()) + c.flush()
+        self.assertEqual(biz._decode_body(raw, 'deflate'), self.TEXT)
+
+    def test_zlib_wrapped_deflate(self):
+        # 有的服务器发带 zlib 头的 deflate；认不出来会退化成"抓不到文章"。
+        import zlib
+        self.assertEqual(biz._decode_body(zlib.compress(self.TEXT.encode()), 'deflate'), self.TEXT)
+
+    def test_an_absent_or_unknown_encoding_passes_through(self):
+        # 退回原样解码，而不是抛错——抛错会触发重试与回退，把优化变成故障。
+        for enc in ('', 'identity', 'br'):
+            with self.subTest(encoding=enc):
+                self.assertEqual(biz._decode_body(self.TEXT.encode(), enc), self.TEXT)
+
+
+class FetchArticleEncodingTests(unittest.TestCase):
+    """`fetch_article` 必须**真的发出** `Accept-Encoding`，并且能读懂回来的压缩体。"""
+
+    HTML = ('<html><body><div id="js_content"><p>' + ('这是一段足够长的正文内容。' * 12) +
+            '</p></div></body></html>')
+
+    class Resp:
+        def __init__(self, body, encoding=''):
+            import io
+            self._body = body
+            self.headers = {'Content-Encoding': encoding}
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def run_fetch(self, body, encoding):
+        import gzip
+        sent = {}
+
+        def fake_urlopen(request, timeout=None):
+            sent['headers'] = {k.lower(): v for k, v in request.header_items()}
+            return self.Resp(body, encoding)
+
+        with patch.object(biz.urllib.request, 'urlopen', fake_urlopen):
+            md = biz.fetch_article('https://mp.weixin.qq.com/s/x')
+        return md, sent
+
+    def test_it_asks_for_compression_and_parses_a_gzipped_page(self):
+        import gzip
+        md, sent = self.run_fetch(gzip.compress(self.HTML.encode()), 'gzip')
+        self.assertEqual(sent['headers'].get('accept-encoding'), 'gzip, deflate')
+        self.assertIsNotNone(md)
+        self.assertIn('这是一段足够长的正文内容', md)
+
+    def test_an_uncompressed_response_still_works(self):
+        # 服务器忽略这个头时不能反过来坏掉——这是最常见的兼容路径。
+        md, _ = self.run_fetch(self.HTML.encode(), '')
+        self.assertIsNotNone(md)
+        self.assertIn('这是一段足够长的正文内容', md)
+
+    def test_a_body_without_the_content_node_is_still_rejected(self):
+        # 原有的验证不能被这次改动放松：没有 js_content 就是没抓到。
+        import gzip
+        md, _ = self.run_fetch(gzip.compress(b'<html><body>nope</body></html>'), 'gzip')
+        self.assertIsNone(md)
+
+
+class ClassifierPlanTests(unittest.TestCase):
+    """`--classifier` 的接线：三条分支决定**有没有数据出境**。
+
+    D-031 承诺"`--classifier` 是一条命令回滚"，而这句话的实现就是这三个返回值。
+    此前没有任何测试——也就是说，没人能离线确认"`llm` 真的不碰 Jev"或
+    "`--no-ai` 真的连 Phase 2 都不进"，只能读代码。
+    """
+
+    def test_no_ai_skips_phase_two_for_every_classifier(self):
+        """总闸。`--no-ai`（或 `dailyAiEnabled=false`，它被折进 no_ai）下，
+        无论 `--classifier` 给什么，整块 Phase 2 都不执行——这是"全本地"的保证。"""
+        for classifier in ('auto', 'llm', 'jev'):
+            with self.subTest(classifier=classifier):
+                self.assertEqual(biz.classifier_plan(True, classifier, 'key', 'deepseek'),
+                                 'skip')
+
+    def test_a_deepseek_run_without_a_key_skips_phase_two_entirely(self):
+        """没 key 就没摘要——老路的解析也要靠 LLM 产出那段文字，所以是整块不跑，
+        不是"跑起来再退回老路"。"""
+        self.assertEqual(biz.classifier_plan(False, 'auto', '', 'deepseek'), 'skip')
+        self.assertEqual(biz.classifier_plan(False, 'jev', '', 'deepseek'), 'skip')
+
+    def test_a_non_deepseek_engine_still_runs_without_a_deepseek_key(self):
+        # 无 key 时引擎会切到 local（`biz_daily` 里更早的一处），摘要照样做。
+        self.assertEqual(biz.classifier_plan(False, 'llm', '', 'local'), 'llm')
+
+    def test_llm_never_asks_for_a_jev_client(self):
+        """**这就是那一条命令回滚**：`--classifier llm` 下不许建客户端。
+
+        建客户端是唯一会让文章标题与正文发往 `api.typesafe.ai` 的动作，所以这一条
+        等于"回滚之后不出网"。"""
+        for key in ('key', ''):
+            with self.subTest(key=bool(key)):
+                self.assertEqual(biz.classifier_plan(False, 'llm', key, 'local'), 'llm')
+
+    def test_auto_and_jev_both_ask_for_a_client(self):
+        self.assertEqual(biz.classifier_plan(False, 'auto', 'key', 'deepseek'), 'jev')
+        self.assertEqual(biz.classifier_plan(False, 'jev', 'key', 'deepseek'), 'jev')
+
+    def test_jev_is_an_intention_not_a_promise(self):
+        """`'jev'` 只表示"去试着建客户端"。
+
+        没配 `typesafeApiKey` 时 `create_client` 返回 None，`auto` 安静退回老路、
+        `jev` 打一行 WARN——两种都由调用方处理。把它们当成"已经用上了 Jev"是错的，
+        这也是为什么这个返回值叫 plan 而不是 used。
+        """
+        self.assertEqual(biz.classifier_plan(False, 'auto', 'key', 'deepseek'), 'jev')
 
 
 class ApplyDecisionTests(unittest.TestCase):
