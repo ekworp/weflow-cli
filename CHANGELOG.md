@@ -8,6 +8,72 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Added
 
+- **The four "search" tools now name each other.** They search four different stores - chat logs,
+  the knowledge base, assistant memory, and a semantic index over chats - and each description used to
+  explain only what it searched, not how it differed from its siblings. `search_knowledge` did not say
+  it is *not* chat history; `search_memory` did not say what "memory" means here. Each now names the
+  store it covers and points at the others. Three eval cases pin the choice ("where did I mention X" must
+  use the chat search and must **not** reach for the knowledge base), which is the part that was never
+  measured.
+
+  Found while writing those cases: **an empty fixture invites retries.** With a stubbed search that
+  returns nothing, the model re-queries with different keywords - seven calls in one run, each with
+  different arguments, so the identical-call guard cannot help. That is the fixture's doing, not a
+  defect, so the fixture now returns a hit (and where it cannot, the count sits in the soft budget).
+
+- **Tools this machine cannot run are no longer offered to the model.** `search_semantic` needs a
+  `dashscopeApiKey` and `get_weread` needs `wereadApiKey`; with neither configured the tools were still
+  in the tool list, so the model tried them and got errors back - the eval's ambiguous-contact case
+  ended with a reply that reported "both search tools failed", which is not the assistant's fault but
+  ours for offering a tool that cannot run. The list is now built by `availableToolDefs()`, which drops
+  a tool when its prerequisite is missing, and the fast path - which dispatches **directly**, bypassing
+  the list - goes through the same predicate before dispatching. The filter is deliberately narrow: it
+  only drops tools that *cannot* run, never tools that merely have no data yet, because "run
+  `weflow-cli wiki compile` first" is a useful answer while an authentication error is not.
+
+- **The eval can now run a conversation, and it separates floors from expectations.** Multi-turn
+  cases let it check the half of memory that was never verified: storing a fact was covered, **using** it
+  was not. `memory-recall` says "remember I'm allergic to peanuts", then asks what to order for dinner;
+  the hard floor is that the fact is in long-term memory, and whether the reply brings it up is reported
+  as a soft expectation - it failed in one run out of three, and an intermittent red trains people to
+  ignore the report. Same principle applied across the board: every `maxTools: 3` became a runaway guard
+  (6) plus an efficiency budget (3), because the same question produced anything from 2 to 7 calls. The
+  criterion is one line: **if the number or expectation moves with the model's route or wording, it is a
+  budget, not a floor.** The only hard cap left is `no-tool`'s 0 - calling a tool when none is needed is
+  a real defect. And `unknown-contact` stopped asserting on wording: the model's way of saying "not
+  found" is unbounded (没找到 / 查不到 / 不存在 / …), so that case now asserts the **observable fact**
+  that the tool call returned nothing.
+
+- **A reading-stats tool, and the eval learned to tell a floor from a budget.** `get_reading_stats`
+  answers "what have I been reading / which accounts post the most" from the local archive (it reuses
+  `daily_stats.py` rather than recomputing the same numbers). Its second purpose is honesty about
+  coverage: when the daily has not run, every account's processed count is zero, and saying "nothing was
+  processed in these 7 days; the last report with content was 2026-09-05 (19 days ago)" is a different
+  statement from letting the user believe those accounts had no content. That is how the staleness was
+  found - a 7-day window showed all zeros while a 30-day window did not, and the difference was not the
+  accounts.
+
+  The eval now separates two things it had conflated: **floors are hard, budgets are soft.** The
+  ambiguous-contact case was failing intermittently on a tool-call cap of 5 while every single run
+  correctly asked which person was meant - the same question produced anywhere from 2 to 7 calls, so
+  the cap was measuring the model's route rather than a defect. `maxTools` is now only a runaway guard
+  (raised to 8) and `toolBudget` reports exceeding the budget as a warning that never fails the run.
+  A flaky case is worse than no case: it teaches people to ignore the report.
+
+- **`contacts -k` only searched the first N rows, and the assistant's name lookup had a blind spot.**
+  Two defects found by trying to resolve a person by name on real data. First, the keyword filter ran
+  **after** `LIMIT`: `get_contacts` fetched the first `limit` rows of `Name2Id` and only then filtered
+  them, so on a 500-contact address book anyone past row 200 was invisible to a search - measured, a
+  lookup by remark hit 3 of 10. The filter now runs first and truncates afterwards (extracted as
+  `filter_contacts`, with tests). Second, `resolveTalker` searched only the most recent **300 sessions**;
+  a name that is not in them fell through to "treat the query as a talker id", so the assistant reported
+  "no messages" for someone who is plainly in the address book. Resolution now falls back to the contact
+  book, matching remark / display name / nickname / alias / username, and still refusing when the match
+  is not unique. Measured on 378 real contacts that are outside the recent sessions: **362 resolved, 10
+  correctly refused for duplicate names, 0 ever resolved to the wrong person**, 5 single-character names
+  still miss - and a miss is safe, because it returns null and the assistant says it could not find
+  them rather than reading someone else's chat.
+
 - **The assistant can see time now, and can reach a specific day.** Two halves of one gap: the
   system prompt carried no current date, so "上周三" had nothing to resolve against, and `get_messages`
   took only a message count - meaning a day far enough back was simply unreachable (the model either
@@ -142,6 +208,37 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   `[图片]` is still masked as text: only the reader's own non-text labels count as labels.
 
 ### Fixed
+
+- **"No pending todos" and "todos were never extracted" were the same sentence.** Todo extraction reads
+  chat logs, so it runs only when the user invokes `weflow-cli todos extract --days N --yes` - it is a
+  confirmed action, and nothing schedules it. On a machine where that has never been run, the todo file
+  does not exist, `list` returns an empty array, and both the assistant tool and the terminal printed
+  "nothing to do". Those are different claims: one is about the user's workload, the other about whether
+  the question was ever asked. This was not hypothetical - on this machine `~/.weflow-cli/todos.json`
+  does not exist, so `get_todos` was answering `(没有待办任务)` to every question about pending work.
+  The script now reports whether the file exists (`list --json --meta` gives `{items, extracted,
+  count}`), the assistant names the missing step and the command that fixes it, and `todos list` /
+  `todos remind` say it too instead of congratulating an empty list.
+
+  The bare-array shape of `list --json` is deliberately unchanged - it is a published capability - so
+  the new signal rides on a flag rather than a changed contract; the tool also falls back to the old
+  wording if it gets an array. `mcp_bridge.py` had always made this distinction; the assistant tool was
+  the one reader that dropped it.
+
+- **The chat export tool reported a directory it may not have written to.** `export_chat` builds the
+  destination as `output/exports/<name>-<timestamp>`, and on a name collision appends `-2`. The reply
+  to the user was assembled from the *pre-collision* name, so the second export in the same second told
+  them to look in `<name>-<timestamp>` while the files were in `...-2`. A write tool that names the wrong
+  location is worse than one that names none: the user goes looking and finds nothing. The message is now
+  built from the directory that was actually written; with the default root it stays a repository-relative
+  path (`output/exports/...`, so it is followable), and with an overridden root it is the bare directory
+  name - an absolute local path has no reason to enter the conversation.
+
+  Found by pointing the tool at a real database with the export root redirected to a temporary directory.
+  The test that should have caught it had pinned the bug: it redirected the root *and* asserted the
+  message contained `output/exports/`, so it was written to match the code rather than the intent. It is
+  now two cases - overridden root reports the bare name, default root reports the relative path - and
+  both assert no drive letter appears.
 
 - **A failed memory save was silent.** `AssistantMemory.save()` ended in `catch { /* persistence failure
   must not break the conversation */ }` - the right *behaviour* (a disk hiccup should not drop the

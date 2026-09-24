@@ -1,5 +1,8 @@
 /**
- * 助手工具的**分支**执行（12 个工具里 11 个走这里）。
+ * 助手工具的**分支**执行。
+ *
+ * 覆盖到哪：18 个工具里 17 个被执行过——16 个在本文件，`save_memory` 在
+ * `assistant-service.test.ts`（它只碰记忆，和整条消息链路一起测更贴近实际）。
  *
  * 此前只有 3 个纯函数被测过，**没有任何测试真正执行过一个工具分支**——也就是说"用户问
  * 「我和某某聊了什么」，助手会读到什么、会不会把内容原样发出去"从来没被验证过。这些分支
@@ -7,17 +10,25 @@
  *
  * 打桩打在**导出的单例**上（`chatService` / `wereadService`），它们和 `assistantTools`
  * 拿的是同一个模块对象，所以不需要模块级 mock。`fetch` 也换掉，于是 `read_favorite` 这条
- * 唯一会出网的工具能整条跑完而不联网。
+ * 唯一会出网的工具能整条跑完而不联网。脚本类工具走 `pythonBridge.setScriptRunner`。
  *
- * 不覆盖：`get_todos` —— 它 spawn 一个 Python 子进程去读真实数据库，没有便宜的桩点；
- * `get_daily_report` / `search_knowledge` 读的是仓库里真实的 `output/` 目录，只断言
- * 与环境无关的那几条路径（缺参、没数据、找不到）。这几条缺口写在 PROJECT_STATE 里。
+ * 只有 `get_daily_report` 一个工具分支没被执行过：它读的目录是模块级常量
+ * （`join(PKG_ROOT, 'output', 'biz-daily')`，路径由 `resolvePackageRoot` 定死），没有注入点。
+ * 于是它走"还没数据"还是"有日报"取决于跑在哪台机器上（本机 `output/` 有数据，CI 干净检出没有），
+ * 断言只能写成"两者皆可"的形状检查——那种测试看着像覆盖、其实什么也没钉住，所以没写。
+ * 别把它和 `search_knowledge` 一起算：后者**有**两条（缺关键词、找不到）。
+ *
+ * 曾经这里写着「`get_todos` 没有便宜的桩点」，那是错的：`setScriptRunner` 一直是公开的
+ * （这个文件里早就在用，见上面的 `stubScript`）。更糟的是——PROJECT_STATE 和 67ac103 的
+ * 提交信息当时都写了"顺手把 `get_todos` 那条没覆盖的分支补上了"，**而那次只写了话、没写测试**。
+ * 一句想当然的话，能让一个能读用户真实待办的工具免于被执行好几轮：注释与文档也是断言，
+ * 同样要被复核。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 
 const HOME = mkdtempSync(join(tmpdir(), 'weflow-assistant-tools-'))
 process.env.HOME = HOME
@@ -29,6 +40,9 @@ const { AssistantMemory } = await import('../src/services/assistantMemory.js')
 const { executeTool } = await import('../src/services/assistantTools.js')
 const { exportService } = await import('../src/services/exportService.js')
 const { configService } = await import('../src/services/configService.js')
+// 顶层具名导入，而不是文件中部那个 `bridge` 命名空间：`beforeEach` 会在模块顶层 await
+// 完成**之前**就跑到（node:test 不等模块求值完），引用中部的 `const bridge` 会撞 TDZ。
+const { setScriptRunner } = await import('../src/services/pythonBridge.js')
 
 const svc = chatService as any
 const weread = wereadService as any
@@ -43,9 +57,13 @@ function ctx(userId = 'u-tools') {
 /** 每个用例前把打桩恢复到"什么都查不到"的干净状态 */
 function resetStubs(): void {
   fetchCalls = []
+  // 脚本类工具（get_todos / search_chats / who_owes_reply / search_semantic …）走 pythonBridge。
+  // 不恢复的话，某条用例装的假 runner 会漏给后面的用例——它们会静默地"跑通"在一个假世界。
+  setScriptRunner(null)
   svc.connect = async () => {}
   svc.listSessions = async () => []
   svc.getMessages = async () => []
+  svc.listContacts = async () => []
   svc.getFavorites = async () => ({ success: true, favorites: [], total: 0 })
   svc.getSnsTimeline = async () => ({ success: true, timeline: [] })
   svc.getSnsExportStats = async () => ({ success: true, data: { totalPosts: 0, totalFriends: 0 } })
@@ -599,7 +617,12 @@ test('export_chat：导出到 output/exports/ 下的新目录，并报出条数'
   try {
     const out = await run('export_chat', { contact: '甲', limit: 100 })
     assert.match(out, /已导出 42 条/)
-    assert.match(out, /output\/exports\/甲-\d{12}/, '路径固定、带时间戳')
+    // **自定义导出根时只报目录名**：原来这条断言钉的是 `output/exports/甲-…`，而那时写的
+    // 是导出根被改过的情况——于是它把"报错位置"这个 bug 一起钉住了（测试照着代码写、
+    // 不是照着意图写）。默认根那条在下面另一个用例里。
+    assert.match(out, /甲-\d{12}\//, '带时间戳的目录名')
+    assert.doesNotMatch(out, /output\/exports\//, '自定义根时不该假称在 output/exports 下')
+    assert.doesNotMatch(out, new RegExp(HOME.split(sep).pop() as string), '不报本机路径')
     assert.equal(calls[0].talker, 'wxid_a', '显示名要先解析成会话 id')
     assert.equal(calls[0].limit, 100)
     const normalized = calls[0].outDir.split(String.fromCharCode(92)).join('/')
@@ -859,4 +882,261 @@ test('get_messages 看不懂的时间写成一句可读的参数错误，而不�
   const out = await run('get_messages', { contact: '甲', since: '上周三' })
   assert.match(out, /时间看不懂/)
   assert.match(out, /3d \/ 2w \/ 12h/, '要告诉它该怎么写')
+})
+
+// ------------------------------------------------- 名字不在最近会话里时查通讯录
+
+test('名字不在会话列表里，但通讯录里有：照样读得到（旧行为是当成一个不存在的 talker）', async () => {
+  // 会话列表只取最近 300 个，通讯录是完整的。名字落在 300 之外的人（很久没聊、或对话很多
+  // 的人）旧行为会被原样当成 talker → 下游读到空 → 助手说"没找到消息"，而他其实在通讯录里。
+  const asked: string[] = []
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  svc.listContacts = async (keyword: string) => {
+    asked.push(keyword)
+    return [{ username: 'wxid_old', displayName: '老同学', remark: '老王', nickname: '小虎', alias: 'huzi' }]
+  }
+  svc.getMessages = async (talker: string) => {
+    asked.push(`read:${talker}`)
+    return talker === 'wxid_old'
+      ? [{ createTime: 1758000000, isSend: false, senderUsername: '老同学', content: '好久不见' }]
+      : []
+  }
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet(k))
+  try {
+    assert.match(await run('get_messages', { contact: '老王' }), /好久不见/, '备注名应当能找到人')
+    assert.match(await run('get_messages', { contact: '小虎' }), /好久不见/, '昵称也认')
+    assert.match(await run('get_messages', { contact: 'huzi' }), /好久不见/, '别名也认')
+    assert.ok(asked.includes('read:wxid_old'), '要拿通讯录里的 username 去读，而不是原样用查询词')
+  } finally {
+    ;(configService as any).get = realGet
+  }
+})
+
+test('通讯录里匹配到多个：不猜，照旧说没找到', async () => {
+  svc.listSessions = async () => ([])
+  svc.listContacts = async () => ([
+    { username: 'wxid_1', displayName: '小王', remark: '王工' },
+    { username: 'wxid_2', displayName: '小王', remark: '王老师' },
+  ])
+  // 桩要**按 talker 区分**：对谁都说"有消息"的话，这条测的就不是"有没有猜"了
+  // （评测那边踩过一模一样的坑）。
+  svc.getMessages = async (talker: string) => (
+    talker === 'wxid_1' || talker === 'wxid_2'
+      ? [{ createTime: 1758000000, isSend: false, content: '内容' }]
+      : [])
+  const out = await run('get_messages', { contact: '小王' })
+  assert.match(out, /没找到/, '有歧义就不许挑一个——宁可让它说不出话，也不能读错人的聊天')
+})
+
+// ------------------------------------------------- 阅读统计（公众号推送 vs 日报处理）
+
+test('get_reading_stats 列出推送最多的号，并把参数传给脚本', async () => {
+  const calls = stubScript(JSON.stringify({
+    success: true,
+    period: { start: '2026-09-17', end: '2026-09-23', days: 7 },
+    sources: [
+      { name: '甲号', pushed: 248, processed: 12 },
+      { name: '乙号', pushed: 156, processed: 30 },
+      { name: '丙号', pushed: 9, processed: 0 },
+    ],
+  }))
+  const out = await run('get_reading_stats', { days: 7 })
+
+  assert.match(out, /3 个公众号有推送/)
+  assert.match(out, /发得最多：甲号\(248\)、乙号\(156\)、丙号\(9\)/)
+  assert.match(out, /日报处理得最多：乙号\(30\)、甲号\(12\)/, '按处理数排序，0 的不列')
+  assert.deepEqual(calls[0].args, ['--days', '7', '--json'])
+  assert.match(calls[0].script, /daily_stats\.py$/)
+})
+
+test('日报没在跑时直说"没在跑"，而不是让用户以为那些号没内容', async () => {
+  // 实测就是这么发现的：最近 7 天 processed 全是 0，而 30 天窗口里全是非零——
+  // 差别不在号上，在**日报从 09-05 起就没再跑过**。
+  stubScript(JSON.stringify({
+    success: true, period: { start: '2026-09-17', end: '2026-09-23' },
+    sources: [{ name: '甲号', pushed: 248, processed: 0 }],
+  }))
+  const out = await run('get_reading_stats', { days: 7 })
+  assert.match(out, /日报没有任何处理记录/)
+  assert.doesNotMatch(out, /日报处理得最多/, '全是 0 就别列"处理得最多"')
+  // 那句补充**是可选的**，因为它是从本机 `output/biz-daily` 扫出来的：CI 是干净检出、
+  // 没有归档，那时就没有这句。第一条写成了必有的断言，CI 当场红了（这已经是第二次：
+  // 上一次是测试依赖了本地装了而 CI 没装的 html2text）。所以这里钉的是**形状**，不是存在。
+  assert.match(out, /日报没有任何处理记录(；最近一次有内容的日报是 \d{4}-\d{2}-\d{2}（\d+ 天前）)?$/)
+})
+
+test('脚本失败时如实说失败', async () => {
+  stubScript('', 2, '需要 sqlcipher3')
+  assert.match(await run('get_reading_stats', {}), /读取公众号统计失败/)
+})
+
+test('days 越界变成可读的参数错误', async () => {
+  assert.equal(await run('get_reading_stats', { days: 999 }), '(参数错误: days 必须是 1-90 的整数)')
+})
+
+// ------------------------------------------------- 写工具的"写到了哪"必须是真的
+
+test('export_chat 报的是真的落盘位置：撞名带序号，自定义根不泄露绝对路径', async () => {
+  // 实测（真库验收）：第二次导出明明写进了 `…-2`，消息里报的却是基础名——因为路径是**事前拼的**，
+  // 不是从 `outDir` 来的。写工具报错位置比不报更糟：用户照着找，找不到。
+  const root = mkdtempSync(join(tmpdir(), 'weflow-export-branch-'))
+  const realExport = exportService.exportTxt.bind(exportService)
+  let calls = 0
+  ;(exportService as any).exportTxt = async (_talker: string, outDir: string) => {
+    calls += 1
+    mkdirSync(outDir, { recursive: true })
+    return { success: true, count: 3 }
+  }
+  process.env.WEFLOW_ASSISTANT_EXPORT_ROOT = root
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  try {
+    const first = await run('export_chat', { contact: '甲', format: 'txt' })
+    const second = await run('export_chat', { contact: '甲', format: 'txt' })
+
+    assert.equal(calls, 2)
+    assert.match(first, /已导出 3 条消息到 /)
+    // 临时根的目录名（不含路径分隔符），出现在消息里就说明报了绝对路径
+    const rootName = root.split(sep).pop() as string
+    assert.doesNotMatch(first, new RegExp(rootName), '不许把绝对路径报进聊天')
+    assert.doesNotMatch(first, /^\S*[A-Za-z]:/, '消息里不该出现盘符')
+
+    const nameOf = (text: string) => text.match(/到 ([^（]+)（/)?.[1] ?? ''
+    assert.notEqual(nameOf(first), nameOf(second), '第二次撞名了，报的名字就该不一样')
+    assert.match(nameOf(second), /-2\/$/, `第二次要报带序号的那个目录：${nameOf(second)}`)
+  } finally {
+    ;(exportService as any).exportTxt = realExport
+    delete process.env.WEFLOW_ASSISTANT_EXPORT_ROOT
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('export_chat 用默认导出根时，报的是相对路径（照得着，也不泄露本机路径）', async () => {
+  // 默认根 = 仓库的 output/exports。这条把上一条缺的那半补上：**默认情况下**消息里应当是
+  // `output/exports/<目录名>`，用户照着找得到；而不是绝对路径。
+  //
+  // 桩**不建目录**：这条断言的是措辞，不该往仓库里落测试垃圾。代价是路径带不带 `-2`
+  // 后缀取决于仓库里恰好有没有同名目录，所以正则两可——这正好也是被测行为。
+  const realExport = exportService.exportTxt.bind(exportService)
+  ;(exportService as any).exportTxt = async () => ({ success: true, count: 7 })
+  delete process.env.WEFLOW_ASSISTANT_EXPORT_ROOT
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  try {
+    const out = await run('export_chat', { contact: '甲', format: 'txt' })
+    assert.match(out, /已导出 7 条消息到 output\/exports\/甲-\d{12}(-\d+)?\//)
+    // 注意：这条断言本身踩过 heredoc——`[\\/]` 经 shell 会变成 `[\/]`，等于只挡正斜杠。
+    assert.doesNotMatch(out, /[A-Za-z]:/, '不该出现盘符（正反斜杠都不行）')
+  } finally {
+    ;(exportService as any).exportTxt = realExport
+  }
+})
+
+// ------------------------------------------------- 脚本类工具：pythonBridge 就是那个桩点
+
+/**
+ * 本文件头部原先写着"`get_todos` 没有便宜的桩点"——**那是错的**。
+ * `pythonBridge.setScriptRunner` 是公开的注入点（这个文件里早就在用，见上面的 `stubScript`），
+ * 而脚本类工具全部经由 `runPythonJson`；于是 `get_todos` 这个能读用户真实待办的工具，
+ * 一行分支都没被执行过。那句注释不改掉的话，下一个人会照着它继续绕开。
+ *
+ * 夹具照 `scripts/extract_todos.py` 的**真实**返回写（`{task, urgency, deadline, status, id}`），
+ * 不是照工具里的兜底链（`t.task || t.content || t.text || t.title`）猜。顺带记一笔：
+ * 真库上跑过，两个 status 都返回 `[]` ——"有条目"那一支在本机数据里看不到，只能靠夹具，
+ * 所以下面这几条是**唯一**盯过它的地方。
+ */
+
+/** `extract_todos.py list --json --meta` 的真实形状 */
+function todosMeta(items: any[], extracted = true): string {
+  return JSON.stringify({ items, extracted, count: items.length })
+}
+
+test('get_todos 空清单时说"没有"，而不是回一个空串', async () => {
+  const first = stubScript(todosMeta([]))
+  try {
+    assert.equal(await run('get_todos', {}), '(没有待办任务)')
+    assert.deepEqual(first[0].args, ['list', '--status', 'pending', '--json', '--meta'], '默认查待办')
+  } finally { bridge.setScriptRunner(null) }
+
+  const second = stubScript(todosMeta([]))
+  try {
+    assert.equal(await run('get_todos', { status: 'done' }), '(没有已完成任务)')
+    // status 必须真的拼进 argv，否则两个分支只有文案不同、查的东西一样
+    assert.deepEqual(second[0].args, ['list', '--status', 'done', '--json', '--meta'], 'status 要传下去')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('get_todos "从没提取过"不能说成"没有待办"——这是两件事', async () => {
+  // 真库上就是这么一回事：`~/.weflow-cli/todos.json` 根本不存在，
+  // 而提取是**要用户显式跑** `weflow-cli todos extract --yes` 的（照例有确认门）。
+  // 把它说成"你没有待办"，用户会以为自己真的没事要做。
+  stubScript(todosMeta([], false))
+  try {
+    const out = await run('get_todos', {})
+    assert.doesNotMatch(out, /没有待办任务/, '没提取过 ≠ 没有待办')
+    assert.match(out, /还没提取过待办/)
+    assert.match(out, /todos extract/, '要告诉用户怎么让它有内容')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('get_todos 兼容老形状：拿到裸数组时退回原来的说法，而不是崩或错报', async () => {
+  // `--meta` 是新增开关。万一调用的是没有它的实现（拿到的是裸数组），
+  // 不能把 `undefined.items` 当成"没提取过"，也不能抛在 `.items` 上。
+  stubScript('[]')
+  try {
+    assert.equal(await run('get_todos', {}), '(没有待办任务)')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('get_todos 列出条目：带紧急度与截止；"未提及"的截止不摆出来', async () => {
+  stubScript(todosMeta([
+    { id: 1, task: '交季度报表', urgency: '高', deadline: '本周五', status: 'pending' },
+    { id: 2, task: '回老王的邮件', urgency: '中', deadline: '未提及', status: 'pending' },
+  ]))
+  try {
+    const out = await run('get_todos', {})
+    assert.match(out, /^待办 2 项:/)
+    assert.match(out, /· \[高\] 交季度报表 \(截止 本周五\)/)
+    assert.match(out, /· \[中\] 回老王的邮件$/, '没有截止就别补一个"未提及"')
+    assert.doesNotMatch(out, /未提及/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('get_todos 最多报 15 条，不把整个清单倒出来', async () => {
+  const many = Array.from({ length: 20 }, (_, i) =>
+    ({ id: i + 1, task: `事项${i + 1}`, urgency: '低', deadline: '未提及', status: 'pending' }))
+  stubScript(todosMeta(many))
+  try {
+    const out = await run('get_todos', {})
+    assert.match(out, /^待办 20 项:/, '条数要说全量')
+    assert.equal(out.split('\n').filter(l => l.startsWith('· ')).length, 15, '明细只列 15 条')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('get_todos 脚本失败时如实说失败，且 stderr 里的密钥形状东西要打码', async () => {
+  // stderr 是要出境的东西。桥接层把三段尾巴拼进消息，工具这边再走一遍脱敏——
+  // 少了这一步，脚本的参数回显（例如打印配置）就会把密钥原样送进对话。
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet(k))
+  const FAKE_KEY = 'sk-' + 'a1b2c3d4e5f6g7h8i9j0'
+  stubScript('', 1, `Traceback … reading config ${FAKE_KEY}`)
+  try {
+    const out = await run('get_todos', {})
+    assert.match(out, /^\(待办查询失败:/)
+    assert.match(out, /脚本退出码 1/, '失败原因要分类报出来')
+    assert.doesNotMatch(out, new RegExp(FAKE_KEY), '密钥形状的东西不许原样出境')
+    assert.match(out, /\[密钥\]/)
+  } finally {
+    bridge.setScriptRunner(null)
+    ;(configService as any).get = realGet
+  }
+})
+
+test('get_todos 脚本没给 JSON（退出码 0）时也算失败，而不是当成空清单', async () => {
+  // 这个区分很重要：把"没解析到"当成"没有待办"，用户会以为自己真的没事要做。
+  stubScript('Traceback …\n')
+  try {
+    const out = await run('get_todos', {})
+    assert.match(out, /没有给出可解析的 JSON/)
+    assert.doesNotMatch(out, /没有待办任务/)
+  } finally { bridge.setScriptRunner(null) }
 })
