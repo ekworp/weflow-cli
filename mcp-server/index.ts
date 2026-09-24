@@ -151,8 +151,13 @@ import { AssistantMemory } from '../src/services/assistantMemory.js'
 
 // ---- 本地微信数据工具 (复用 assistant 工具层, 微信 bot / MCP server 同源) ----
 // MCP 无微信用户身份, 记忆固定挂 'mcp' 用户下; 与 assistant 守护进程共用同一持久化文件
+//
+// `requiresConfirm` 是**这条路独有的边界**：MCP 客户端是别人家的进程，它那边谁也看不到
+// 这一轮是在什么上下文里决定调用的。所以凡是"会把用户数据送出去"的工具（目前是
+// `draft_reply`：把一段对话发给两个云端模型），机器调用默认只给预览，要显式带
+// `confirm: true` 才真出境。面板/微信那条路不置这一位。
 const mcpMemory = new AssistantMemory()
-const MCP_TOOL_CTX = { userId: 'mcp', memory: mcpMemory }
+const MCP_TOOL_CTX = { userId: 'mcp', memory: mcpMemory, requiresConfirm: true }
 
 /** assistant 工具 (OpenAI function 格式) → MCP 工具格式; get_stats 并入现有 wechat.get_stats */
 const ASSISTANT_TOOLS = MCP_READ_ONLY_TOOL_DEFS

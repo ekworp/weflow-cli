@@ -1295,3 +1295,53 @@ test('draft_reply：count 越界变成可读的参数错误，不悄悄用默认
   assert.equal(await run('draft_reply', { contact: '老王', count: 9 }),
                '(参数错误: count 必须是 1-5 的整数)')
 })
+
+// ------------------------------------------------- 外部机器（MCP）那条路的确认边界
+
+/** MCP 那条路：`requiresConfirm` 置位（见 mcp-server/index.ts 的 MCP_TOOL_CTX） */
+const mcpCtx = () => ({ ...ctx('mcp'), requiresConfirm: true })
+
+test('draft_reply：MCP 调用不带 confirm 时**只给预览**，脚本一次都不带 --yes', async () => {
+  // 这条是"MCP 有显式权限边界"的**全部**：预览只读本地库、零出境。
+  // 与 CLI 的 `--dry-run` / `--yes` 同一套纪律（capabilities.read.draft.confirmationRequired）。
+  draftWorld()
+  const calls = stubScript(JSON.stringify({
+    success: true, dryRun: true, name: '老王', messages: 3, stateChars: 1234, count: 3,
+    models: { judge: 'Jev（决策）', draft: 'DeepSeek（生成）' },
+    calls: '判断 1 次 + 起草 1 次 + 排序 1 次',
+  }))
+  try {
+    const out = await withBalanced(async () => run('draft_reply', { contact: '老王' }, mcpCtx()))
+    assert.match(out, /预览/, '要说清这只是预览')
+    assert.match(out, /1234 字符/, '要报出会发多少字符')
+    assert.match(out, /Jev（决策）/, '要报出发给哪个模型')
+    assert.match(out, /confirm: true/, '要告诉调用方怎么才真起草')
+    assert.equal(calls.length, 1)
+    assert.ok(calls[0].args.includes('--dry-run'), '预览走 --dry-run')
+    assert.equal(calls[0].args.includes('--yes'), false, '**预览不许带 --yes**：带了就真出境了')
+    assert.equal(calls[0].stdin, undefined, '预览不该把对话经 stdin 送出去')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('draft_reply：MCP 调用带 confirm: true 时才真起草（与面板那条路一致）', async () => {
+  draftWorld()
+  const calls = stubScript(JSON.stringify(DRAFT_OK))
+  try {
+    const out = await withBalanced(async () => run('draft_reply', { contact: '老王', confirm: true }, mcpCtx()))
+    assert.match(out, /建议这样回（2 条/, '真起草了就该给候选')
+    assert.deepEqual(calls[0].args, ['--stdin', '--yes', '--json', '--count', '3'],
+      '确认之后与面板那条路走的是同一条（正文经 stdin、--yes 放行）')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('draft_reply：面板/微信那条路不受影响 —— 不置 requiresConfirm 时照旧直接起草', async () => {
+  // 两条路的边界不同：MCP 客户端是别人家的进程，所以那边默认只给预览；
+  // 面板/微信那边的边界是白名单 + 用户在一个只有自己看得见的会话里显式开口问。
+  draftWorld()
+  const calls = stubScript(JSON.stringify(DRAFT_OK))
+  try {
+    const out = await withBalanced(async () => run('draft_reply', { contact: '老王' }))
+    assert.match(out, /建议这样回（2 条/)
+    assert.ok(calls[0].args.includes('--yes'), '面板那条路不需要 confirm，照旧直接起草')
+  } finally { bridge.setScriptRunner(null) }
+})

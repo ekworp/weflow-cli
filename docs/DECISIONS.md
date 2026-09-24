@@ -1329,6 +1329,20 @@ which is what the gate is for.
   which `aiEngine` does not touch. The first implementation copied the bypass from `look_at_image` and a
   test caught it: with `aiEngine=ollama` + `assistantPrivacy=strict` the transcript was handed to the
   script. Verified by measurement, then removed.
+- **The MCP surface gets a stricter boundary than the panel does, on purpose.** `draft_reply` is on the
+  MCP tool list (that list is *derived* from the assistant tool table minus `save_memory`, so anything added
+  there appears there too) and an MCP call that does not pass `confirm: true` returns a **preview only** -
+  how many messages, how many characters, which two models - with nothing leaving the machine. The panel and
+  the WeChat bot do not need that flag: their boundary is the sender allowlist plus a user asking in a
+  conversation only they can see. An MCP client is a **third-party process** whose session nobody here can
+  observe, so its default is "show me the cost first". The tool description states this, because a calling
+  model that does not know it cannot ask its user.
+  Two claims next to this were wrong and are now corrected rather than quietly dropped: `capabilities --json`
+  reported `safety.mcpDefaultReadOnly: true` (false - that surface has contained a file writer and a
+  model-calling tool since `export_chat` and `look_at_image`), and an earlier revision of this record said
+  drafting was deliberately kept off MCP. It was never off; it had simply never been *checked*, because the
+  tool names are generated at runtime (`wechat.${name}`) and a grep for the literal `name: 'wechat.` cannot
+  see them.
 - **The panel only gets a copy button**, on the assistant's turns. It copies the whole reply rather than
   per-candidate lines: the visible reply is the model's own rendering, so guessing which lines are
   candidates would sometimes copy half a sentence. A failed clipboard write says so and selects the text

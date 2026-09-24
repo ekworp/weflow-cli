@@ -74,8 +74,16 @@ Copy this entry into your MCP client's configuration and ensure `cwd` points to 
 | `wechat.get_todos` | List todos extracted from chat history. | `scripts/extract_todos.py`, Python |
 | `wechat.search_knowledge` | Fuzzy-search concept pages in the knowledge base. | Vault Wiki output |
 | `wechat.search_memory` | Search long-term assistant memory. | `~/.weflow-cli/assistant_memory.json` |
+| `wechat.search_chats` | Find which conversation discussed something (literal words). | Decrypted WeChat database |
+| `wechat.search_semantic` | Find chat messages by meaning, not literal words. | `dashscopeApiKey` config, network |
+| `wechat.who_owes_reply` | Rank the conversations waiting on a reply. | Decrypted WeChat database |
+| `wechat.look_at_image` | Hand one chat image to the model. | Decrypted WeChat database, **image leaves the machine** |
+| `wechat.draft_reply` | Draft candidate replies. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
+| `wechat.export_chat` | Export one conversation to HTML, txt, json or excel. | Decrypted WeChat database, **writes under `output/exports/`** |
+| `wechat.get_reading_stats` | Which sources push most and what the daily processes. | `output/biz-daily/` |
 
-The chat-data tools share service code with the optional `weflow-cli assistant` WeChat bot, but access is still controlled by the MCP client's permissions and local configuration. The bot and MCP transport are not interchangeable message channels.
+This table lists the tools shipped today; `weflow-cli mcp-config` prints the authoritative list for the
+installed version. The chat-data tools share service code with the optional `weflow-cli assistant` WeChat bot, but access is still controlled by the MCP client's permissions and local configuration. The bot and MCP transport are not interchangeable message channels.
 
 ## Safety boundary
 
@@ -83,12 +91,14 @@ The chat-data tools share service code with the optional `weflow-cli assistant` 
 - Article and knowledge-base tools read files under the current project directory. Keep `cwd` scoped to your intended WeFlow CLI checkout.
 - Chat-data tools (`list_sessions`, `get_messages`, `search_favorites`, `get_sns`, `get_todos`) read your locally decrypted WeChat database. Only run this MCP server on machines where that is acceptable, and never expose the stdio server over a network.
 - `read_favorite`, `fetch_article`, and `search_public` make network requests; `read_favorite` rejects private/loopback URLs.
-- The default MCP surface is read-only. It does not publish drafts, save assistant memory, send messages, mutate todos, or change configuration. Side effects remain in explicit CLI or assistant workflows with their own confirmation boundary.
-- **Reply drafting (`draft_reply`) is deliberately not on this surface.** It asks two cloud models about a
-  conversation and returns candidate replies - a different kind of operation from the read-only and
-  local-transform tools here, and the same reason the `decide` primitive is CLI-only. Machine callers use
-  `weflow-cli draft "<talker>" --yes --json` (declared in `capabilities --json` as `read.draft`, with a
-  `--dry-run` preview that leaves the machine and `sendsNothing: true`).
+- The MCP surface is **derived from the assistant's tool table minus `save_memory`**, not a hand-written read-only list - so it is *not* read-only, and this line used to claim it was. What it actually contains, declared in `capabilities --json` under `safety.mcpSurface`: one tool that writes (`export_chat`, new directories under `output/exports/` only) and two that call cloud models (`look_at_image` sends one image; `draft_reply` sends a conversation). Publishing, sending messages, mutating todos, changing configuration and writing assistant memory stay out.
+- **`draft_reply` is on this surface, and it is the one tool that requires an explicit confirmation from
+  the machine caller.** It sends the conversation to two cloud models, so an MCP call that does not pass
+  `confirm: true` returns a **preview only** - how many messages, how many characters, which two models -
+  and does not leave the machine. The description says so, and the client's model is expected to ask its
+  user before passing `confirm`. `capabilities --json` declares this under
+  `safety.mcpSurface.requiresConfirm`. The CLI path keeps its own equivalent boundary (`weflow-cli draft
+  "<talker>" --dry-run` / `--yes --json`, declared as `read.draft`), and neither path ever sends a message.
 - Do not place API keys in `.mcp.json`. Use environment variables where a client supports them.
 
 ## Troubleshooting

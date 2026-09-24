@@ -321,6 +321,25 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Changed
 
+- **The MCP surface now says what it actually is, and `draft_reply` on that surface needs an explicit
+  confirmation.** Two claims were wrong and are corrected here rather than dropped: `capabilities --json`
+  reported `safety.mcpDefaultReadOnly: true`, and the MCP guide said the default surface is read-only. The
+  surface is **derived from the assistant tool table minus `save_memory`**, so it has contained a file writer
+  (`export_chat`) and a model-calling tool (`look_at_image`) since those shipped. `capabilities` now reports
+  `mcpDefaultReadOnly: false` plus a `safety.mcpSurface` breakdown (`writesFiles`, `callsCloudModels`,
+  `requiresConfirm`), and the guide's tool table lists the whole surface instead of the eleven hand-written
+  entries. The two tests whose names said "read-only tool surface" but only asserted that publishing, sending
+  and memory writes are absent are renamed to say what they check.
+
+  Because drafting sends a conversation to two cloud models, an **MCP call without `confirm: true` returns a
+  preview only** - how many messages, how many characters, which two models - and nothing leaves the machine.
+  The panel and the WeChat bot keep working without that flag: their boundary is the sender allowlist plus a
+  user asking in a conversation only they can see, whereas an MCP client is a third-party process whose
+  session nobody here can observe. `capabilities.safety.mcpSurface.requiresConfirm` declares it, the tool
+  description states it (a calling model that does not know it cannot ask its user), and a new test drives the
+  real MCP protocol to prove that a call without the flag never produces a draft.
+
+
 - **The ball no longer disappears when you open it: the conversation unfolds beside it, like an icon
   that is talking.** The window is now "ball + gap + bubble" as one piece (508x560), with the ball
   pinned to its own corner and the bubble growing out of the other side. The ball is the speaker, so it

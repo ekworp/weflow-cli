@@ -565,7 +565,18 @@ program
         aiDisabledByDefaultForExport: true,
         unknownMessageTypesPreserved: true,
         nonInteractiveTalkerResolution: true,
-        mcpDefaultReadOnly: true,
+        // **这个名字曾经是假的**：MCP 那张表不是手写的只读清单，而是**助手工具表减去
+        // save_memory**，所以里面早就有写文件的 `export_chat` 和会把图片交给模型的
+        // `look_at_image`。如实改成 false，并把真正有出境的几样单独列出来（下面这个对象）。
+        // 读这一位的调用方按 false 走保守分支即可。
+        mcpDefaultReadOnly: false,
+        mcpSurface: {
+          derivedFrom: 'assistant tools minus save_memory',
+          writesFiles: ['export_chat'],
+          callsCloudModels: ['look_at_image', 'draft_reply'],
+          // 机器调用**默认只给预览**、必须显式 confirm 才出境的那些（MCP 独有的边界）
+          requiresConfirm: ['draft_reply'],
+        },
         mcpMessageLimit: { default: 100, max: 1000 },
       },
     }

@@ -42,6 +42,15 @@ export interface ToolContext {
    * 附到对话里（见 `assistantService.toApiMessages`）。
    */
   pendingImages?: AttachedImage[]
+  /**
+   * 调用方是**外部机器**（MCP 那条路）时置 true。
+   *
+   * 与面板/微信那条路的区别不是审美：MCP 客户端是**别人家的进程**，它那边谁也看不到这一轮
+   * 是在什么上下文里决定调用的。所以对"会把用户数据送出去"的工具，机器调用默认只给**预览**，
+   * 要显式带 `confirm: true` 才真出境——与 CLI 那条 `--dry-run` / `--yes` 是同一套纪律，
+   * 也与 `capabilities.read.draft.confirmationRequired` 对得上。
+   */
+  requiresConfirm?: boolean
 }
 
 /** 随某条消息一起发出去的图片。只在构造请求那一刻存在，不进记忆、不进审计内容。 */
@@ -423,12 +432,18 @@ export const TOOL_DEFS: ToolDef[] = [
         + '「这条怎么回」。会先判断对方要什么、该不该给实质内容、风险多高，再给几条候选。'
         + '涉及钱或风险很高时**不给草稿**，只说明风险与该先确认什么——别把这种情况当失败。'
         + '（想看对方写了什么用 get_messages；想知道谁在等用 who_owes_reply。）'
-        + '代价：要把这段对话发给判断模型与生成模型，约几秒。',
+        + '代价：要把这段对话发给判断模型与生成模型（两个云端模型），约几秒；'
+        + '**外部机器调用（MCP）不带 confirm 时只返回预览**（发多少字符给谁），不实际出境。',
       parameters: {
         type: 'object',
         properties: {
           contact: { type: 'string', description: '给谁起草（联系人名，和 get_messages 一样解析）' },
           count: { type: 'number', description: '要几条候选，默认 3（最多 5）' },
+          confirm: {
+            type: 'boolean',
+            description: '仅当用户**明确同意**把这段对话发给两个云端模型时才传 true。'
+              + '不传或传 false 时只返回预览（多少条消息、多少字符、发给哪两个模型），零出境。',
+          },
         },
         required: ['contact'],
       },
@@ -1011,6 +1026,25 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         const talker = await resolveTalker(contact)
         const msgs = await chatService.getMessages(talker, 30)
         if (!msgs.length) return `(没找到「${contact}」的消息)`
+
+        // **外部机器（MCP）默认只给预览，不做出境。** 与 CLI 的 `--dry-run` / `--yes` 同一套纪律：
+        // 预览只读本地库、报清要发多少字符给哪两个模型，零出境。
+        // 面板/微信那条路（`requiresConfirm` 不置位）不受影响——它那边的边界是白名单 + 用户
+        // 在一个只有自己看得见的会话里显式开口问。
+        if (ctx.requiresConfirm && args.confirm !== true) {
+          const preview = await runPythonJson<any>('draft_reply.py',
+            ['--talker', talker, '--dry-run', '--json', '--count', String(count)],
+            { timeoutMs: 60_000 })
+          if (!preview.ok || !preview.data?.success) {
+            return `(起草预览失败：${String(preview.data?.error || preview.error || '未知').slice(0, 120)})`
+          }
+          const d = preview.data
+          return `还没起草——这只是一次**预览**（没有把任何内容发出去）。\n`
+            + `会把「${d.name}」最近的 ${d.messages} 条消息、共 ${d.stateChars} 字符，`
+            + `发给 ${d.models?.judge || '判断模型'} 与 ${d.models?.draft || '生成模型'}`
+            + `（${d.calls || '3 次调用'}），产出 ${d.count} 条候选。\n`
+            + `用户明确同意之后再带 \`confirm: true\` 调一次，才会真的起草。`
+        }
 
         // 逐条遮罩**再**交给脚本：Python 侧没有任何脱敏实现（全仓只有两处无关的位掩码），
         // 而脱敏这一层在 TS。**不在 Python 里再写一份**——同一件事两处实现早晚有一处会漏。
