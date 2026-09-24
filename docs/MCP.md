@@ -84,6 +84,11 @@ The chat-data tools share service code with the optional `weflow-cli assistant` 
 - Chat-data tools (`list_sessions`, `get_messages`, `search_favorites`, `get_sns`, `get_todos`) read your locally decrypted WeChat database. Only run this MCP server on machines where that is acceptable, and never expose the stdio server over a network.
 - `read_favorite`, `fetch_article`, and `search_public` make network requests; `read_favorite` rejects private/loopback URLs.
 - The default MCP surface is read-only. It does not publish drafts, save assistant memory, send messages, mutate todos, or change configuration. Side effects remain in explicit CLI or assistant workflows with their own confirmation boundary.
+- **Reply drafting (`draft_reply`) is deliberately not on this surface.** It asks two cloud models about a
+  conversation and returns candidate replies - a different kind of operation from the read-only and
+  local-transform tools here, and the same reason the `decide` primitive is CLI-only. Machine callers use
+  `weflow-cli draft "<talker>" --yes --json` (declared in `capabilities --json` as `read.draft`, with a
+  `--dry-run` preview that leaves the machine and `sendsNothing: true`).
 - Do not place API keys in `.mcp.json`. Use environment variables where a client supports them.
 
 ## Troubleshooting
