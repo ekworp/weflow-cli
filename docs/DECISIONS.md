@@ -368,8 +368,15 @@ the "relevance" dimension had never once admitted an article. **That sentence wa
 generous, and a later check corrected it**: the gate lived only in the markdown-scan
 *fallback* loader. The primary loader (`.articles.json`, which exists on every normal run)
 returned every article unfiltered, so the documented rule was not being applied at all. Topic fared little better: it is
-`学术` in **zero** articles on a normal day and in **100%** of them on 2026-09-04/05, which is the
-signature of the `except` branch's `topic = source_category or '学术'` fallback.
+`学术` in **zero** articles on a normal day and in **100%** of them on 2026-09-04/05.
+
+*That last attribution was wrong, and the data said so.* It called 09-04 the signature of the
+`except` branch's `topic = source_category or '学术'` fallback - but that branch would have left
+`topic: 学术` and `tags: ['学术']` **in the JSON**, and 09-04's JSON has neither key populated
+(`""` and `[]` for all 178 articles). Article dicts with no `topic` and no `tags` at all mean the
+classification phase never ran: no API key, or `--no-ai`. The `学术` a reader sees on that day
+comes from the *write* path - the grouping step's default and the md frontmatter's `tags`
+default - which is precisely the divergence the follow-up pass fixed (see below).
 
 A 60-article comparison was run before switching (`scripts/jev_probe.py`, stratified across topics
 and days, sent state = title + body only): agreement with the stored labels was 58.6%, and the
@@ -443,9 +450,44 @@ standard - which is exactly why the switch is reversible and why the raw score i
   this change and never read by anything - the same "compute it and throw it away" shape as the
   exporter's old `COVER_STATE` counters. It was removed and replaced by `worth_including`.
 - **Not done, deliberately**: the other eight "ask the LLM then parse the text" call sites (assistant
-  tool routing, long-term memory extraction, todo urgency, monthly-report task detection, ...),
-  the `tags` field, and `TOPICS` being duplicated across five files. The first group was never
-  measured on Chinese; the others are separate defects with their own blast radius.
+  tool routing, long-term memory extraction, todo urgency, monthly-report task detection, ...).
+  That group was never measured on Chinese, so switching it would be a bet rather than a change.
+- **Superseded by later work, kept so the reasoning stays readable**: this decision listed `tags` and
+  "`TOPICS` duplicated across five files" as deliberately-not-done. `TOPICS` and `TOPIC_CRITERIA` are
+  now single-sourced in `_utils` (the prompt path and the decision-model path read one table), and
+  `test/topic_taxonomy_test.py` pins every consumer by identity. The four `TOPIC_ORDER` copies in
+  `auto_tag` / `create_reading_notes` / `enrich_backlinks` / `generate_html` remain, because two of
+  those files have no `_utils` import edge and whether an import resolves would then depend on the
+  caller's working directory - so a test asserts the four copies still equal `TOPICS` instead, turning
+  a silent future drift (adding a seventh category would drop a section from the report) into a
+  failure.
+- **A follow-up pass found the root cause behind the 2199-of-2201 number and fixed it.** The default
+  was not merely applied too often - it was applied **inconsistently by the two writers**: the JSON
+  writer defaulted a missing topic to `''` and the grouping step that names the folder and writes the
+  md frontmatter defaulted it to `学术`, seven lines apart, so a single run could emit `topic: 学术` in
+  the md and `topic: ""` in the JSON with nothing reported either way. The 2026-09-04 output is that
+  failure in full (178 articles, all under `学术/` in the md, all `""` in the JSON, two of them
+  "OpenAI 深夜发布 GPT-6 Astra"). The reachable trigger is ordinary: `daily --no-ai`, or a run with
+  no API key, skips classification entirely, leaving every article without a `topic` key while the
+  write phase still runs. Both writers now read one normalised value (`_utils.DEFAULT_TOPIC`, applied
+  by `biz_daily._group_by_topic`), the check is **membership in `TOPICS`** rather than emptiness, and
+  the run prints how many articles fell back so a whole-batch fallback cannot read as a normal
+  classification. The same shape sat in `tags` and was fixed the same way.
+
+  **The `tags` question this decision left open is now answered, and the answer is "not a bug".**
+  Measured over the 1584 articles across the 11 stored days: 1396 carry exactly `[topic]`, 182 carry
+  none, and **6 carry real tags** - and those 6 are the whole corpus built without configured source
+  categories. The mechanism is deliberate, in the prompt: when a source has a configured category,
+  `biz_daily` sends a summary-only prompt that says *不要输出主题、标签、相关度或概念字段* and sets
+  `tags = [category]` itself. Every source in those runs had a configured category, so no article
+  ever reached the path that asks for tags. The signature is unambiguous and checkable: **on all 11
+  days every source maps to exactly one topic** (36/40/15/43/41/27/35/36/3/36/6 sources, zero
+  exceptions) - which is what topic-from-config looks like and per-article classification does not.
+  A live call through the production prompt on one stored article returns
+  `AI与数学, 人类数学家, 数学共同体, 人机关系, 学术人文`, so the extraction works whenever that path is
+  used. Two consequences worth keeping: real tags appear only for sources *without* a configured
+  category, and the earlier "tags never persist" reading was wrong - it described the
+  configured-category path, not a defect.
 
 ## D-032: Use the decision model as a reranker - one request per pass
 
