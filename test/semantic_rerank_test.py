@@ -12,8 +12,10 @@ import importlib.util
 import io
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -189,6 +191,78 @@ class KeywordFallbackFilterTests(unittest.TestCase):
         titles = [r['title'] for r in results]
         self.assertIn('一篇真文章', titles)
         self.assertIn('一条收藏', titles)
+
+
+class IndexWindowTests(unittest.TestCase):
+    """索引窗口：原先写死在两处调用里（聊天 90 天、日报最近 30 个日期目录）。
+
+    这个数字决定"知识库记多久"，而它原先既看不见也改不了——"个人微信知识库只有三个月
+    记忆"就是它造成的。现在窗口是参数，这里钉三件事：**传得进去、算得对、结果里报得出**。
+    """
+
+    def test_the_window_reaches_both_collectors_and_comes_back_in_the_result(self):
+        seen = {}
+
+        def fake_chat(conn, name_map, days=90):
+            seen['chat'] = days
+            return []
+
+        def fake_articles(article_days=30):
+            seen['articles'] = article_days
+            return []
+
+        real = (ss.INDEX_DIR, ss.META_FILE, ss.VECTORS_FILE)
+        with tempfile.TemporaryDirectory() as tmp:
+            ss.INDEX_DIR = Path(tmp)
+            ss.META_FILE = Path(tmp) / 'meta.json'
+            ss.VECTORS_FILE = Path(tmp) / 'vectors.npy'
+            try:
+                with patch.object(ss, 'require_numpy', return_value=object()), \
+                     patch.object(ss, 'load_config',
+                                  return_value={'ntDbPath': 'synthetic/message_0.db',
+                                                'ntKey': '', 'ntSalt': ''}), \
+                     patch.object(ss, 'decrypt_lock', return_value=''), \
+                     patch.object(ss, 'get_name_map', return_value={}), \
+                     patch.object(ss, 'open_db', return_value=object()), \
+                     patch.object(ss, 'collect_chat_messages', side_effect=fake_chat), \
+                     patch.object(ss, 'collect_articles', side_effect=fake_articles):
+                    result = ss.build_index('fake-key', full=True, days=365, article_days=7)
+            finally:
+                ss.INDEX_DIR, ss.META_FILE, ss.VECTORS_FILE = real
+
+        self.assertEqual(seen, {'chat': 365, 'articles': 7},
+                         '两边收集器都要拿到调用方给的窗口，而不是各自的默认值')
+        self.assertEqual(result.get('chatDays'), 365, '结果里要报出这次用的窗口（CLI 的 --json 直接透出去）')
+        self.assertEqual(result.get('articleDays'), 7)
+
+    def test_collect_articles_takes_only_the_requested_number_of_days(self):
+        # 纯文件系统，不碰数据库：窗口就是"最多看几个日期目录"
+        with tempfile.TemporaryDirectory() as tmp:
+            daily = Path(tmp) / 'biz-daily'
+            for day in ('2026-09-20', '2026-09-21', '2026-09-22', '2026-09-23'):
+                topic = daily / day / 'AI'
+                topic.mkdir(parents=True)
+                (topic / '某号-标题.md').write_text('title: 标题\n## 正文\n内容\n', encoding='utf-8')
+            with patch.object(ss, 'OUTPUT_ROOT', tmp):
+                two = ss.collect_articles(article_days=2)
+                four = ss.collect_articles(article_days=99)
+        self.assertEqual(len(two), 2, '只取最近 2 个日期目录')
+        self.assertEqual(len(four), 4, '窗口够大时全都取（默认值不许悄悄限制）')
+
+    def test_a_zero_window_is_refused_before_any_work(self):
+        """0 天等于建一个空库——而它看起来会像"建好了"。所以要在动手之前挡住。
+
+        同时桩掉 `build_index`：万一这道闸门哪天没了，这条测试会红，**而不是**真的去读用户的库。
+        """
+        printed = []
+        with patch.object(sys, 'argv', ['semantic_search.py', 'build', '--days', '0']), \
+             patch.object(ss, 'build_index') as build, \
+             patch.object(ss, 'load_config', return_value={}), \
+             patch.object(ss, 'json_output', side_effect=lambda payload: printed.append(payload)):
+            ss.main()
+        build.assert_not_called()
+        self.assertTrue(printed, '拒绝也要有一句可读的话，而不是静默退出')
+        self.assertIn('都要 ≥ 1', str(printed[0].get('error', '')))
 
 
 if __name__ == '__main__':

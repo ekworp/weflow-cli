@@ -345,6 +345,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   the contact list is empty** - a user who never configured `quickReplyContacts` would otherwise get a menu of two grey
   lines that does nothing when clicked, including no way to dismiss the ball.
 
+- **The semantic index's window is adjustable, and the preview says what it is.** How far back the index reaches was
+  hardcoded at the two call sites, and neither the command nor its preview mentioned it at all: 90 days of chat and 30
+  date-directories of articles. So "a personal knowledge base" quietly meant "the last three months", with nothing on
+  screen saying so. `search-index` now takes `--days` and `--article-days`, and both the read-only preview and the
+  confirmation prompt state the window they will use - the window is part of the cost, because more days means more
+  text to the embedding service. **The defaults are unchanged (90 / 30)**: this makes a fixed number adjustable rather
+  than changing what a build costs. Out-of-range values are refused before anything is read, with `0` called out
+  specifically - a zero-day window builds an *empty* index that looks like a successful build, which is the same shape
+  of failure as the `collect_articles` glob bug that once made the article half of the index silently empty. The
+  script also reports the effective window in its JSON, which the CLI passes through, so a real run states what it
+  used rather than leaving the user to infer it.
+
 - **The interactive menu is the last extension point that had nothing watching it - now it has a guard.**
   `test/cli-menu.test.ts` requires the menu's entries and `showInteractiveMenu`'s `switch` cases to match **in both
   directions**, and every `runCmd` / `runSubCmd` the menu calls to name a command that actually exists. Both failures are

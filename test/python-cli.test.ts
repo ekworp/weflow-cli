@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
@@ -29,11 +30,15 @@ test('Semantic index writes require a read-only preview and explicit confirmatio
   ], { cwd: process.cwd(), encoding: 'utf8' })
 
   assert.equal(preview.status, 0, preview.stderr || preview.stdout)
+  // `chatDays` / `articleDays` 是窗口（原来写死在脚本里、预览里一个字都不提）：
+  // 天数越多，发给向量服务的文本越多，所以预览必须把它算作**代价的一部分**说出来。
   assert.deepEqual(JSON.parse(preview.stdout), {
     success: true,
     dryRun: true,
     action: 'search-index.build',
     mode: 'full',
+    chatDays: 90,
+    articleDays: 30,
     readsLocalData: true,
     usesCloudEmbedding: true,
     replacesExistingIndex: true,
@@ -44,6 +49,34 @@ test('Semantic index writes require a read-only preview and explicit confirmatio
   ], { cwd: process.cwd(), encoding: 'utf8' })
   assert.equal(refused.status, 1, refused.stderr || refused.stdout)
   assert.equal(JSON.parse(refused.stdout).code, 'CONFIRMATION_REQUIRED')
+})
+
+test('The index window is adjustable, and a bad one is refused before anything is read', () => {
+  // 窗口原先写死在脚本的两处调用里（聊天 90 天 / 日报 30 个日期目录）——用户既看不见也改不了，
+  // 而"知识库只有三个月记忆"正是这个数字造成的。预览里报的就是真跑的那些（同一处算出来的）。
+  const entry = join(process.cwd(), 'bin', 'weflow-cli.ts')
+  const run = (extra: string[]) => spawnSync(process.execPath,
+    ['--import', 'tsx', entry, 'search-index', '--dry-run', '--json', ...extra],
+    { cwd: process.cwd(), encoding: 'utf8' })
+
+  const wide = run(['--days', '3650', '--article-days', '365'])
+  assert.equal(wide.status, 0, wide.stderr || wide.stdout)
+  assert.equal(JSON.parse(wide.stdout).chatDays, 3650)
+  assert.equal(JSON.parse(wide.stdout).articleDays, 365)
+
+  // 0 / 过大 / 非数字：**在动任何东西之前**拒掉。0 天最阴——它会建出一个空索引，
+  // 而结果看起来像"建好了"；过大则让一次构建变成全库穿透。
+  for (const bad of [['--days', '0'], ['--days', '99999'], ['--article-days', 'nope']]) {
+    const out = run(bad)
+    assert.equal(out.status, 1, `${bad.join(' ')} 应当被拒，而不是悄悄退回默认值`)
+    assert.equal(JSON.parse(out.stdout).code, 'INVALID_ARGUMENT')
+  }
+
+  // CLI → 脚本那一段只有**静态断言**：真验它要跑一次索引（读真库 + 联网），在测试里又慢又越界。
+  // 而这段断掉恰好是最坏的一种：预览报 3650 天、脚本实际按 90 天跑，用户被自己的工具误导。
+  const source = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  assert.match(source, /'--days', String\(chatDays\)/, '窗口要真的传给脚本，不能只印在预览里')
+  assert.match(source, /'--article-days', String\(articleDays\)/)
 })
 
 test('Knowledge and WeRead limits reject coercion hazards before external access', () => {

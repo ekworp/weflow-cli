@@ -4813,22 +4813,35 @@ program
     .description('构建语义搜索索引')
     .option('--full', '全量重建')
     .option('--api-key <key>', 'DashScope embedding API key')
+    .option('--days <n>', '聊天记录收最近多少天（默认 90）')
+    .option('--article-days <n>', '日报文章收最近多少个日期目录（默认 30）')
     .option('--dry-run', '仅预览，不读取数据库、调用网络或写入索引')
     .option('--yes', '确认构建或重建索引')
     .option('--json', '输出 JSON 格式')
     .action(async (opts) => {
+      // 窗口的**运行值由这里说了算**：默认值 + 校验 + 透传都在这一处，预览报的就是真跑的那些
+      // （脚本文档里另有自己的默认值，只供手动直接跑脚本时用；CLI 这条路永远显式传参，
+      // 所以两边万一漂了也不会影响实际行为）。
+      // 上限 36500 天≈100 年：不设上限的后果是"给个 1e9 就把遍历变成一次全库穿透"。
+      const chatDays = opts.days === undefined ? 90 : parseCliInteger(opts.days, 'days', 1, 36_500, opts.json)
+      const articleDays = opts.articleDays === undefined
+        ? 30 : parseCliInteger(opts.articleDays, 'article-days', 1, 36_500, opts.json)
+      const windowText = `聊天最近 ${chatDays} 天、日报最近 ${articleDays} 个日期目录`
       const preview = {
         success: true,
         dryRun: true,
         action: 'search-index.build',
         mode: opts.full ? 'full' : 'incremental',
+        chatDays,
+        articleDays,
         readsLocalData: true,
         usesCloudEmbedding: true,
         replacesExistingIndex: !!opts.full,
       }
       if (opts.dryRun) {
         if (opts.json) console.log(JSON.stringify(preview))
-        else console.log(chalk.cyan(`语义索引预览：${opts.full ? '全量重建' : '增量构建'}，将读取本地数据并调用向量服务`))
+        else console.log(chalk.cyan(`语义索引预览：${opts.full ? '全量重建' : '增量构建'}；`
+          + `窗口＝${windowText}（要改：--days / --article-days），将读取本地数据并调用向量服务`))
         return
       }
       if (!opts.yes) {
@@ -4839,7 +4852,10 @@ program
         const { confirmed } = await inquirer.prompt([{
           type: 'confirm',
           name: 'confirmed',
-          message: `确认${opts.full ? '全量重建' : '增量构建'}语义索引？本地文本将发送到已配置的向量服务。`,
+          // 窗口是**代价的一部分**：天数越多，发给向量服务的文本越多。所以确认语里要写出来，
+          // 而不是只说"本地文本将发送"。
+          message: `确认${opts.full ? '全量重建' : '增量构建'}语义索引（${windowText}）？`
+            + '这些文本将发送到已配置的向量服务。',
           default: false,
         }])
         if (!confirmed) {
@@ -4852,7 +4868,8 @@ program
       const execFileAsync = promisify(execFile)
     const pkgRoot = resolvePackageRoot()
       const script = join(pkgRoot, 'scripts', 'semantic_search.py')
-      const args: string[] = [script, 'build']
+      const args: string[] = [script, 'build', '--days', String(chatDays),
+                              '--article-days', String(articleDays)]
       if (opts.full) args.push('--full')
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {

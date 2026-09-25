@@ -6,6 +6,9 @@
   # 构建索引（首次或增量）
   python scripts/semantic_search.py build
 
+  # 窗口可调（默认聊天 90 天 / 日报 30 天；要"整段历史"就给大值）
+  python scripts/semantic_search.py build --days 3650 --article-days 365
+
   # 搜索（有索引用向量，否则关键词 fallback）
   python scripts/semantic_search.py search "有人推荐过遥感的工具吗" --top-k 10
 
@@ -191,14 +194,18 @@ def collect_chat_messages(conn, name_map, days=90):
     return items
 
 
-def collect_articles():
-    """Collect articles from biz-daily."""
+def collect_articles(article_days=30):
+    """Collect articles from biz-daily.
+
+    `article_days` = 取最近多少个**日期目录**（原来写死 30）。可调是必要的：
+    这个窗口决定了"知识库里有多少文章"，而它原先只写在常量里，用户看不到也改不了。
+    """
     items = []
     daily_dir = Path(OUTPUT_ROOT) / 'biz-daily'
     if not daily_dir.exists():
         return items
 
-    for date_dir in sorted(daily_dir.iterdir(), reverse=True)[:30]:  # Last 30 days
+    for date_dir in sorted(daily_dir.iterdir(), reverse=True)[:article_days]:
         if not date_dir.is_dir():
             continue
         for topic_dir in date_dir.iterdir():
@@ -240,10 +247,17 @@ def collect_articles():
 
 # ====== Index Operations ======
 
-def build_index(api_key: str, full: bool = False):
+def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30):
+    """Build or update the semantic index.
+
+    `days` / `article_days` 决定这个索引**记多久**：它们原先写死在两处调用里
+    （聊天 90 天、日报 30 天），用户既看不见也改不了——而"个人知识库只有三个月记忆"
+    正是那个写死的数字造成的。现在由 CLI 显式传进来（见 `search-index --days / --article-days`），
+    默认值保持不变，**不悄悄改变代价**。
+    """
     np = require_numpy()
-    """Build or update the semantic index."""
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"窗口: 聊天最近 {days} 天 / 日报最近 {article_days} 天", file=sys.stderr)
 
     # Load existing index
     existing_ids = set()
@@ -277,13 +291,13 @@ def build_index(api_key: str, full: bool = False):
     items = []
     try:
         conn = open_db(nt_db, nt_key, nt_salt)
-        chat_items = collect_chat_messages(conn, name_map, days=90)
+        chat_items = collect_chat_messages(conn, name_map, days=days)
         items.extend(chat_items)
         conn.close()
     except Exception as e:
         print(f"[WARN] 聊天消息收集失败: {e}", file=sys.stderr)
 
-    article_items = collect_articles()
+    article_items = collect_articles(article_days=article_days)
     items.extend(article_items)
 
     # Filter new items
@@ -291,7 +305,8 @@ def build_index(api_key: str, full: bool = False):
     print(f"总数据: {len(items)} 条, 新数据: {len(new_items)} 条", file=sys.stderr)
 
     if not new_items:
-        return {"status": "up_to_date", "total": len(items)}
+        return {"status": "up_to_date", "total": len(items),
+                "chatDays": days, "articleDays": article_days}
 
     # Generate embeddings
     print("生成 embeddings...", file=sys.stderr)
@@ -299,7 +314,8 @@ def build_index(api_key: str, full: bool = False):
     embeddings = get_embeddings(texts, api_key)
 
     if not embeddings or all(e == [0.0] * EMBEDDING_DIM for e in embeddings):
-        return {"error": "Embedding 生成失败，请检查 API key"}
+        return {"error": "Embedding 生成失败，请检查 API key",
+                "chatDays": days, "articleDays": article_days}
 
     # Load existing vectors
     if VECTORS_FILE.exists() and not full:
@@ -327,6 +343,8 @@ def build_index(api_key: str, full: bool = False):
         "status": "success",
         "total": len(meta),
         "new": len(new_items),
+        "chatDays": days,
+        "articleDays": article_days,
     }
 
 
@@ -510,6 +528,18 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
 
 # ====== Main ======
 
+def add_window_args(parser):
+    """索引窗口（两个子命令共用）。
+
+    默认值与原先把死的数字**完全一致**（聊天 90 / 日报 30）——加参数不是改代价，
+    只是把原来改不了的数字变成改得了的。要建"整段历史"的知识库就显式给一个大值。
+    """
+    parser.add_argument('--days', type=int, default=90,
+                        help='聊天记录收最近多少天（默认 90）')
+    parser.add_argument('--article-days', type=int, default=30,
+                        help='日报文章收最近多少个日期目录（默认 30）')
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser()
@@ -519,10 +549,12 @@ def main():
     p = subparsers.add_parser('build')
     p.add_argument('--api-key', help='DeepSeek API key（优先从 config 读取）')
     p.add_argument('--full', action='store_true', help='全量重建')
+    add_window_args(p)
 
     # update
     p = subparsers.add_parser('update')
     p.add_argument('--api-key', help='DeepSeek API key（优先从 config 读取）')
+    add_window_args(p)
 
     # search
     p = subparsers.add_parser('search')
@@ -533,13 +565,18 @@ def main():
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
 
     args = parser.parse_args()
+    # 手动跑时的第二道闸门（CLI 那条路已经按 1-36500 校验过）：0 天等于建一个空库，
+    # 那结果看起来"建好了"，实际什么都没有——这种"看起来成功"的失败要挡住
+    if getattr(args, 'days', 90) < 1 or getattr(args, 'article_days', 30) < 1:
+        json_output({'error': '--days 与 --article-days 都要 ≥ 1（0 天等于索引一个空库）'})
+        return
     config = load_config()
     api_key = args.api_key or os.environ.get('DASHSCOPE_API_KEY', '') or get_dashscope_key(config)
 
     if args.command == 'build':
-        result = build_index(api_key, full=args.full)
+        result = build_index(api_key, full=args.full, days=args.days, article_days=args.article_days)
     elif args.command == 'update':
-        result = build_index(api_key, full=False)
+        result = build_index(api_key, full=False, days=args.days, article_days=args.article_days)
     elif args.command == 'search':
         query = args.query or os.environ.get('WEFLOW_SEARCH_QUERY', '')
         if not query:
