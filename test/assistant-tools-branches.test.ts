@@ -1252,8 +1252,12 @@ test('draft_reply：给脚本的是按时间正序、带方向标签的对话，
     const payload = JSON.parse(String(calls[0].stdin))
     assert.equal(payload.name, '老王')
     assert.equal(payload.lines.length, 3)
-    // 正序：读取器给的是"新的在前"，模型要按时间读
+    // 正序：读取器给的是"新的在前"，模型要按时间读。
+    // 对方那一侧：**有解析出来的名字才写名字**（这里只有 `senderUsername`，那是 wxid 原列，
+    // 不许当标签用），没有就写「对方」。形状与 Python `format_line` 逐字一致
+    // （见 transcript-format-contract.test.ts）。
     assert.match(payload.lines[0], /对方：那个文件你什么时候发我/)
+    assert.doesNotMatch(payload.lines.join('\n'), /wxid/, '转录里不许出现 wxid')
     assert.match(payload.lines[1], /我：今天下午/)
     assert.match(payload.lines[2], /对方：\[文件\] Base\.csv/)
     assert.doesNotMatch(payload.lines[2], /appmsg/, '非文本消息不许把原始 XML 交出去')

@@ -474,6 +474,26 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Fixed
 
+- **The transcript line was implemented twice, and the two copies had drifted in four ways.** Nothing failed - the two
+  paths just fed different text into the same judgement and drafting prompts. The tool path
+  (`assistantTools.transcriptLine`, panel and WeChat: mask, then send over `--stdin`) and the CLI path
+  (`reply_debt.format_line`, used by `draft_reply.py --talker`, which reads the database itself) rendered the same
+  message as `[9/23 12:20] 对方：…` and `[09-23 12:20] 老王：…`, truncated at 160 characters against 120, and marked the
+  cut with `…` on one side only. The most dangerous of the four is the `我` marker: the scripts pick the user's tone
+  sample by matching `'] 我：'` and decide who sent the last message from it, so one character of drift would disable
+  both silently. The shape is now a single contract, enforced by `test/transcript-format-contract.test.ts`, which
+  renders the same fixtures - self, other, non-text, over-long, a third person in a group - through both
+  implementations and requires them to be equal character for character. Seven mutations, each reverting one
+  difference or breaking one side's clip marker or clip length, turn it red.
+
+  Two things surfaced while measuring, and both changed the fix. The clip-length comparison had to take its value from
+  the Python constant rather than the TypeScript one - feeding Python the TypeScript number made "both sides changed to
+  120" compare equal, so the first version of that test could not see its own subject. And `senderUsername` turned out
+  to be **the raw wxid column** (`wcdbCore`'s `sender_username`, `sqlcipherCore`'s `StrTalker`), not a name, so using
+  it as a speaker label sent an account identifier to two cloud models while the transcript only needed to tell
+  speakers apart. Both implementations now use a resolved display name when there is one and `对方` otherwise, and
+  neither falls back to the raw column.
+
 - **The assistant was allowed to invent a reason for a tool failure, and did.** When drafting failed on 2026-09-25 the
   tool reported only "the judgement step failed (script exit code 1)" and the assistant answered with "the reason is
   probably that the model was inconsistent about whether to promise something" - a cause it had no evidence for. The

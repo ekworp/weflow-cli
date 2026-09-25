@@ -70,6 +70,56 @@ function fmtTime(ts: number): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+/**
+ * 转录里的时刻：`09-23 12:20`。
+ *
+ * 与 `fmtTime`（给用户看的工具输出用 `9/23 12:20`）**故意不同**：转录这一行的形状要和
+ * Python 侧逐字一致，见 `transcriptLine`。改 `fmtTime` 会连带改用户看到的东西，所以这里单独一个。
+ */
+function transcriptTime(ts: number): string {
+  const n = Number(ts)
+  const d = n > 1e12 ? new Date(n) : new Date(n * 1000)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 单条消息进转录的截断长度。**必须等于** `scripts/reply_debt.py` 的 `DRAFT_MSG_CHARS`。 */
+export const TRANSCRIPT_MSG_CHARS = 160
+
+/**
+ * 对话转录里的一行：`[09-23 12:20] 老王：那个文件你什么时候发我`。
+ *
+ * **这段形状在 Python 侧还有一份**：`reply_debt.format_line`（`draft_reply.py --talker`
+ * 那条路自己读库时用它渲染）。两处必须逐字一致，否则同一段对话走不同入口会得到不同的转录——
+ * 而它们**已经漂过**，实测三处不同：
+ *
+ * | | 这边（`--stdin`，面板/微信那条路） | Python `format_line`（`--talker` 命令行） |
+ * | --- | --- | --- |
+ * | 时刻 | `9/23 12:20` | `09-23 12:20` |
+ * | 对方那句 | 写死「对方」 | `senderDisplay` 优先（单聊里就是人名） |
+ * | 截断 | 160 字 | 120 字（留个 `…` vs 直接切掉） |
+ *
+ * 漂移里最危险的是「我」那个标记：脚本靠 `'] 我：'` 挑语气样本、靠 `lastFromMe` 判最后一条，
+ * 改错一个字全都**静默失效**（不报错，只是判断与语气样本都变差）。
+ * 所以有 `test/transcript-format-contract.test.ts`：同一批消息（含一条超长、一条非文本）
+ * 把两边逐字比一遍。谁改了这一行的形状而不改另一边，那条会红。
+ *
+ * **`senderUsername` 永远不参与**（实测过）：读完这条链路才发现它是**数据库原列的 wxid**
+ * （`wcdbCore` 的 `sender_username`、`sqlcipherCore` 的 `StrTalker`），不是名字。
+ * 拿它当发言人的标签会把账号标识喂给两个云端模型——而这一行的目的只是让模型分得清谁说的。
+ * 所以规则是：**有解析出来的名字就用名字，没有就写「对方」**，绝不退回原列。
+ */
+export function transcriptLine(message: any): string {
+  const raw = message.localType === 1
+    ? (message.content || message.parsedContent || '')
+    : (message.parsedContent || message.content || '')
+  const body = privacyGate.maskMessageBody(
+    clipWithMarker(String(raw).replace(/\n/g, ' '), TRANSCRIPT_MSG_CHARS),
+    { isText: message.localType === 1 })
+  const speaker = message.isSend ? '我' : (message.senderDisplay || '对方')
+  return `[${transcriptTime(message.createTime)}] ${speaker}：${body}`
+}
+
 /** SSRF 防护: 仅 http(s), 拒绝内网/环回地址
  *
  * 导出是为了能测它：这是**抓取前的安全边界**，而它守着的是"别让助手被一条收藏里的链接
@@ -794,6 +844,11 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
             ? `[图片 #${m.localId}]`
             : privacyGate.maskMessageBody(clipWithMarker(flat, MSG_BODY_CHARS),
                                           { isText: m.localType === 1 })
+          // **已知的取舍，没改，记在这儿**：`senderUsername` 是消息表里那一列的**原值——wxid**
+          // （见 `wcdbCore` 的 `sender_username`）。所以这一行会把账号标识交给云端模型，
+          // 而它本来只是为了让模型分清群聊里谁说的。换成「对方」就不泄露了，但**群聊里所有
+          // 说话人会被压成同一个标签**，这个工具就答不了"谁说的"——那是个真损失，
+          // 所以这一步等一个能解析出人名的读取层（真修法在读取层，不在这里改字符串）。
           return `[${fmtTime(m.createTime)}] ${m.isSend ? '用户' : (m.senderUsername || '对方')}: ${body}`
         }).join('\n')
         // 有时间窗时先说清窗口：模型据此判断"这些是不是那天的"，也免得它把窗口内的最后
@@ -1130,14 +1185,7 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // 说明白：上面的门**现在**已经把 strict 全挡了，所以这里的 `maskMessageBody`
         // 在当下打不到（balanced/open 不改正文）。留着它是因为它守的是另一条不变式：
         // "交给脚本的正文一定先过一道遮罩"，谁将来松开了上面那道门，这道还在。
-        const transcript = msgs.slice().reverse().map(m => {
-          const raw = m.localType === 1
-            ? (m.content || m.parsedContent || '')
-            : (m.parsedContent || m.content || '')
-          const body = privacyGate.maskMessageBody(clipWithMarker(raw.replace(/\n/g, ' '), MSG_BODY_CHARS),
-                                                  { isText: m.localType === 1 })
-          return `[${fmtTime(m.createTime)}] ${m.isSend ? '我' : '对方'}：${body}`
-        })
+        const transcript = msgs.slice().reverse().map(m => transcriptLine(m))
         const result = await runPythonJson<any>('draft_reply.py',
           ['--stdin', '--yes', '--json', '--count', String(count)],
           // `lastFromMe`：`transcript` 是 `msgs` **反过来**渲染的，所以最后一条 = `msgs[0]`。

@@ -180,12 +180,29 @@ def build_state(name, is_group, lines):
             % (name, who, '\n'.join(lines)))
 
 
-def format_line(message):
+def format_line(message, max_chars=MAX_MSG_CHARS):
+    """转录里的一行：`[09-23 12:20] 老王：那个文件你什么时候发我`。
+
+    **这段形状 TS 侧还有一份**（`assistantTools.ts` 的 `transcriptLine`，面板/微信那条路
+    用 `--stdin` 把渲染好的行交进来）。两处必须逐字一致——它们**已经漂过**（时刻格式、
+    对方那句用「对方」还是人名、截断 120 还是 160），所以有
+    `test/transcript-format-contract.test.ts` 拿同一批消息把两边逐字比一遍。
+
+    `max_chars` 是个参数，因为两条路要的不一样：欠账雷达按 120 字截（它自己 state 的大小），
+    而起草那条路要 160——与 TS 侧 `TRANSCRIPT_MSG_CHARS` 对齐，否则同一句话在面板里和
+    命令行里长短不一，判断会被喂进不同的东西。
+    """
     when = datetime.fromtimestamp(message.get('createTime') or 0, tz=TZ).strftime('%m-%d %H:%M')
-    speaker = '我' if message.get('isSend') else (message.get('senderDisplay')
-                                                or message.get('senderUsername') or '对方')
+    # **`senderUsername` 不参与**：它是消息表里的 wxid 原列，不是名字（`nt_decrypt` 另给了
+    # 解析好的 `senderDisplay`）。拿它当标签等于把账号标识发到云端模型，而这一行只需要
+    # 让模型分得清谁说的。所以：有名字用名字，没有就写「对方」。
+    speaker = '我' if message.get('isSend') else (message.get('senderDisplay') or '对方')
     text = (message.get('parsedContent') or message.get('content') or '').strip()
-    text = text.replace(chr(10), ' ')[:MAX_MSG_CHARS]
+    text = text.replace(chr(10), ' ')
+    # 截断要**留个记号**：光切掉的话，被切在半句上的话看起来像说完了，模型会照着半句话作答。
+    # TS 侧 `clipWithMarker` 就是这个形状（`…`），两边保持一致也是契约测试在盯的事之一。
+    if len(text) > max_chars:
+        text = text[:max_chars] + '…'
     if not text:
         label = TYPE_LABELS.get(message.get('localType'))
         text = '[%s]' % label if label else '[非文本 localType=%s]' % message.get('localType')

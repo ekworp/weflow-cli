@@ -1347,6 +1347,16 @@ which is what the gate is for.
   reversible choice. The label therefore has to name the way back (`关闭悬浮球（托盘图标能再打开）`) - the ball runs with
   `setSkipTaskbar(true)`, so a hidden ball leaves nothing on the taskbar to click, and a label saying only "关闭" would
   read as "it is gone for good".
+- **The transcript line has one shape, and a wxid is not a speaker label.** The line the judgement and drafting steps
+  read (`[09-23 12:20] 老王：…`) is rendered in two places - `assistantTools.transcriptLine` on the tool path (mask in
+  TypeScript, then send the rendered lines over stdin) and `reply_debt.format_line` on the CLI path (which reads the
+  database itself) - and they had drifted in four ways with nothing failing. The rule that came out of fixing it is the
+  second half of the title: `senderUsername` is a raw column holding the sender's **wxid**, not a name, so neither side
+  may use it as a label; a resolved display name is used when there is one, and `对方` otherwise. That rule stops
+  deliberately at this line - `get_messages` still labels speakers with the raw column, because collapsing a group's
+  speakers to `对方` would remove its ability to answer "who said that", and a wxid is at least *distinct* per person.
+  The real fix belongs in the reader that resolves names into these fields, not in the string, so it is recorded here
+  as an open trade-off rather than silently taken either way.
 - **The judgement step is degradable now, and the degradation says so.** Jev's free period ended on
   2026-09-25; when that call fails (expired, bad key, or a dropped connection - the first failure seen here was
   an `http.client` read error) the tool no longer refuses to draft. It falls back to DeepSeek alone: three

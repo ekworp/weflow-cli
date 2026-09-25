@@ -52,6 +52,10 @@ from reply_debt import format_line, TRANSCRIPT_SIZE, TYPE_LABELS, MAX_MSG_CHARS 
 import nt_decrypt                                                          # noqa: E402
 
 TZ = timezone(timedelta(hours=8))
+# 转录里单条消息的截断长度。**必须等于** `assistantTools.ts` 的 `TRANSCRIPT_MSG_CHARS`——
+# 否则同一句话走命令行（`--talker`）和走面板（`--stdin`）会不一样长，判断被喂进不同的东西。
+# （`reply_debt` 自己有 120 字的口径，那是欠账雷达 state 的大小，是另一件事，别混。）
+DRAFT_MSG_CHARS = 160
 DEFAULT_COUNT = 3
 MAX_COUNT = 5
 DRAFT_MAX_CHARS = 60
@@ -288,7 +292,7 @@ DRAFT_PROMPT = """你是中文即时通讯回复助手。下面是一段对话�
 - 该不该给实质内容：{should_reply}
 - 风险档位：{risk}
 
-最近对话（时间从早到晚，「我」是我，「对方」是{name}）：
+最近对话（时间从早到晚，「我」是我；不是我的那一侧一律写成发言人自己的名字——单聊里就是{name}，群聊里是谁说的就写谁）：
 {premise}
 {convo}
 """
@@ -307,7 +311,7 @@ DRAFT_PROMPT_NO_JUDGE = """你是中文即时通讯回复助手。下面是一�
 5. **这次没有判断结果**（判断模型没调通），所以分寸你自己按上下文把握：
    拿不准就少说、先问；**不要替我做新的承诺**；对方明显带着情绪时先接住情绪再谈事
 
-最近对话（时间从早到晚，「我」是我，「对方」是{name}）：
+最近对话（时间从早到晚，「我」是我；不是我的那一侧一律写成发言人自己的名字——单聊里就是{name}，群聊里是谁说的就写谁）：
 {premise}
 {convo}
 """
@@ -472,7 +476,7 @@ def read_from_db(talker, days):
         if not messages:
             print('这个会话最近没有消息', file=sys.stderr)
             return None, 1
-        lines = [format_line(m) for m in reversed(messages)]
+        lines = [format_line(m, DRAFT_MSG_CHARS) for m in reversed(messages)]
         # `lines` 是把 messages **反过来**渲染的，所以最后一条 = `messages[0]`。
         # 用结构化字段 `isSend` 而不是去解析那行文本：群聊里别人的标签是**人名**
         # （`format_line` 里 `senderDisplay` 优先），拿「对方」当标记会判错。
