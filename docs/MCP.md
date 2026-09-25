@@ -74,11 +74,11 @@ Copy this entry into your MCP client's configuration and ensure `cwd` points to 
 | `wechat.get_todos` | List todos extracted from chat history. | `scripts/extract_todos.py`, Python |
 | `wechat.search_knowledge` | Fuzzy-search concept pages in the knowledge base. | Vault Wiki output |
 | `wechat.search_memory` | Search long-term assistant memory. | `~/.weflow-cli/assistant_memory.json` |
-| `wechat.search_chats` | Find which conversation discussed something (literal words). | Decrypted WeChat database |
-| `wechat.search_semantic` | Find chat messages by meaning, not literal words. | `dashscopeApiKey` config, network |
+| `wechat.search_chats` | Find which conversation discussed something (literal words). | Decrypted WeChat database, **words leave the machine - `confirm: true` required** |
+| `wechat.search_semantic` | Find chat messages by meaning, not literal words. | `dashscopeApiKey` config, network - **query and hits leave the machine, `confirm: true` required** |
 | `wechat.who_owes_reply` | Rank the conversations waiting on a reply. | Decrypted WeChat database |
 | `wechat.draft_reply` | Draft candidate replies. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
-| `wechat.who_owes_reply` | Rank the conversations waiting on a reply. | Decrypted WeChat database, **text leaves the machine** |
+| `wechat.who_owes_reply` | Rank the conversations waiting on a reply. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
 | `wechat.export_chat` | Export one conversation to HTML, txt, json or excel. | Decrypted WeChat database, **writes under `output/exports/`** |
 | `wechat.get_reading_stats` | Which sources push most and what the daily processes. | `output/biz-daily/` |
 
@@ -95,14 +95,15 @@ offered on it (the same rule `unavailableToolReason` applies elsewhere). The cha
 - Chat-data tools (`list_sessions`, `get_messages`, `search_favorites`, `get_sns`, `get_todos`) read your locally decrypted WeChat database. Only run this MCP server on machines where that is acceptable, and never expose the stdio server over a network.
 - `read_favorite`, `fetch_article`, and `search_public` make network requests; `read_favorite` rejects private/loopback URLs.
 - The MCP surface is **derived from the assistant's tool table minus `save_memory`**, not a hand-written read-only list - so it is *not* read-only, and this line used to claim it was. What it actually contains, declared in `capabilities --json` under `safety.mcpSurface`: one tool that writes (`export_chat`, new directories under `output/exports/` only) and four that send user data to cloud models (`who_owes_reply` and `search_chats` send chat text to the decision model, `search_semantic` sends the query for embedding and the hits for reranking, `draft_reply` sends a conversation to two models and needs `confirm: true`). Publishing, sending messages, mutating todos, changing configuration and writing assistant memory stay out.
-- **`draft_reply` is on this surface, and it is the one tool that requires an explicit confirmation from
-  the machine caller.** It sends the conversation to two cloud models, so an MCP call that does not pass
-  `confirm: true` returns a **preview only** - how many messages, how many characters, which two models -
-  and does not leave the machine. The description says so, and the client's model is expected to ask its
-  user before passing `confirm`. `capabilities --json` declares this under
-  `safety.mcpSurface.requiresConfirm`. The CLI path keeps its own equivalent boundary (`weflow-cli draft
-  "<talker>" --dry-run` / `--yes --json`, declared as `read.draft`), and neither path ever sends a message.
-- Do not place API keys in `.mcp.json`. Use environment variables where a client supports them.
+- **Four tools on this surface send user data to cloud models, and each of them requires an explicit
+  confirmation from the machine caller.** They are `who_owes_reply` (every conversation's text, one request
+  each), `search_chats` (your question plus words extracted from the chats - not the message bodies),
+  `search_semantic` (the query for embedding, then the hits for reranking) and `draft_reply` (a whole
+  conversation). An MCP call that does not pass `confirm: true` returns a **preview only** - what would be
+  sent and to whom, with character counts where the script can produce them cheaply - and nothing leaves the
+  machine. `capabilities --json` lists them under `safety.mcpSurface.requiresConfirm`, and the tool
+  descriptions say so, because a calling model that does not know cannot ask its user. The CLI keeps its own
+  equivalent boundary for the same work (`--dry-run` / `--yes`), and none of these tools ever sends a message.
 
 ## Troubleshooting
 

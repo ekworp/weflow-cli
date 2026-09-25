@@ -1329,14 +1329,19 @@ which is what the gate is for.
   which `aiEngine` does not touch. The first implementation copied the bypass from `look_at_image` and a
   test caught it: with `aiEngine=ollama` + `assistantPrivacy=strict` the transcript was handed to the
   script. Verified by measurement, then removed.
-- **The MCP surface gets a stricter boundary than the panel does, on purpose.** `draft_reply` is on the
+- **The MCP surface gets a stricter boundary than the panel does, on purpose, and it applies to all four tools that egress.** `draft_reply` is on the
   MCP tool list (that list is *derived* from the assistant tool table minus `save_memory` and `look_at_image`, so
   anything added there appears there too, and a tool that cannot work on that transport has to be excluded
   explicitly - `look_at_image` hands its image to the assistant's model through a side channel that MCP never
   reads, so it used to answer "you can see it now" while shipping nothing) and an MCP call that does not pass `confirm: true` returns a **preview only** -
   how many messages, how many characters, which two models - with nothing leaving the machine. The panel and
   the WeChat bot do not need that flag: their boundary is the sender allowlist plus a user asking in a
-  conversation only they can see. An MCP client is a **third-party process** whose session nobody here can
+  conversation only they can see. The same gate covers `who_owes_reply` (every conversation's text, one
+  request each), `search_chats` (the question plus words pulled from the chats) and `search_semantic` (the
+  query, then the hits) - one shared message shape in `confirmPreview()`, with each tool filling in what it
+  actually sends. Two of them can produce real numbers for the preview by running their script's own
+  `--dry-run`; the other two say it from their arguments, because `route_cards.py --dry-run` prints plain
+  text rather than JSON and `semantic_search.py` has no `--dry-run` at all. An MCP client is a **third-party process** whose session nobody here can
   observe, so its default is "show me the cost first". The tool description states this, because a calling
   model that does not know it cannot ask its user.
   Two claims next to this were wrong and are now corrected rather than quietly dropped: `capabilities --json`

@@ -419,6 +419,10 @@ export const TOOL_DEFS: ToolDef[] = [
         properties: {
           question: { type: 'string', description: '要找的事，用自然语言描述' },
           per_card: { type: 'number', description: '每个会话最多回几条消息，默认 3' },
+          confirm: {
+            type: 'boolean',
+            description: '仅当用户**明确同意**这个工具会把内容发出去时才传 true。不传或传 false 时只返回预览（要发什么、发给谁），零出境。',
+          },
         },
         required: ['question'],
       },
@@ -459,6 +463,10 @@ export const TOOL_DEFS: ToolDef[] = [
         type: 'object',
         properties: {
           days: { type: 'number', description: '只看最近多少天有动静的会话，默认 14' },
+          confirm: {
+            type: 'boolean',
+            description: '仅当用户**明确同意**这个工具会把内容发出去时才传 true。不传或传 false 时只返回预览（要发什么、发给谁），零出境。',
+          },
         },
       },
     },
@@ -477,6 +485,10 @@ export const TOOL_DEFS: ToolDef[] = [
         properties: {
           query: { type: 'string', description: '要找的意思，用自然语言描述' },
           top_k: { type: 'number', description: '要几条，默认 8，上限 20' },
+          confirm: {
+            type: 'boolean',
+            description: '仅当用户**明确同意**这个工具会把内容发出去时才传 true。不传或传 false 时只返回预览（要发什么、发给谁），零出境。',
+          },
         },
         required: ['query'],
       },
@@ -687,6 +699,22 @@ function riskLabel(score: unknown): string {
   if (value >= 6) return '偏危险'
   if (value >= 3) return '留神'
   return '安全'
+}
+
+/**
+ * 外部机器（MCP）调用到"会把用户数据送出去"的工具时，**统一只给预览**的那段文案。
+ *
+ * 四个出境工具（draft_reply / who_owes_reply / search_chats / search_semantic）共用这一份形状，
+ * 各自把"要发什么、发给谁"填进 `what`。预览阶段一律不出境：能用脚本自己的 `--dry-run`
+ * 报出具体数字的就报数字（draft_reply、who_owes_reply），报不出的就按入参说清
+ * （search_chats 的 --dry-run 打的是纯文本、不认 --json；semantic_search 根本没有 --dry-run）。
+ */
+function confirmPreview(what: string): string {
+  return [
+    '还没执行——这只是一次**预览**（没有把任何内容发出去）。',
+    what,
+    '用户明确同意之后再带 `confirm: true` 调一次，才会真的执行。',
+  ].join(String.fromCharCode(10))
 }
 
 export async function executeTool(name: string, args: Record<string, any>, ctx: ToolContext): Promise<string> {
@@ -977,6 +1005,13 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         const question = String(args.question || '').trim()
         if (!question) return '(缺少 question 参数)'
         const perCard = boundedToolInteger(args.per_card, 3, 10, 'per_card')
+        // 外部机器默认只给预览，**按入参说清**。这里要说清的恰好是最要紧的那件事：
+        // 这条路上出去的是"你的问题 + 从聊天里提取的候选词"，**不含消息正文**（排序在本地做）。
+        if (ctx.requiresConfirm && args.confirm !== true) {
+          return confirmPreview(`会把你的问题「${question.slice(0, 40)}」与从聊天里提取的候选词`
+            + `（最多 ${perCard} 个会话各若干词，**不含消息正文**）发给判断模型 Jev，`
+            + '让它挑出你真正在找的词；排序在本地做。')
+        }
         const result = await runPythonJson<any>('route_cards.py',
           ['ask', question, '--yes', '--json', '--per-card', String(perCard)], { timeoutMs: 90_000 })
         if (!result.ok) return fail('会话检索失败', result)
@@ -1001,6 +1036,18 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // 谁在等我回话：逐会话问一次判断模型（较慢）。**不给正文**——真要看他写了什么，
         // 用 get_messages 单独查，那条路有完整的隐私处理。
         const days = boundedToolInteger(args.days, 14, 60, 'days')
+        // 外部机器（MCP）默认只给预览：这个工具**每个会话一次判断调用**，每一次都带着那段聊天正文，
+        // 是这条路上最贵也最"出境"的一个。预览走脚本自己的 --dry-run（只读本地、零出境）。
+        if (ctx.requiresConfirm && args.confirm !== true) {
+          const preview = await runPythonJson<any>('reply_debt.py',
+            ['--days', String(days), '--dry-run', '--json'], { timeoutMs: 60_000 })
+          if (!preview.ok || !preview.data?.success) {
+            return `(预览失败：${String(preview.data?.error || preview.error || '未知').slice(0, 120)})`
+          }
+          const p = preview.data
+          return confirmPreview(`会把最近 ${days} 天里 ${p.conversations} 个有动静的会话、`
+            + `约 ${p.stateChars} 字符聊天正文，**逐个**发给判断模型（api.typesafe.ai），每会话一次请求。`)
+        }
         const result = await runPythonJson<any>('reply_debt.py', ['--days', String(days), '--json'],
           { timeoutMs: 180_000 })
         if (!result.ok) return fail('欠账查询失败', result)
@@ -1052,11 +1099,10 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
             return `(起草预览失败：${String(preview.data?.error || preview.error || '未知').slice(0, 120)})`
           }
           const d = preview.data
-          return `还没起草——这只是一次**预览**（没有把任何内容发出去）。\n`
-            + `会把「${d.name}」最近的 ${d.messages} 条消息、共 ${d.stateChars} 字符，`
-            + `发给 ${d.models?.judge || '判断模型'} 与 ${d.models?.draft || '生成模型'}`
-            + `（${d.calls || '3 次调用'}），产出 ${d.count} 条候选。\n`
-            + `用户明确同意之后再带 \`confirm: true\` 调一次，才会真的起草。`
+          return confirmPreview('会把「' + d.name + '」最近的 ' + d.messages + ' 条消息、共 '
+            + d.stateChars + ' 字符，发给 ' + (d.models?.judge || '判断模型') + ' 与 '
+            + (d.models?.draft || '生成模型') + '（' + (d.calls || '3 次调用') + '），产出 '
+            + d.count + ' 条候选。')
         }
 
         // 逐条遮罩**再**交给脚本：Python 侧没有任何脱敏实现（全仓只有两处无关的位掩码），
@@ -1106,6 +1152,11 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         const query = String(args.query || '').trim()
         if (!query) return '(缺少 query 参数)'
         const topK = boundedToolInteger(args.top_k, 8, 20, 'top_k')
+        // 外部机器默认只给预览（`semantic_search.py` 没有 --dry-run，按入参说清）
+        if (ctx.requiresConfirm && args.confirm !== true) {
+          return confirmPreview(`会把查询词「${query.slice(0, 40)}」发给阿里云百炼做嵌入，`
+            + `再把前 ${topK} 条命中的本地片段（可能含聊天或文章原文）发给判断模型 Jev 重排。`)
+        }
         // **查询词走环境变量、不进 argv**：仓库写进测试的隐私纪律（进程列表里看不到正文）
         const result = await runPythonJson<any[]>('semantic_search.py',
           ['search', '--top-k', String(topK)],

@@ -341,7 +341,10 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   user asking in a conversation only they can see, whereas an MCP client is a third-party process whose
   session nobody here can observe. `capabilities.safety.mcpSurface.requiresConfirm` declares it, the tool
   description states it (a calling model that does not know it cannot ask its user), and a new test drives the
-  real MCP protocol to prove that a call without the flag never produces a draft.
+  real MCP protocol to prove that a call without the flag never produces a draft. The same gate now covers
+  the other three tools that send user data to cloud models (`who_owes_reply`, `search_chats`,
+  `search_semantic`) through one shared message shape - each tool fills in what it actually sends, and the
+  two whose scripts support `--dry-run` show real counts.
 
 
 - **The ball no longer disappears when you open it: the conversation unfolds beside it, like an icon

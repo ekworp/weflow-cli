@@ -1345,3 +1345,59 @@ test('draft_reply：面板/微信那条路不受影响 —— 不置 requiresCon
     assert.ok(calls[0].args.includes('--yes'), '面板那条路不需要 confirm，照旧直接起草')
   } finally { bridge.setScriptRunner(null) }
 })
+
+test('who_owes_reply：MCP 不带 confirm 时只给预览，脚本走 --dry-run（零出境）', async () => {
+  const calls = stubScript(JSON.stringify({
+    success: true, dryRun: true, action: 'reply-debt.scan', days: 14,
+    conversations: 7, stateChars: 4321, readsLocalChat: true, invokesAI: true,
+  }))
+  try {
+    const out = await run('who_owes_reply', { days: 14 }, mcpCtx())
+    assert.match(out, /预览/, '要说清这只是预览')
+    assert.match(out, /7 个有动静的会话/, '要报出要判多少个会话')
+    assert.match(out, /4321 字符/, '要报出要发多少字符')
+    assert.match(out, /confirm: true/)
+    assert.deepEqual(calls[0].args, ['--days', '14', '--dry-run', '--json'], '预览必须带 --dry-run')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('who_owes_reply：带了 confirm 才走真调用（参数里不再有 --dry-run）', async () => {
+  const calls = stubScript(JSON.stringify({ success: true, debts: [] }))
+  try {
+    await run('who_owes_reply', { days: 3, confirm: true }, mcpCtx())
+    assert.deepEqual(calls[0].args, ['--days', '3', '--json'])
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_chats：MCP 不带 confirm 时一个脚本都不调（预览是按入参说的）', async () => {
+  // 这条的预览不需要读库：它要说清的恰好是最要紧的那件事——发出去的是问题与候选词，
+  // **不含消息正文**。所以断言最狠的一条是"脚本一次都没被调用"。
+  const calls = stubScript(JSON.stringify({ success: true, ranked: [], messages: {} }))
+  try {
+    const out = await run('search_chats', { question: '上次说的部署方案' }, mcpCtx())
+    assert.match(out, /预览/)
+    assert.match(out, /不含消息正文/)
+    assert.match(out, /上次说的部署方案/)
+    assert.equal(calls.length, 0, '预览阶段不许调脚本（更不许出境）')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_chats：带了 confirm 才真调，且照旧带 --yes', async () => {
+  const calls = stubScript(JSON.stringify({ success: true, ranked: [], messages: {} }))
+  try {
+    await run('search_chats', { question: '部署', confirm: true }, mcpCtx())
+    assert.equal(calls.length, 1)
+    assert.ok(calls[0].args.includes('--yes'), '真调时脚本自己的出境闸门照旧要带')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_semantic：MCP 不带 confirm 时一个脚本都不调（这个脚本没有 --dry-run）', async () => {
+  const calls = stubScript(JSON.stringify([]))
+  try {
+    const out = await run('search_semantic', { query: '和钱有关的讨论' }, mcpCtx())
+    assert.match(out, /预览/)
+    assert.match(out, /阿里云百炼/, '要说清查询词去哪')
+    assert.match(out, /重排/, '要说清命中的片段还要再发一次')
+    assert.equal(calls.length, 0, '语义检索脚本本身没有 --dry-run，所以预览只能按入参说——那就不许调它')
+  } finally { bridge.setScriptRunner(null) }
+})
