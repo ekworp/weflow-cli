@@ -1340,7 +1340,13 @@ which is what the gate is for.
   popup can hand focus back to some other window, and the next complaint was "I do not know where the answer
   went" (it went into a window that was behind something else). The conversation shows a readable turn
   ("快速回复：<name>") while what is actually sent is the explicit tool-naming request. Nothing here sends a
-  message: the chain is structurally text-only, same as everywhere else.
+  message: the chain is structurally text-only, same as everywhere else. The menu's **last item is not a consent at
+  all** - it hides the ball and reaches no model - and it is the one item that survives an empty contact list, because
+  a menu of two grey lines with nothing clickable gives that user no way to dismiss the ball. It **hides rather than
+  quits**: the exit actions stay in the tray menu, which already separates them from show/expand, and hiding is the
+  reversible choice. The label therefore has to name the way back (`关闭悬浮球（托盘图标能再打开）`) - the ball runs with
+  `setSkipTaskbar(true)`, so a hidden ball leaves nothing on the taskbar to click, and a label saying only "关闭" would
+  read as "it is gone for good".
 - **The judgement step is degradable now, and the degradation says so.** Jev's free period ended on
   2026-09-25; when that call fails (expired, bad key, or a dropped connection - the first failure seen here was
   an `http.client` read error) the tool no longer refuses to draft. It falls back to DeepSeek alone: three

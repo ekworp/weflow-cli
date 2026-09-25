@@ -77,8 +77,14 @@ test('两份菜单内容不许分叉：main.cjs 必须用这个模块，而不�
   const main = readFileSync(join(process.cwd(), 'resources', 'panel', 'main.cjs'), 'utf8')
   assert.match(main, /require\('\.\/tray-menu\.cjs'\)/, '要 require 这个模块')
   assert.match(main, /trayMenuTemplate\(/)
-  // 标签只许在这个模块里出现一次；main.cjs 再抄一遍就是"同一件事两处实现"
+  // 标签只许在这个模块里出现一次；main.cjs 再抄一遍就是"同一件事两处实现"。
+  // **只查带引号的形式**：注释里提到这个名字（比如说明"从哪叫回来"）不是第二份实现，
+  // 把注释也算进去的话，这条守卫就变成了"不许在注释里提这个标签"——那是另一件事。
+  // 真的在 main.cjs 里重建一份菜单，标签必然是引号里的字面量，这里照样抓得到。
   for (const label of ['显示 / 收起', '展开为对话窗', '退出面板（助手继续运行）']) {
-    assert.equal(main.includes(label), false, `main.cjs 里不该再出现「${label}」`)
+    for (const quote of ["'", '"', '`']) {
+      assert.equal(main.includes(`${quote}${label}${quote}`), false,
+        `main.cjs 里不该再出现 ${quote}${label}${quote}`)
+    }
   }
 })

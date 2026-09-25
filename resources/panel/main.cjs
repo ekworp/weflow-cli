@@ -368,10 +368,16 @@ if (!app.requestSingleInstanceLock()) {
     // 右键"快速回复"。**用原生菜单**：它画在窗口外面，所以球那 76x76 的窗口不用先展开
     // （页内菜单做不到这一点——它会被窗口裁掉）。选中回一个名字，关掉没选回 null。
     ipcMain.handle('panel:quickMenu', (_event, labels) => new Promise((resolve) => {
-      if (!win) { resolve(null); return }
+      if (!win || win.isDestroyed()) { resolve(null); return }
       let picked = null
       // 先记下来、关菜单时再 resolve：`click` 与 `popup` 的 callback 谁先到不该决定结果
-      const menu = Menu.buildFromTemplate(quickMenuTemplate(labels, { pick: (name) => { picked = name } }))
+      const menu = Menu.buildFromTemplate(quickMenuTemplate(labels, {
+        pick: (name) => { picked = name },
+        // 菜单最后那一项「关闭悬浮球」：**只把窗口收起来**，不退出（退出那一类在托盘菜单里）。
+        // 收起来是可逆的——托盘图标、托盘菜单的「显示 / 收起」、Ctrl+Shift+W 都叫得回来，
+        // 所以标签里写明了从哪叫回来。收起之后 `picked` 仍是 null，页面那边什么都不会发。
+        close: () => { picked = null; if (win && !win.isDestroyed()) win.hide() },
+      }))
       menu.popup({ window: win, callback: () => resolve(picked) })
     }))
 

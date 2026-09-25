@@ -336,6 +336,15 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   the answer went"), and the conversation shows a readable turn (`快速回复：<name>`) while what is actually sent is the
   explicit tool-naming request, so the chat log does not fill up with machine-shaped instructions.
 
+- **The same right-click menu can now put the ball away.** Its last item is the only one in that menu that reaches no
+  model at all: it hides the window instead of quitting the panel, so it is reversible by design - and that is exactly
+  why the label names the way back (`关闭悬浮球（托盘图标能再打开）`). The ball runs with `setSkipTaskbar(true)`, so
+  once it is hidden there is nothing on the taskbar to click; a label that just said "close" would read as "it is gone
+  for good". Keeping "hide" and "exit" apart is the same line the tray menu already draws (its two exit items sit after
+  a separator, away from show/expand), so no exit action was added here. The item is also the **only one present when
+  the contact list is empty** - a user who never configured `quickReplyContacts` would otherwise get a menu of two grey
+  lines that does nothing when clicked, including no way to dismiss the ball.
+
 ### Changed
 
 - **Drafting no longer stops when the judgement model is unreachable.** Jev's free period ended on 2026-09-25, and

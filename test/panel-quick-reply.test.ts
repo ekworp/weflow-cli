@@ -160,12 +160,16 @@ test('原生菜单里选了一个人 → 照样发出那句带名字的请求', 
   app.window.close()
 })
 
-test('原生菜单被关掉（没选）→ 什么都不发', async () => {
+test('原生菜单被关掉（没选 / 选了「关闭悬浮球」）→ 页面什么都不发', async () => {
+  // "看了一眼就关掉"与"点了关闭悬浮球"回到页面时都是 null：后者主进程那一侧已经把窗口
+  // 收起来了（那一步在 `panel-quick-menu.test.ts` 里钉着）。页面这两个都不该有动作，
+  // 尤其**不许**顺手切形态——那正是"右键把窗口弹出来"的来头。
   const app = await boot({ quickReplies: ['甲'] })
   app.setNativePick(null)
   app.rightClick()
   await wait(30)
   assert.equal(app.asked.length, 0, '取消不该触发任何请求')
+  assert.deepEqual(app.modeCalls, [], '也不该动窗口')
   app.window.close()
 })
 

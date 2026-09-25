@@ -12,6 +12,14 @@
  *
  * 一条不能松的语义：**代价写在菜单里**（"起草会把这段对话发给两个云端模型"）。
  * 点一下就 = 一次出境，这件事必须在菜单里看得见，而不是点完才知道。
+ *
+ * 最后一项是**「关闭悬浮球」**，它是这个菜单里唯一不碰 AI 的一项。三条取舍：
+ * - 它是 `win.hide()`（收起来），**不是退出**。退出面板 / 退出并停止助手属于"退出"那一类，
+ *   在托盘菜单里（`tray-menu.cjs` 把它们和"显示 / 展开"分隔开了），这里塞进来就把两类混了。
+ * - 所以它**可逆**，而收回来的路（托盘图标）必须写在标签里——球藏起来以后任务栏没有它的位置
+ *   （`setSkipTaskbar(true)`），不写清楚就成了"点一下它永远消失了"。
+ * - **名单为空时它也必须在**：没配过联系人的人照样得有个办法把球收起来，否则这个菜单对他
+ *   就是个只有两行灰字、什么也点不动的空框。
  */
 'use strict'
 
@@ -26,6 +34,12 @@ const EMPTY_HINT = [
 
 /** 代价那一行。**不可点**：它是说明，不是按钮 */
 const COST_NOTE = '起草会把这段对话发给两个云端模型（只产出文本，不会替你发送）'
+
+/**
+ * 收起来那一项的标签。括号里那句**不是凑字数的**：球藏起来之后任务栏里没有它
+ * （`setSkipTaskbar(true)`），不写出"托盘图标能再打开"，这一项看上去就像"永久关掉"。
+ */
+const CLOSE_LABEL = '关闭悬浮球（托盘图标能再打开）'
 
 /** 把名单规整成菜单项用的数组：只要非空字符串、去重、有上限 */
 function normalizeNames(labels) {
@@ -44,22 +58,39 @@ function normalizeNames(labels) {
 
 /**
  * @param {unknown} labels 名单（联系人名）
- * @param {{pick: (name: string) => void}} actions 选中了哪个人。
+ * @param {{
+ *   pick: (name: string) => void,
+ *   close: () => void,
+ * }} actions 选中了哪个人 / 选了"收起来"。
  *   关掉菜单这件事由调用方的 `popup({ callback })` 负责，这里不管。
+ *
+ * 两项都必填：少给一个就当场抛，而不是弹出一个点了没反应的菜单。
  */
 function quickMenuTemplate(labels, actions) {
   if (typeof actions?.pick !== 'function') {
     throw new Error('quickMenuTemplate 需要一个 pick 回调')
   }
+  if (typeof actions?.close !== 'function') {
+    throw new Error('quickMenuTemplate 需要一个 close 回调')
+  }
+  const closeItem = { label: CLOSE_LABEL, click: () => actions.close() }
   const names = normalizeNames(labels)
   if (!names.length) {
-    return EMPTY_HINT.map(label => ({ label, enabled: false }))
+    // 空名单也要给得出「关闭悬浮球」——见文件头那条取舍
+    return [
+      ...EMPTY_HINT.map(label => ({ label, enabled: false })),
+      { type: 'separator' },
+      closeItem,
+    ]
   }
   return [
     ...names.map(name => ({ label: name, click: () => actions.pick(name) })),
     { type: 'separator' },
+    // 代价那行紧挨着名单：它说的是"点上面那些人"的代价
     { label: COST_NOTE, enabled: false },
+    { type: 'separator' },
+    closeItem,
   ]
 }
 
-module.exports = { MAX_ITEMS, EMPTY_HINT, COST_NOTE, normalizeNames, quickMenuTemplate }
+module.exports = { MAX_ITEMS, EMPTY_HINT, COST_NOTE, CLOSE_LABEL, normalizeNames, quickMenuTemplate }
