@@ -1197,6 +1197,53 @@ test('draft_reply：把候选渲染出来，判定里的英文键翻成人话', 
   } finally { bridge.setScriptRunner(null) }
 })
 
+test('draft_reply：最后一条是我发的时，前提先说出来，再给候选', async () => {
+  // 脚本会把这条前提同时放进判断与起草两段提示词（见 draft_reply_test.py 的 LastSpeakerTests），
+  // 但**用户也要看见**——否则候选看起来像在回一句根本不存在的话。
+  const PREMISE = '注意：**最后一条是我自己发的，对方还没回**。所以这不是"他在等我回"。'
+  draftWorld()
+  stubScript(JSON.stringify({ ...DRAFT_OK, lastFromMe: true, premise: PREMISE }))
+  try {
+    await withBalanced(async () => {
+      const text = await run('draft_reply', { contact: '老王' })
+      assert.match(text, /最后一条是我自己发的/)
+      assert.ok(text.indexOf('最后一条是我自己发的') < text.indexOf('建议这样回'),
+                '前提要在候选**之前**说——放到后面就等于事后补一句')
+    })
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('draft_reply：脚本没说前提时，一个字的"最后一条是我发的"都不许出现', async () => {
+  // 这句一旦由工具自己补上，就成了**编出来的前提**——所以它只能来自脚本（那里才有结构化字段）。
+  draftWorld()
+  stubScript(JSON.stringify(DRAFT_OK))
+  try {
+    await withBalanced(async () => {
+      const text = await run('draft_reply', { contact: '老王' })
+      assert.doesNotMatch(text, /最后一条是我自己发的/)
+    })
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('draft_reply：最后一条是谁发的**用结构化字段送进脚本**，不靠它去解析那行文本', async () => {
+  // 群聊里别人的标签是**人名**（`format_line` 里 senderDisplay 优先），拿「对方」当标记会判错。
+  draftWorld()
+  svc.getMessages = async () => ([
+    { createTime: 1758601200, isSend: true, senderUsername: '我', localType: 1,
+      content: '那我明天再问你', parsedContent: '那我明天再问你' },
+    { createTime: 1758600600, isSend: false, senderUsername: '老王', localType: 1,
+      content: '今天有点忙', parsedContent: '今天有点忙' },
+  ])
+  const calls = stubScript(JSON.stringify(DRAFT_OK))
+  try {
+    await withBalanced(async () => { await run('draft_reply', { contact: '老王' }) })
+    const payload = JSON.parse(calls[0].stdin!)
+    assert.equal(payload.lastFromMe, true, '最新一条是我发的')
+    // 这个字段说的是 `transcript` 的**最后一行**（= 最新那条），所以顺带钉住顺序没被反过来
+    assert.match(payload.lines[payload.lines.length - 1], /\] 我：那我明天再问你$/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
 test('draft_reply：给脚本的是按时间正序、带方向标签的对话，非文本消息给类型标签', async () => {
   draftWorld()
   const calls = stubScript(JSON.stringify(DRAFT_OK))

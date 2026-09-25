@@ -69,8 +69,11 @@ file shows ciphertext, not the value).
 Two places in `bin/weflow-cli.ts`: the `program.command('...')` registration, and - if it should appear in the
 interactive menu - `showInteractiveMenu()` plus the `switch (action)` that maps a menu choice back to the command.
 
-**There is no test that keeps those two in sync.** That is a known gap: a command registered but missing from the menu
-is simply not offered interactively, and nothing turns red. If you add a command, add both by hand.
+`test/cli-menu.test.ts` keeps those in sync: menu entries and `switch` cases must match **in both directions**, and
+every `runCmd('x')` / `runSubCmd('p','c')` the menu calls must name a command that actually exists (that test asks the
+CLI's own `--help`, because the source cannot tell top-level commands from subcommands - 64 `.command('...')` call sites
+against 44 real commands). This matters because both failure modes are silent: a menu entry with no `case` does nothing
+when picked, and `runCmd` is written as `if (cmd) await ...`, so a renamed command makes the entry do nothing too.
 
 Two conventions that hold across the command surface: every command that a script or an AI might drive has a `--json`
 mode, and anything destructive is two-phase (`--dry-run` preview, then `--yes`).
@@ -117,6 +120,7 @@ TypeScript; `python -m unittest discover -s test -p '*_test.py'` covers these).
 | A config key exists in all five places | `test/config-keys.test.ts` |
 | The MCP subset contains no write/send/publish tool | `test/assistant-tools.test.ts` |
 | Panel IPC surface is exactly the declared method list | `test/panel-packaging.test.ts` |
+| Interactive-menu entries match `switch` cases, and the commands they call exist | `test/cli-menu.test.ts` |
 
 ## Red lines
 
@@ -140,4 +144,3 @@ Named here so that the gaps are not mistaken for omissions:
   without a stability promise.
 - **A versioned extension contract.** The versioned contracts that exist are data contracts (`weflow-message/v1`,
   `weflow-sync/v1`), not code contracts.
-- **A guard on the CLI menu** (Recipe C) - the only checklist here with nothing watching it.

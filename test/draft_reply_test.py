@@ -188,14 +188,45 @@ class PromptTests(unittest.TestCase):
         self.assertIn('先接住情绪', prompt)
 
 
+class LastSpeakerTests(unittest.TestCase):
+    """最后一条是谁发的 —— 七道题问的是「their last message」。
+
+    语料里最后一条如果是我自己发的，那个问题本身就是**问错的**：对方根本没说话。
+    不告诉它，判断会把**我**刚发的那句当成对方的表态（"对方真实意图""对方需要什么"全都变成
+    对我自己那句话的解读），再当成"参考"喂进写作提示，候选自然答非所问。
+    """
+
+    def test_it_never_guesses_when_the_caller_did_not_say(self):
+        # 说不清就当不知道：猜错比不说更糟（同"没有判断就不假装判断过"那条纪律）
+        self.assertEqual(dr.premise_note(None), '')
+        self.assertEqual(dr.premise_note(False), '')
+        self.assertIn('最后一条是我自己发的', dr.premise_note(True))
+        self.assertIn('别把我那句话当成对方的表态', dr.premise_note(True))
+
+    def test_the_premise_reaches_the_draft_prompt(self):
+        note = dr.premise_note(True)
+        self.assertIn(note, dr.build_draft_prompt('老王', LINES, None, 3, note))
+        self.assertNotIn('最后一条是我自己发的', dr.build_draft_prompt('老王', LINES, None, 3, ''),
+                         '说不清时不许出现这句——那是编出来的前提')
+
+    def test_the_premise_reaches_the_judgment_too(self):
+        # 两段都要：只告诉起草那一段，判断那半仍按错的前提办事
+        stub = StubClient(answers())
+        dr.judge(stub, '老王', LINES, dr.premise_note(True))
+        self.assertIn('最后一条是我自己发的', stub.calls[0]['state'])
+        stub2 = StubClient(answers())
+        dr.judge(stub2, '老王', LINES, dr.premise_note(None))
+        self.assertNotIn('最后一条是我自己发的', stub2.calls[0]['state'])
+
+
 class RunTests(unittest.TestCase):
     """跑通整条：判断 → 闸门 → 起草 → 排序。三个依赖都打桩。"""
 
-    def _run(self, stub, deepseek_text='["一", "二", "三"]', **kwargs):
+    def _run(self, stub, deepseek_text='["一", "二", "三"]', payload=None, **kwargs):
         with patch.object(dr, 'create_client', return_value=stub), \
              patch.object(dr, 'get_api_key', return_value='fake-key'), \
              patch.object(dr, 'call_deepseek', return_value=deepseek_text):
-            return dr.run({'name': '老王', 'lines': LINES}, 3, {}, **kwargs)
+            return dr.run(payload or {'name': '老王', 'lines': LINES}, 3, {}, **kwargs)
 
     def test_drafts_come_back_ranked(self):
         stub = StubClient(answers())
@@ -204,6 +235,26 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['gate'], 'draft')
         self.assertEqual([d['text'] for d in result['drafts']], ['二', '一', '三'], '排序题说二是最好的')
         self.assertEqual(len(stub.calls), 2, '判断一次、排序一次')
+
+    def test_last_message_from_me_is_carried_into_both_prompts_and_out(self):
+        """我发了最后一句时：判断与起草**都**拿到这条前提，结果里也带出来（页面/命令行要说给用户）。"""
+        stub = StubClient(answers())
+        with patch.object(dr, 'create_client', return_value=stub), \
+             patch.object(dr, 'get_api_key', return_value='fake-key'), \
+             patch.object(dr, 'call_deepseek', return_value='["一", "二"]') as generator:
+            result = dr.run({'name': '老王', 'lines': LINES, 'lastFromMe': True}, 2, {})
+        self.assertIs(result['lastFromMe'], True)
+        self.assertIn('最后一条是我自己发的', result['premise'])
+        self.assertIn('最后一条是我自己发的', stub.calls[0]['state'], '判断那一次')
+        self.assertIn('最后一条是我自己发的', generator.call_args[0][0], '起草那一次')
+
+    def test_without_the_fact_there_is_no_premise_anywhere(self):
+        # 老调用方没带这个字段时：不出现任何"最后一条是我发的"——那是猜出来的前提
+        stub = StubClient(answers())
+        result = self._run(stub)
+        self.assertIsNone(result['lastFromMe'])
+        self.assertEqual(result['premise'], '')
+        self.assertNotIn('最后一条是我自己发的', stub.calls[0]['state'])
 
     def test_refused_path_never_calls_the_generator(self):
         """被闸门拦下时**不许**再去生成——那既花了钱，又让人有现成的话可发。"""

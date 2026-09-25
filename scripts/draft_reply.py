@@ -215,9 +215,12 @@ def to_judgment(answers):
     }
 
 
-def judge(client, name, lines):
+def judge(client, name, lines, premise=''):
     """问一次决策模型。返回 (判断, usage)；问不出来就是 (None, None)。"""
-    state = '会话：%s\n\n最近的对话（时间从早到晚）：\n%s' % (name, '\n'.join(lines))
+    head = '会话：%s' % name
+    if premise:
+        head += '\n' + premise
+    state = '%s\n\n最近的对话（时间从早到晚）：\n%s' % (head, '\n'.join(lines))
     try:
         answers, usage = client.decide(state, build_questions())
     except Exception as error:
@@ -286,6 +289,7 @@ DRAFT_PROMPT = """你是中文即时通讯回复助手。下面是一段对话�
 - 风险档位：{risk}
 
 最近对话（时间从早到晚，「我」是我，「对方」是{name}）：
+{premise}
 {convo}
 """
 
@@ -304,6 +308,7 @@ DRAFT_PROMPT_NO_JUDGE = """你是中文即时通讯回复助手。下面是一�
    拿不准就少说、先问；**不要替我做新的承诺**；对方明显带着情绪时先接住情绪再谈事
 
 最近对话（时间从早到晚，「我」是我，「对方」是{name}）：
+{premise}
 {convo}
 """
 
@@ -332,17 +337,18 @@ def own_voice_lines(lines):
     return [line.split('：', 1)[1] for line in lines if '] 我：' in line][-5:]
 
 
-def build_draft_prompt(name, lines, judgment, count):
+def build_draft_prompt(name, lines, judgment, count, premise=''):
     # `judgment=None` = 降级路径（Jev 没调通）：换那一版提示词，**不去编一段判断结果出来**
     if not judgment:
         return DRAFT_PROMPT_NO_JUDGE.format(
             count=count, max_chars=DRAFT_MAX_CHARS, name=name,
             style_hint=style_hint(own_voice_lines(lines)),
-            convo='\n'.join(lines),
+            premise=premise, convo='\n'.join(lines),
         )
     return DRAFT_PROMPT.format(
         count=count, max_chars=DRAFT_MAX_CHARS, name=name,
         style_hint=style_hint(own_voice_lines(lines)),
+        premise=premise,
         constraints=draft_constraints(judgment),
         intent=judgment.get('intent'), need=judgment.get('need'),
         action=judgment.get('action'),
@@ -467,7 +473,11 @@ def read_from_db(talker, days):
             print('这个会话最近没有消息', file=sys.stderr)
             return None, 1
         lines = [format_line(m) for m in reversed(messages)]
-        return {'name': resolved, 'lines': lines}, 0
+        # `lines` 是把 messages **反过来**渲染的，所以最后一条 = `messages[0]`。
+        # 用结构化字段 `isSend` 而不是去解析那行文本：群聊里别人的标签是**人名**
+        # （`format_line` 里 `senderDisplay` 优先），拿「对方」当标记会判错。
+        return {'name': resolved, 'lines': lines,
+                'lastFromMe': bool(messages[0].get('isSend'))}, 0
     finally:
         for conn in conns:
             conn.close()
@@ -475,11 +485,29 @@ def read_from_db(talker, days):
 
 # ---------------------------------------------------------------- 主流程
 
+def premise_note(last_from_me):
+    """最后一条是我自己发的时，给判断与起草的**前提说明**；其余情况空字符串。
+
+    为什么非说不可：那七道题问的是「their last message」。语料里最后一条如果是我发的，
+    这个问题本身就是**问错的**——对方根本没说话。不告诉它，判断会把**我**刚发的那句当成
+    对方的表态（于是"对方真实意图""对方需要什么"全变成对我自己那句话的解读），
+    再当成"参考"喂进写作提示，候选自然答非所问。
+
+    只在**确知**是/不是时才有话说：`lastFromMe` 说不清（老调用方没带这个字段）就当不知道。
+    猜错比不说更糟——这条与"没有判断就不假装判断过"是同一条纪律。
+    """
+    if not last_from_me:
+        return ''
+    return ('注意：**最后一条是我自己发的，对方还没回**。所以这不是"他在等我回"，'
+            '而是"我在等他回"——别把我那句话当成对方的表态。')
+
+
 def run(payload, count, config, gate_commitment=False):
     """判断 → 闸门 → 起草 → 排序。**两条输入路径共用这一段。**"""
     name, lines = payload['name'], payload['lines']
     if not lines:
         return {'success': False, 'error': '没有对话内容可用'}
+    premise = premise_note(payload.get('lastFromMe'))
 
     # **DeepSeek 是必须的**（候选只有它能写）；判断那一步（Jev）是**可降级**的。
     api_key = get_api_key(config)
@@ -499,7 +527,7 @@ def run(payload, count, config, gate_commitment=False):
     if client is None:
         judge_note = '没有配置 typesafeApiKey，判断这一步没跑'
     else:
-        judgment, usage = judge(client, name, lines)
+        judgment, usage = judge(client, name, lines, premise)
         if judgment is None:
             judge_note = '判断没调通（看上面的 WARN）：可能是 Jev 的免费期已过、key 失效或网络断'
         else:
@@ -510,9 +538,10 @@ def run(payload, count, config, gate_commitment=False):
         if refused:
             reason, advice = refused
             return {'success': True, 'gate': 'refused', 'name': name, 'judged': True,
+                    'lastFromMe': payload.get('lastFromMe'), 'premise': premise,
                     'reason': reason, 'advice': advice, 'judgment': judgment, 'drafts': []}
 
-    prompt = build_draft_prompt(name, lines, judgment, count)
+    prompt = build_draft_prompt(name, lines, judgment, count, premise)
     try:
         raw = call_deepseek(prompt, api_key, max_tokens=800, timeout=90)
     except Exception as error:
@@ -526,12 +555,14 @@ def run(payload, count, config, gate_commitment=False):
         # 不假装判断过——那道闸门正是靠判断结果才存在的。
         return {'success': True, 'gate': 'draft', 'name': name, 'judgment': None,
                 'judged': False, 'judgeNote': judge_note,
+                'lastFromMe': payload.get('lastFromMe'), 'premise': premise,
                 'drafts': [{'text': text, 'why': ''} for text in candidates], 'ranked': False,
                 'candidateCount': len(candidates), 'askedCount': count}
 
     drafts, ranked_ok = rank(client, name, lines, candidates, judgment)
     return {'success': True, 'gate': 'draft', 'name': name, 'judgment': judgment,
             'drafts': drafts, 'ranked': ranked_ok, 'judged': True,
+            'lastFromMe': payload.get('lastFromMe'), 'premise': premise,
             'candidateCount': len(candidates), 'askedCount': count}
 
 
@@ -570,9 +601,11 @@ def main():
 
     config = load_config()
     state_chars = len('\n'.join(payload['lines']))
+    premise = premise_note(payload.get('lastFromMe'))
     if args.dry_run:
         preview = {'success': True, 'dryRun': True, 'action': 'draft-reply',
                    'name': payload['name'], 'messages': len(payload['lines']),
+                   'lastFromMe': payload.get('lastFromMe'), 'premise': premise,
                    'stateChars': state_chars, 'count': args.count,
                    'models': {'judge': 'Jev（决策）', 'draft': 'DeepSeek（生成）'},
                    'calls': '判断 1 次 + 起草 1 次 + 排序 1 次（判断那一步调不通时降级：只发生成那一次，'
@@ -583,6 +616,8 @@ def main():
         else:
             print('会话：%s（%d 条消息，%d 字符会发给判断模型与生成模型）'
                   % (preview['name'], preview['messages'], state_chars))
+            if premise:
+                print(premise)
             print('要问的判断：意图 / 需要 / 动作 / 该不该给实质 / 风险 / 涉钱 / 未兑现承诺')
             print('三次调用：判断（Jev）→ 起草 %d 条（DeepSeek）→ 排序（Jev）' % args.count)
         return 0
@@ -592,6 +627,11 @@ def main():
         return 1
 
     result = run(payload, args.count, config, args.gate_commitment)
+    # 前提先说：这次不是"他在等我回"而是"我在等他回"。它同时进了判断与起草两段提示词，
+    # 但**用户也要看见**——否则候选看起来像在回一句根本不存在的话。
+    if not args.json and result.get('premise'):
+        print(result['premise'])
+        print()
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif not result.get('success'):

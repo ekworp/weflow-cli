@@ -160,6 +160,20 @@ test('工具调用：结果被喂回对话，最终回话用模型的答复', as
   assert.match(tools[0].content, /喜欢喝茶/)
 })
 
+test('提示词里写死了：工具失败时不许替它编一个原因', async () => {
+  // 起因是实际发生的一次：工具只报了「判断环节失败（脚本退出码 1）」，
+  // 助手答的是「原因大概是：模型在「该不该给实质承诺」上判断不一致，卡住了」——那句话是它编的
+  // （真实原因是调 Jev 时网络读断），而用户会把它当成事实。工具本身早就把原因带出来了，
+  // 缺的是这条规则：**没有原因时就说没有原因**。
+  // 断言的是**真的发给模型的那段系统提示**（从 rounds 里抓的），不是源码里的字符串。
+  const h = harness([answer('好')])
+  await h.svc.handleMessage(newUser(), '在吗', 'text')
+  const system = h.rounds[0][0].content
+  assert.match(system, /工具\*\*失败\*\*时/, '要有"工具失败怎么办"这一条')
+  assert.match(system, /只许转述工具给出的那个原因/)
+  assert.match(system, /不许替它推测/, '这一句是这条规则的重点')
+})
+
 test('工具结果出境前被脱敏：链接打码，原文不再出现', async () => {
   const h = harness([
     toolCall('search_memory', { keyword: '文档' }),

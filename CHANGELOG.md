@@ -345,6 +345,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   the contact list is empty** - a user who never configured `quickReplyContacts` would otherwise get a menu of two grey
   lines that does nothing when clicked, including no way to dismiss the ball.
 
+- **The interactive menu is the last extension point that had nothing watching it - now it has a guard.**
+  `test/cli-menu.test.ts` requires the menu's entries and `showInteractiveMenu`'s `switch` cases to match **in both
+  directions**, and every `runCmd` / `runSubCmd` the menu calls to name a command that actually exists. Both failures are
+  silent by construction: an entry with no `case` does nothing when picked, and `runCmd` is written as
+  `if (cmd) await ...`, so a renamed command makes an entry do nothing too. The command list is taken from the CLI's own
+  `--help` rather than from the source, because the source cannot tell the two apart - 64 `.command('...')` call sites
+  against 44 real commands. Four mutations (rename a menu value, rename a `case`, point `runCmd` at a missing command,
+  point `runSubCmd` at a missing subcommand) each turn a specific assertion red, and `docs/EXTENDING.md`'s recipe C no
+  longer carries a "nothing will tell you" caveat.
+
 - **`docs/EXTENDING.md` - what to touch when adding to this project, and what will catch you.** The repository had no
   document for its most common kind of change, so "add an assistant tool" existed only as tribal knowledge spread over
   several files while "add a config key" was a comment at the top of a test. The guide gives one recipe per extension
@@ -451,6 +461,26 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   windows.
 
 ### Fixed
+
+- **The assistant was allowed to invent a reason for a tool failure, and did.** When drafting failed on 2026-09-25 the
+  tool reported only "the judgement step failed (script exit code 1)" and the assistant answered with "the reason is
+  probably that the model was inconsistent about whether to promise something" - a cause it had no evidence for. The
+  real cause was a dropped connection while calling the judgement model, which the tool *did* know about; what the
+  prompt lacked was a rule. It now has one: when a tool fails (its result starts with a bracket), relay only the reason
+  the tool gave, and if it gave none - or only an exit code - say that, plus the next step. Guessing is named
+  explicitly, because the user reads the guess as a fact. The assertion reads the system prompt **as actually sent to
+  the model**, not the source string.
+
+- **Drafting asked "what is their last message about?" even when the last message was mine.** The judgement questions
+  are written around *their* last message, and the drafting prompt is told to reply to what they said - but nothing
+  checked who sent the last line. If the user had sent it, the judgement interpreted **the user's own words** as the
+  other person's position (intent, need and "what should I do" all answered against the wrong person), and those
+  answers then went into the drafting prompt as context. Both prompts now receive the premise when it holds
+  ("the last message is mine, they have not replied - do not read my words as their position"), and the premise is
+  printed to the user ahead of the candidates, because otherwise the candidates look like answers to a message that
+  does not exist. The fact is carried as a structured `isSend` field, never parsed back out of the transcript text -
+  in a group chat the other side's label is a person's name, not `对方`. When the caller cannot say who sent it, no
+  premise is produced at all: a guessed premise would be worse than none.
 
 - **Nothing kept the tool table and its four consumers in agreement - now something does.** `TOOL_DEFS` (19 tools),
   the `executeTool` switch, the availability rules, the MCP exclusion table and the MCP documentation table were five

@@ -1411,9 +1411,11 @@ not exist yet" so a reader cannot mistake the gap for an oversight.
 
 **Consequences:** Adding a capability means editing this source tree, which is why the registries were made declarative
 and guarded (`test/tool-registry.test.ts`, `test/config-keys.test.ts`) - a framework that can only be extended by
-editing it had better make "did I edit all the places?" answerable. The CLI's interactive-menu entry remains the one
-extension point with no guard, and that gap is written down rather than papered over. Should a loader be built later,
-these guards are the parts that would have to be re-derived for the plugin path rather than deleted.
+editing it had better make "did I edit all the places?" answerable. The last unguarded extension point - the CLI's
+interactive menu, where a menu entry with no `switch` case does nothing when picked and `runCmd` silently no-ops on a
+renamed command - was covered on 2026-09-25 by `test/cli-menu.test.ts`, so all five recipes in `docs/EXTENDING.md` now
+name the test that catches a missed step. Should a loader be built later, these guards are the parts that would have to
+be re-derived for the plugin path rather than deleted.
 
 ## Decision Template
 

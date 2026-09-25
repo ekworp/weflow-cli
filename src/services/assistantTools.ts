@@ -1119,7 +1119,9 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
           return confirmPreview('会把「' + d.name + '」最近的 ' + d.messages + ' 条消息、共 '
             + d.stateChars + ' 字符，发给 ' + (d.models?.judge || '判断模型') + ' 与 '
             + (d.models?.draft || '生成模型') + '（' + (d.calls || '3 次调用') + '），产出 '
-            + d.count + ' 条候选。')
+            + d.count + ' 条候选。'
+            // 前提说明也在出境的那一段里（它会进两段提示词），所以预览要把它算进去
+            + (d.lastFromMe ? '另外会附一句「最后一条是我自己发的」的前提说明。' : ''))
         }
 
         // 逐条遮罩**再**交给脚本：Python 侧没有任何脱敏实现（全仓只有两处无关的位掩码），
@@ -1138,18 +1140,26 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         })
         const result = await runPythonJson<any>('draft_reply.py',
           ['--stdin', '--yes', '--json', '--count', String(count)],
-          { stdin: JSON.stringify({ name: contact, lines: transcript }), timeoutMs: 240_000 })
+          // `lastFromMe`：`transcript` 是 `msgs` **反过来**渲染的，所以最后一条 = `msgs[0]`。
+          // 用结构化字段 `isSend`，不去解析那行文本（群聊里别人的标签是人名，不是「对方」）。
+          // 这段是说给脚本听的**前提**：最后一条是我发的时，"回答对方最后一句"这件事根本不存在。
+          { stdin: JSON.stringify({ name: contact, lines: transcript, lastFromMe: !!msgs[0]?.isSend }),
+            timeoutMs: 240_000 })
         if (!result.ok) return fail('起草失败', result)
 
         const data = result.data ?? {}
         if (!data.success) return `(起草没跑通: ${String(data.error || '未知').slice(0, 120)})`
         const picked = Array.isArray(data.drafts) ? data.drafts : []
+        // 脚本给的前提说明（仅当最后一条是我发的）。**用户也要看见**：否则候选看起来像在回
+        // 一句根本不存在的话。三条出口（降级/被闸门拦下/正常）都要带上它。
+        const premise = typeof data.premise === 'string' ? data.premise.trim() : ''
         // **降级那次（Jev 没调通）必须说清两件事**：这次没有判断，以及那道闸门没生效。
         // 闸门（涉钱/高风险不给草稿）正是靠判断结果才存在的——不标出来，降级看起来就跟
         // "判断过了"一模一样。**不以 `(` 开头**：那个前缀在本仓库表示"工具没产出内容"。
         if (data.judged === false) {
           if (!picked.length) return `(起草没给出候选：${String(data.judgeNote || '判断与生成都没跑通').slice(0, 120)})`
-          const lines = [`这次**没有判断**——${String(data.judgeNote || '判断那一步没调通')}。`,
+          const lines = [...(premise ? [premise, ''] : []),
+                         `这次**没有判断**——${String(data.judgeNote || '判断那一步没调通')}。`,
                          `所以"涉钱/风险高就不给草稿"那道闸门**没生效**，下面 ${picked.length} 条是生成模型`
                          + `按上下文给的，你自己看一眼：`, '']
           picked.forEach((draft: any, index: number) => { lines.push(`${index + 1}. ${draft.text}`) })
@@ -1164,13 +1174,15 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // 被闸门拦下：**不是失败**，是这条最该给的回答。所以不以 `(` 起头
         // （那个前缀在本仓库里表示"工具没产出内容"，见 `producedContent`）。
         if (data.gate === 'refused') {
-          return ['不起草。', String(data.reason || ''), '',
+          return [...(premise ? [premise, ''] : []),
+                  '不起草。', String(data.reason || ''), '',
                   '建议先：', ...(data.advice ?? []).map((line: string) => `· ${line}`),
                   '', `（判断：${why}。这些只是文本，没有发送任何东西。）`].join('\n')
         }
         const drafts: any[] = Array.isArray(data.drafts) ? data.drafts : []
         if (!drafts.length) return '(起草没给出候选)'
-        const lines = [`建议这样回（${drafts.length} 条，第一条是判断最合适的）：`, '']
+        const lines = [...(premise ? [premise, ''] : []),
+                       `建议这样回（${drafts.length} 条，第一条是判断最合适的）：`, '']
         drafts.forEach((draft, index) => { lines.push(`${index + 1}. ${draft.text}`) })
         lines.push('')
         lines.push(`（判断：${why}。这些只是文本，没有发送任何东西——回不回、怎么回由你决定。）`)
