@@ -494,6 +494,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   speakers apart. Both implementations now use a resolved display name when there is one and `对方` otherwise, and
   neither falls back to the raw column.
 
+  The same contract also covers **how much conversation each path sends**: 30 messages (`TRANSCRIPT_MESSAGES` in
+  TypeScript, `TRANSCRIPT_SIZE` in Python) alongside the 160-character limit per message. Those two numbers agree
+  today, but they agreed by coincidence - neither was watched, and either one changing alone would have made the same
+  conversation a different input depending on which entrance it came through. Two mutations, one per side, each turn
+  the assertion red.
+
 - **`get_messages` labelled speakers with a raw wxid, and that text goes to a cloud model.** The tool's output is a
   transcript the assistant reads, and every line from the other side was tagged with the value of `senderUsername` -
   which is a database column holding the sender's **wxid**, not a name. So asking "what did 老王 send me" produced

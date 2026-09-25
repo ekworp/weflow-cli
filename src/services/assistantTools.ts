@@ -87,6 +87,15 @@ function transcriptTime(ts: number): string {
 export const TRANSCRIPT_MSG_CHARS = 160
 
 /**
+ * 转录取**多少条**消息。**必须等于** `scripts/reply_debt.py` 的 `TRANSCRIPT_SIZE`。
+ *
+ * 与上面那个字数上限是一对：一个决定"多长的一段对话"，一个决定"每条多长"。两条入口
+ * （面板/微信走 `--stdin`，命令行走 `--talker`）必须给出同一段对话——否则同一件事在两边
+ * 判断出的结果会不一样，而**不会报任何错**。两边今天都是 30，但在这之前谁都没盯着它。
+ */
+export const TRANSCRIPT_MESSAGES = 30
+
+/**
  * 消息是**谁**说的（对方那一侧）：**有解析出来的名字就用名字，没有就写「对方」**。
  *
  * **`senderUsername` 不参与**：它是数据库原列的 wxid（`wcdbCore` 的 `sender_username`、
@@ -1173,7 +1182,7 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
             + '`weflow-cli draft <会话>`。)'
         }
         const talker = await resolveTalker(contact)
-        const msgs = await chatService.getMessages(talker, 30)
+        const msgs = await chatService.getMessages(talker, TRANSCRIPT_MESSAGES)
         if (!msgs.length) return `(没找到「${contact}」的消息)`
 
         // **外部机器（MCP）默认只给预览，不做出境。** 与 CLI 的 `--dry-run` / `--yes` 同一套纪律：

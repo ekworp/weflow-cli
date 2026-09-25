@@ -23,9 +23,10 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { configService } from '../src/services/configService.js'
 import { getPythonCommand } from '../src/utils/python.js'
-import { transcriptLine, TRANSCRIPT_MSG_CHARS } from '../src/services/assistantTools.js'
+import { transcriptLine, TRANSCRIPT_MESSAGES, TRANSCRIPT_MSG_CHARS } from '../src/services/assistantTools.js'
 
 const DRAFT_SOURCE = readFileSync(join(process.cwd(), 'scripts', 'draft_reply.py'), 'utf8')
+const DEBT_SOURCE = readFileSync(join(process.cwd(), 'scripts', 'reply_debt.py'), 'utf8')
 
 /**
  * 同一批消息喂给两边。覆盖：只有 wxid 的、我发的、带人名的非文本、超长、群聊里的第三个人。
@@ -57,8 +58,8 @@ payload = json.loads(sys.stdin.read())
 print(json.dumps([format_line(m, payload['maxChars']) for m in payload['messages']], ensure_ascii=False))
 `
 
-test('两边的截断长度是同一个数（起草那条路的口径）', () => {
-  // **这条不能靠下面那条比出来**：下面按"两边同一个数"去比，所以两边一起改成 120 也算相等。
+test('两边喂给模型的对话是同一段：条数与每条字数', () => {
+  // **这两条不能靠下面那条比出来**：下面按"两边同一个数"去比，所以两边一起改成 120 也算相等。
   // 而 120 是 `reply_debt` 自己的口径（欠账雷达 state 的大小），起草那条路必须用 160——
   // 混了它，同一句话在面板里和命令行里就会长短不一。
   const inPython = Number(/^DRAFT_MSG_CHARS = (\d+)/m.exec(DRAFT_SOURCE)?.[1])
@@ -69,6 +70,13 @@ test('两边的截断长度是同一个数（起草那条路的口径）', () =>
   // 真验它要跑一次 `--talker`（读真库），所以在测试里只能这样盯——把参数去掉这条就红。
   assert.match(DRAFT_SOURCE, /format_line\(m, DRAFT_MSG_CHARS\)/,
     '起草读库那条路要用 DRAFT_MSG_CHARS 渲染，否则它悄悄按 120 截')
+
+  // 条数也得同值：一个是"多长的一段对话"，一个是"每条多长"。两边今天都是 30，
+  // 但在这之前谁都没盯着——一边改成 20 的话，同一段对话在两条入口里就是不同的输入。
+  const pythonSize = Number(/^TRANSCRIPT_SIZE = (\d+)/m.exec(DEBT_SOURCE)?.[1])
+  assert.ok(Number.isInteger(pythonSize), '没读到 scripts/reply_debt.py 的 TRANSCRIPT_SIZE')
+  assert.equal(TRANSCRIPT_MESSAGES, pythonSize,
+    'TS 的 TRANSCRIPT_MESSAGES 必须等于 Python 的 TRANSCRIPT_SIZE')
 })
 
 test('同一批消息：TS 与 Python 渲染出的转录逐字相同', () => {
