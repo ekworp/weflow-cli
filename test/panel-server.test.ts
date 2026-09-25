@@ -20,6 +20,14 @@ process.env.HOME = HOME
 process.env.USERPROFILE = HOME
 
 const { startPanelServer } = await import('../src/panel/server.js')
+const { configService } = await import('../src/services/configService.js')
+
+/** 只替换 `quickReplyContacts` 这一个键，其余键仍走真实现（这个文件里别的用例不碰它） */
+async function withQuickReplies<T>(value: string, body: () => Promise<T>): Promise<T> {
+  const real = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'quickReplyContacts' ? value : real(k))
+  try { return await body() } finally { ;(configService as any).get = real }
+}
 
 interface Stub {
   calls: { bucket: string; text: string }[]
@@ -102,6 +110,7 @@ test('对 token 才能拿到状态，字段齐、且**不含 token 本身**', as
     assert.equal(body.channelActive, false)
     assert.equal(body.memoryBucket, 'wxid_me')
     assert.deepEqual(body.quota, { used: 3, limit: 100 })
+    assert.deepEqual(body.quickReplies, [], '没配名单时是个空数组，不是 undefined')
     assert.equal(JSON.stringify(body).includes(token), false, '状态里不许出现 token')
   } finally { await server.close() }
 })
@@ -389,5 +398,31 @@ test('页面里没有内联脚本（CSP 也会挡，但别写）', async () => {
     const html = await (await fetch(`${base}/panel`, { headers: { Authorization: `Bearer ${token}` } })).text()
     assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)/)
     assert.match(html, /src="\/panel\/renderer\.js"/)
+  } finally { await server.close() }
+})
+
+test('右键菜单那份名单来自配置键，切分去空、有上限', async () => {
+  // 名单走这个端点出去，是因为**页面本来就在轮询它**——面板那条路上不加新端点。
+  const { server, base, token } = await boot()
+  try {
+    await withQuickReplies(' 咸鱼梦想家 , 老王 ,, 甲 ', async () => {
+    const res = await fetch(`${base}/api/status`, { headers: { Authorization: `Bearer ${token}` } })
+    const body: any = await res.json()
+      assert.deepEqual(body.quickReplies, ['咸鱼梦想家', '老王', '甲'], '按逗号切、两头去空、丢掉空段')
+    })
+  } finally { await server.close() }
+})
+
+test('名单再长也只带前 20 个（菜单在 420px 宽的窗口里，本来也放不下更多）', async () => {
+  const many = Array.from({ length: 30 }, (_, i) => `联系人${i + 1}`).join(',')
+  const { server, base, token } = await boot()
+  try {
+    await withQuickReplies(many, async () => {
+      const res = await fetch(`${base}/api/status`, { headers: { Authorization: `Bearer ${token}` } })
+      const body: any = await res.json()
+      assert.equal(body.quickReplies.length, 20)
+      assert.equal(body.quickReplies[0], '联系人1')
+      assert.equal(body.quickReplies[19], '联系人20')
+    })
   } finally { await server.close() }
 })

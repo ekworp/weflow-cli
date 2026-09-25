@@ -44,7 +44,7 @@ test('面板要用的文件都在（少一个用户装上就缺）', () => {
   // 两个 `.cjs` 是纯模块（`ball-position` 位置算术、`tray-menu` 托盘菜单）：`main.cjs` 会
   // `require` 它们，所以**少一个面板根本起不来**——这条正是为这种漏检存在的。
   for (const name of ['index.html', 'renderer.js', 'panel.css', 'main.cjs', 'preload.cjs',
-                      'ball-position.cjs', 'tray-menu.cjs',
+                      'ball-position.cjs', 'tray-menu.cjs', 'quick-menu.cjs',
                       'mascot.png', 'tray.png', 'package.json']) {
     assert.ok(existsSync(join(PANEL, name)), `缺文件: resources/panel/${name}`)
   }
@@ -76,7 +76,7 @@ test('渲染进程不碰文件系统、不碰进程、不碰凭据', () => {
 test('preload 只暴露固定的几个方法，且**不含**通用的 on/send', () => {
   const preload = code('preload.cjs')
   const exposed = [...preload.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]).sort()
-  assert.deepEqual(exposed, ['dragEnd', 'dragMove', 'dragStart', 'info', 'onMode', 'quit', 'setMode'])
+  assert.deepEqual(exposed, ['dragEnd', 'dragMove', 'dragStart', 'info', 'onMode', 'openQuickMenu', 'quit', 'setMode'])
   // 通用订阅才是危险的：通道名一旦由渲染进程决定，那层隔离就名存实亡
   assert.doesNotMatch(preload, /on\s*:\s*\(/, '不许暴露通用的 on(name, cb)')
   assert.doesNotMatch(preload, /send\s*:\s*\(/)
@@ -141,6 +141,34 @@ test('窗口尺寸切换要先解锁再改尺寸 —— Windows 上不可调整�
   assert.ok(unlock >= 0 && shrink >= 0 && lock >= 0, `三处都要在（unlock=${unlock} shrink=${shrink} lock=${lock}）`)
   assert.ok(unlock < shrink, '先解锁再改尺寸')
   assert.ok(shrink < lock, '改完尺寸最后才锁上')
+})
+
+test('展开之后窗口要自己走到前面来 —— 它不置顶，靠这个才看得见', () => {
+  // 用户的原话："右键点击后不知道消息返回到哪里了"。右键那条路最容易撞上：球是置顶的、
+  // 看得见，而原生菜单一关，焦点可能已经还给别的窗口了——候选就出在一个被压在后面的窗口里。
+  const main = code('main.cjs')
+  const fn = main.slice(main.indexOf('function setMode'), main.indexOf('function toggleVisible'))
+  const chatBranch = fn.slice(fn.indexOf('if (chat)'), fn.indexOf('} else {'))
+  assert.match(chatBranch, /win\.focus\(\)/, '展开那一支要把窗口叫到前面')
+  assert.match(chatBranch, /win\.show\(\)/, '顺手保证它真的可见（hide 过之后 show 是必须的）')
+})
+
+test('拖动时尺寸只在开始时记一次 —— 每次读"当前尺寸"会让可缩放的窗口越拖越大', () => {
+  // 这条是**量出来的**：同一个拖动（30 步、位移 30x24）在 `resizable: false` 下尺寸纹丝不动，
+  // 在 `resizable: true`（对话形态就是）下**尺寸漂了 30x24——正好等于这次位移**。
+  // 于是"在对话形态下拖球"会让窗口每拖一次大一圈，而窗口比"气泡 + 间距 + 球"宽出来的部分
+  // 全变成气泡与球之间的空档（用户："挪动悬浮气泡时气泡和窗口之间的间距越来越远"）。
+  const main = code('main.cjs')
+  const move = main.slice(main.indexOf("ipcMain.handle('panel:dragMove'"),
+                          main.indexOf("ipcMain.handle('panel:dragEnd'"))
+  assert.ok(move.length > 0, '应当能找到 dragMove')
+  assert.doesNotMatch(move, /getContentBounds\(\)/, '移动时不许再读"当前尺寸"——那是读-改-写')
+  assert.match(move, /width: dragOrigin\.width/, '尺寸要用开始时记下的那个')
+  assert.match(move, /height: dragOrigin\.height/)
+  const start = main.slice(main.indexOf("ipcMain.handle('panel:dragStart'"),
+                           main.indexOf("ipcMain.handle('panel:dragMove'"))
+  assert.match(start, /width: from\.width/, 'dragStart 要把尺寸一起记下来')
+  assert.match(start, /height: from\.height/)
 })
 
 test('ready-to-show 的监听要挂在 loadURL 之前 —— 它不会重放', () => {

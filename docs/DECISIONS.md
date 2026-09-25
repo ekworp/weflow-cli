@@ -1329,6 +1329,18 @@ which is what the gate is for.
   which `aiEngine` does not touch. The first implementation copied the bypass from `look_at_image` and a
   test caught it: with `aiEngine=ollama` + `assistantPrivacy=strict` the transcript was handed to the
   script. Verified by measurement, then removed.
+- **Clicking a name in the panel's quick-reply menu *is* the consent.** That menu (right-click; the list comes from
+  the `quickReplyContacts` config key) turns one click into a draft for one person - which means that conversation goes
+  to two cloud models. So the cost is written **inside the menu** rather than discovered afterwards, and the menu
+  deliberately does not exist in the browser fallback, where the native right-click menu (with Copy) belongs to the
+  user. The menu is a **native** one for the same reason: a page-drawn menu cannot leave the window and the ball's is
+  76x76, so the first attempt expanded the window to make room - which turned a quick action into "right-click opens the
+  chat window" (the user's words). A native popup draws outside the window, so nothing has to move - and because the
+  chat window is deliberately *not* always-on-top, expanding it now also raises and focuses it: closing a native
+  popup can hand focus back to some other window, and the next complaint was "I do not know where the answer
+  went" (it went into a window that was behind something else). The conversation shows a readable turn
+  ("快速回复：<name>") while what is actually sent is the explicit tool-naming request. Nothing here sends a
+  message: the chain is structurally text-only, same as everywhere else.
 - **The MCP surface gets a stricter boundary than the panel does, on purpose, and it applies to all four tools that egress.** `draft_reply` is on the
   MCP tool list (that list is *derived* from the assistant tool table minus `save_memory` and `look_at_image`, so
   anything added there appears there too, and a tool that cannot work on that transport has to be excluded

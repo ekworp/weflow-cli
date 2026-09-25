@@ -289,6 +289,12 @@ export async function startPanelServer(options: PanelServerOptions): Promise<Pan
         memoryNote,
         quota: service.quotaState(),
         aiConfigured: privacyGate.isLocalInference() || !!configService.get('deepseekApiKey'),
+        // 右键"快速回复"的名单（`config set quickReplyContacts "甲,乙"`）。
+        // 页面本来就在轮询这个端点，所以它不必再开一个入口——**面板那条路上不加新端点**。
+        // 名字与 id 都在这里：菜单显示名字，`/api/ask` 收到的是名字（解析交给助手那一侧，
+        // 重名会得到"匹配多个会话"这种可读的失败，不猜）。
+        quickReplies: String(configService.get('quickReplyContacts') || '')
+          .split(',').map(item => item.trim()).filter(Boolean).slice(0, 20),
       })
       return
     }

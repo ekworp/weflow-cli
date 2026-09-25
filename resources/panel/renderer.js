@@ -160,6 +160,7 @@ async function refreshStatus() {
       return
     }
     const s = await res.json()
+    quickReplies = Array.isArray(s.quickReplies) ? s.quickReplies.filter(n => typeof n === 'string') : []
     const mode = s.channelActive ? '微信 + 本机' : '仅本机入口'
     statusEl.textContent = mode + '｜今日 ' + s.quota.used + '/' + s.quota.limit
     // 额度用尽是"今天不能再用"，值得在球上看得出来（琥珀），但**不是**错误
@@ -184,8 +185,18 @@ async function refreshStatus() {
   }
 }
 
-async function ask(text) {
-  addTurn('me', text)
+/** 让助手给这个人起草一条回复。**只产文本**——发送在这条链路上结构性不可达。 */
+function draftRequest(name) {
+  return `用 draft_reply 给「${name}」起草 3 条候选回复，把候选原样列出来。只产文本，不要发送。`
+}
+
+/**
+ * 问一句。`display` 用来把"用户看到的那句话"和"实际发出去的那句"分开：
+ * 快速回复要发的是一句点名工具的请求（要模型选对工具），但那句话长得像机器指令，
+ * 摆进对话里读起来不像人说的——所以对话里显示「快速回复：咸鱼梦想家」。
+ */
+async function ask(text, display = null) {
+  addTurn('me', display || text)
   const pending = addTurn('it pending', '…')
   input.disabled = true
   send.disabled = true
@@ -247,6 +258,12 @@ input.addEventListener('keydown', (event) => {
 const ball = document.getElementById('ball')
 const collapse = document.getElementById('collapse')
 const hasShell = typeof window.weflowPanel !== 'undefined'
+
+/**
+ * 右键"快速回复"的名单。来自 `/api/status`——页面本来每 30 秒就轮询那个端点，
+ * 所以这份名单**不必再开一个入口**（面板那条路上不加新端点、不加 IPC）。
+ */
+let quickReplies = []
 
 /**
  * 系统关了动画没有。**这一条只有渲染进程能问**（`prefers-reduced-motion` 是媒体查询，
@@ -342,6 +359,29 @@ if (hasShell) {
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
   })
+  // 右键：快速回复。**只在有外壳时接管**——浏览器降级那条路的原生菜单里有"复制"，
+  // 那是用户要用的，不该被我们抢掉。
+  //
+  // 有外壳时用**主进程弹的原生菜单**：它画在窗口外面，所以球形态那 76x76 的窗口
+  // **不用先展开**（页内菜单会被窗口裁掉）。上一版就是"先展开再弹"，用户看到的是
+  // "点右键把第二大脑窗口弹出来了"——那不是快速功能该有的样子。
+  document.addEventListener('contextmenu', (event) => {
+    event.preventDefault()
+    void (async () => {
+      const picked = await window.weflowPanel.openQuickMenu(quickReplies)
+      if (typeof picked !== 'string' || !picked.trim()) return
+      const name = picked.trim()
+      // 选中了人：**这时才展开**。右键本身不该动窗口（那是用户嫌的那一下），
+      // 但起草出来的候选得有地方看——球那个 76x76 里看不到任何东西。
+      if (document.body.classList.contains('mode-ball')) requestMode('chat')
+      void ask(draftRequest(name), `快速回复：${name}`)
+    })()
+  })
+  document.addEventListener('click', () => closeQuickMenu())
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeQuickMenu()
+  })
+
   collapse.addEventListener('click', () => { requestMode('ball') })
 
   // 形态由主进程说了算（球、收起、托盘菜单、快捷键都是这条路），收起分两步：

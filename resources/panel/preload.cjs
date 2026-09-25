@@ -32,6 +32,19 @@ contextBridge.exposeInMainWorld('weflowPanel', {
   dragMove: (x, y) => ipcRenderer.invoke('panel:dragMove', { x, y }),
   dragEnd: () => ipcRenderer.invoke('panel:dragEnd'),
 
+  /**
+   * 右键快速回复：把名单交给主进程去弹**原生菜单**，返回用户选中的那个名字（没选就是 null）。
+   *
+   * 为什么菜单要由主进程弹：原生菜单画在窗口外面，所以球形态那 76x76 的窗口不用先展开成
+   * 对话窗——而"点右键顺手把窗口弹出来"正是用户不要的那一下。
+   * 名单在这里**收窄**：只要字符串、去掉空的、最多 20 个（主进程那侧还会再去一次重）。
+   */
+  openQuickMenu: (labels) => ipcRenderer.invoke('panel:quickMenu',
+    (Array.isArray(labels) ? labels : [])
+      .filter((name) => typeof name === 'string' && name.trim())
+      .map((name) => name.trim())
+      .slice(0, 20)),
+
   /** 主进程侧的实际状态，供界面显示"关窗后助手还在跑"这类事实 */
   info: () => ipcRenderer.invoke('panel:info'),
   /**
