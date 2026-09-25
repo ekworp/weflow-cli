@@ -1330,8 +1330,10 @@ which is what the gate is for.
   test caught it: with `aiEngine=ollama` + `assistantPrivacy=strict` the transcript was handed to the
   script. Verified by measurement, then removed.
 - **The MCP surface gets a stricter boundary than the panel does, on purpose.** `draft_reply` is on the
-  MCP tool list (that list is *derived* from the assistant tool table minus `save_memory`, so anything added
-  there appears there too) and an MCP call that does not pass `confirm: true` returns a **preview only** -
+  MCP tool list (that list is *derived* from the assistant tool table minus `save_memory` and `look_at_image`, so
+  anything added there appears there too, and a tool that cannot work on that transport has to be excluded
+  explicitly - `look_at_image` hands its image to the assistant's model through a side channel that MCP never
+  reads, so it used to answer "you can see it now" while shipping nothing) and an MCP call that does not pass `confirm: true` returns a **preview only** -
   how many messages, how many characters, which two models - with nothing leaving the machine. The panel and
   the WeChat bot do not need that flag: their boundary is the sender allowlist plus a user asking in a
   conversation only they can see. An MCP client is a **third-party process** whose session nobody here can

@@ -328,7 +328,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   (`export_chat`) and a model-calling tool (`look_at_image`) since those shipped. `capabilities` now reports
   `mcpDefaultReadOnly: false` plus a `safety.mcpSurface` breakdown (`writesFiles`, `callsCloudModels`,
   `requiresConfirm`), and the guide's tool table lists the whole surface instead of the eleven hand-written
-  entries. The two tests whose names said "read-only tool surface" but only asserted that publishing, sending
+  entries. Auditing that surface turned up one more thing: it lists **four** tools that send user data to cloud
+  models (`who_owes_reply`, `search_chats`, `search_semantic`, `draft_reply`), not the two the first version of
+  that declaration guessed, and `look_at_image` is now **excluded from the surface entirely** - it hands its
+  image to the assistant's own model through a side channel MCP never reads, so over MCP it answered "you can
+  see it now" while shipping nothing. The two tests whose names said "read-only tool surface" but only asserted that publishing, sending
   and memory writes are absent are renamed to say what they check.
 
   Because drafting sends a conversation to two cloud models, an **MCP call without `confirm: true` returns a

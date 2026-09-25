@@ -7,12 +7,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import {
   boundedToolInteger,
-  MCP_READ_ONLY_TOOL_DEFS,
+  MCP_TOOL_DEFS,
   resolveUniqueTalker,
 } from '../src/services/assistantTools.js'
 
 test('MCP assistant-tool subset contains no write operation', () => {
-  const names = MCP_READ_ONLY_TOOL_DEFS.map(tool => tool.function.name)
+  const names = MCP_TOOL_DEFS.map(tool => tool.function.name)
   const mcpSource = readFileSync(join(process.cwd(), 'mcp-server', 'index.ts'), 'utf8')
   assert.equal(names.includes('save_memory'), false)
   assert.equal(names.includes('send'), false)
@@ -56,7 +56,10 @@ test('capability discovery tells the truth about the MCP surface', () => {
   assert.equal(result.status, 0, result.stderr || result.stdout)
   const capabilities = JSON.parse(result.stdout)
   assert.equal(capabilities.safety.mcpDefaultReadOnly, false)
-  assert.deepEqual(capabilities.safety.mcpSurface.callsCloudModels, ['look_at_image', 'draft_reply'])
+  // 出境的逐个核实过（脚本里确实调云端模型的那些）。`look_at_image` 不在这张单子上：
+  // 它靠侧信道把图交给助手自己的模型，而 MCP 只取工具返回的文本——所以它已经被排除出 MCP 表。
+  assert.deepEqual(capabilities.safety.mcpSurface.callsCloudModels,
+    ['who_owes_reply', 'search_chats', 'search_semantic', 'draft_reply'])
   assert.deepEqual(capabilities.safety.mcpSurface.writesFiles, ['export_chat'])
   assert.deepEqual(capabilities.safety.mcpSurface.requiresConfirm, ['draft_reply'],
     '机器调用默认只给预览的那些工具要能被机器读到')
@@ -119,7 +122,7 @@ test('live MCP tools/list excludes publishing / sending / memory writes', { time
 test('MCP 那张表里的 draft_reply 带 confirm 参数 —— 机器调用默认只给预览', () => {
   // 这条盯着的是"MCP 有显式权限边界"这句话在**工具定义**上成不成立：
   // 没有 confirm 这个入参，调用方就没有办法表达"我还没得到用户同意"。
-  const def = MCP_READ_ONLY_TOOL_DEFS.find(tool => tool.function.name === 'draft_reply')
+  const def = MCP_TOOL_DEFS.find(tool => tool.function.name === 'draft_reply')
   assert.ok(def, 'draft_reply 本来就在 MCP 表里（那张表是助手工具表减去 save_memory）')
   const properties = def!.function.parameters.properties as Record<string, any>
   assert.ok(properties.confirm, 'draft_reply 必须有 confirm 入参')
@@ -150,4 +153,14 @@ test('live MCP: 不带 confirm 调 draft_reply 绝不会产出草稿（边界走
   } finally {
     await client.close()
   }
+})
+
+test('look_at_image 不在 MCP 表里 —— 那条路上它只会说一句假话', () => {
+  // 它的做法是把图挂进 `ctx.pendingImages` 交给助手自己的模型；MCP 那条路只把返回的**文本**
+  // 交给客户端，图没人接，回话里却写着"已附上图片…你能看到它了"。按"不摆一个跑不了的工具"
+  // 那条立论（同 unavailableToolReason），它不该出现在这张表里。
+  const names = MCP_TOOL_DEFS.map(tool => tool.function.name)
+  assert.equal(names.includes('look_at_image'), false, 'MCP 表里不许有 look_at_image')
+  assert.equal(names.includes('save_memory'), false, '记忆写入也不在（MCP 是另一个记忆桶）')
+  assert.equal(names.includes('draft_reply'), true, '起草在表里，但要 confirm')
 })

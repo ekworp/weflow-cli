@@ -573,7 +573,11 @@ program
         mcpSurface: {
           derivedFrom: 'assistant tools minus save_memory',
           writesFiles: ['export_chat'],
-          callsCloudModels: ['look_at_image', 'draft_reply'],
+          // 逐个核实过（脚本里确实调云端模型的那些）：
+          // who_owes_reply/search_chats → Jev；search_semantic → 阿里云百炼嵌入 + Jev 重排；draft_reply → Jev + DeepSeek。
+          // `look_at_image` **不在这里**：它靠侧信道把图交给助手自己的模型，而 MCP 只取工具返回的文本，
+          // 图没人接、回话却写着"你能看到它了"——所以它已经从 MCP 那张表里排除了（见 MCP_TOOL_DEFS）。
+          callsCloudModels: ['who_owes_reply', 'search_chats', 'search_semantic', 'draft_reply'],
           // 机器调用**默认只给预览**、必须显式 confirm 才出境的那些（MCP 独有的边界）
           requiresConfirm: ['draft_reply'],
         },
@@ -6181,10 +6185,10 @@ program
       ['wechat.search_public', '搜索全网公众号文章'],
       ['wechat.export_messages', '按稳定数据契约读取会话消息'],
     ]
-    const { MCP_READ_ONLY_TOOL_DEFS } = await import('../src/services/assistantTools.js')
+    const { MCP_TOOL_DEFS } = await import('../src/services/assistantTools.js')
     const all = [
       ...STATIC_TOOLS,
-      ...MCP_READ_ONLY_TOOL_DEFS.filter(t => t.function.name !== 'get_stats')
+      ...MCP_TOOL_DEFS.filter(t => t.function.name !== 'get_stats')
         .map(t => [`wechat.${t.function.name}`, t.function.description.split(/[。(]/)[0]] as [string, string]),
     ]
     for (const [n, d] of all) {

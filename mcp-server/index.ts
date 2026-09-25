@@ -146,7 +146,7 @@ function htmlToMarkdown(html: string): string {
   return md
 }
 import { formatWeChatArticle, listThemes } from '../src/services/wechat-formatter.js'
-import { boundedToolInteger, MCP_READ_ONLY_TOOL_DEFS, executeTool } from '../src/services/assistantTools.js'
+import { boundedToolInteger, MCP_TOOL_DEFS, executeTool } from '../src/services/assistantTools.js'
 import { AssistantMemory } from '../src/services/assistantMemory.js'
 
 // ---- 本地微信数据工具 (复用 assistant 工具层, 微信 bot / MCP server 同源) ----
@@ -160,7 +160,7 @@ const mcpMemory = new AssistantMemory()
 const MCP_TOOL_CTX = { userId: 'mcp', memory: mcpMemory, requiresConfirm: true }
 
 /** assistant 工具 (OpenAI function 格式) → MCP 工具格式; get_stats 并入现有 wechat.get_stats */
-const ASSISTANT_TOOLS = MCP_READ_ONLY_TOOL_DEFS
+const ASSISTANT_TOOLS = MCP_TOOL_DEFS
   .filter(t => t.function.name !== 'get_stats')
   .map(t => ({
     name: `wechat.${t.function.name}`,

@@ -569,7 +569,20 @@ export const TOOL_DEFS: ToolDef[] = [
   },
 ]
 
-export const MCP_READ_ONLY_TOOL_DEFS = TOOL_DEFS.filter(tool => tool.function.name !== 'save_memory')
+/**
+ * MCP 那条路看得见的工具表。
+ *
+ * **它不叫 read-only**（曾经叫，而那是假的）：里面一直有写文件的 `export_chat`，也有几个会把
+ * 用户数据发给云端模型、需要 `confirm: true` 的工具。这里只排除**在那条路上根本做不了事**的：
+ *
+ * - `save_memory`：写记忆。MCP 没有微信用户身份，挂的记忆桶是单独一条；让它写没有意义。
+ * - `look_at_image`：它的做法是把图**挂进侧信道**（`ctx.pendingImages`）交给助手自己的模型看，
+ *   而 MCP 那条路只把工具返回的**文本**交给客户端（见 `mcp-server/index.ts` 的 default 分支）——
+ *   图没人接，回话里却写着"已附上图片…你能看到它了"，那是**一句假话**。
+ *   按本仓"不摆一个跑不了的工具"那条立论（同 `unavailableToolReason`），它不该出现在这里。
+ */
+export const MCP_TOOL_DEFS = TOOL_DEFS.filter(
+  tool => tool.function.name !== 'save_memory' && tool.function.name !== 'look_at_image')
 
 /** 脚本类工具的失败回话：桥接层已经分好类（超时/退出码/没有 JSON/脚本自己报错），
  *  这里把它和 stderr 尾巴合起来**过一遍脱敏**再交给模型——stderr 里可能有密钥形状的东西，
