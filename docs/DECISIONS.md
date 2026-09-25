@@ -1352,11 +1352,14 @@ which is what the gate is for.
   TypeScript, then send the rendered lines over stdin) and `reply_debt.format_line` on the CLI path (which reads the
   database itself) - and they had drifted in four ways with nothing failing. The rule that came out of fixing it is the
   second half of the title: `senderUsername` is a raw column holding the sender's **wxid**, not a name, so neither side
-  may use it as a label; a resolved display name is used when there is one, and `对方` otherwise. That rule stops
-  deliberately at this line - `get_messages` still labels speakers with the raw column, because collapsing a group's
-  speakers to `对方` would remove its ability to answer "who said that", and a wxid is at least *distinct* per person.
-  The real fix belongs in the reader that resolves names into these fields, not in the string, so it is recorded here
-  as an open trade-off rather than silently taken either way.
+  may use it as a label; a resolved display name (`senderDisplay`) is used when there is one, and `对方` otherwise.
+  This was first recorded as a trade-off, on the assumption that the alternative to a wxid was `对方` and that
+  collapsing a group's speakers would cost the ability to answer "who said that". **Measuring retired that
+  assumption**: across 8 sessions and 179 messages from other people, `senderDisplay` held a name 174 times,
+  `senderUsername` was guid-shaped 176 times, and the two were never equal. So the name keeps speaker distinction
+  *and* removes the identifier, and `get_messages` was changed to use the same rule rather than left on the raw
+  column. The rule is one function (`speakerLabel`), because "who is speaking" is the kind of thing that grows a
+  second implementation.
 - **The judgement step is degradable now, and the degradation says so.** Jev's free period ended on
   2026-09-25; when that call fails (expired, bad key, or a dropped connection - the first failure seen here was
   an `http.client` read error) the tool no longer refuses to draft. It falls back to DeepSeek alone: three

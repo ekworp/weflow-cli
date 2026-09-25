@@ -87,6 +87,21 @@ function transcriptTime(ts: number): string {
 export const TRANSCRIPT_MSG_CHARS = 160
 
 /**
+ * 消息是**谁**说的（对方那一侧）：**有解析出来的名字就用名字，没有就写「对方」**。
+ *
+ * **`senderUsername` 不参与**：它是数据库原列的 wxid（`wcdbCore` 的 `sender_username`、
+ * `sqlcipherCore` 的 `StrTalker`），不是名字。拿它当标签有两个坏处——把**账号标识**交给云端
+ * 模型，而且对模型没用（wxid 不告诉它这是谁）。
+ *
+ * 实测（本机 8 个会话、179 条别人发的消息）：`senderDisplay` 是有中文的名字 174 条，
+ * `senderUsername` 是 wxid 形状 176 条，两者**从不相同**。所以这个替换不丢信息：
+ * 群聊里照样分得清谁说的（名字比 wxid 还更有用），而标识不再出境。
+ */
+export function speakerLabel(message: any): string {
+  return message.senderDisplay || '对方'
+}
+
+/**
  * 对话转录里的一行：`[09-23 12:20] 老王：那个文件你什么时候发我`。
  *
  * **这段形状在 Python 侧还有一份**：`reply_debt.format_line`（`draft_reply.py --talker`
@@ -104,10 +119,12 @@ export const TRANSCRIPT_MSG_CHARS = 160
  * 所以有 `test/transcript-format-contract.test.ts`：同一批消息（含一条超长、一条非文本）
  * 把两边逐字比一遍。谁改了这一行的形状而不改另一边，那条会红。
  *
- * **`senderUsername` 永远不参与**（实测过）：读完这条链路才发现它是**数据库原列的 wxid**
+ * **`senderUsername` 永远不参与**（实测过）：它是**数据库原列的 wxid**
  * （`wcdbCore` 的 `sender_username`、`sqlcipherCore` 的 `StrTalker`），不是名字。
  * 拿它当发言人的标签会把账号标识喂给两个云端模型——而这一行的目的只是让模型分得清谁说的。
  * 所以规则是：**有解析出来的名字就用名字，没有就写「对方」**，绝不退回原列。
+ * `senderDisplay` 在真实路径上是有值的（实测一条会话：文本与图片消息都带），所以这边
+ * 正常会写成人名，「对方」只是兜底。
  */
 export function transcriptLine(message: any): string {
   const raw = message.localType === 1
@@ -116,7 +133,7 @@ export function transcriptLine(message: any): string {
   const body = privacyGate.maskMessageBody(
     clipWithMarker(String(raw).replace(/\n/g, ' '), TRANSCRIPT_MSG_CHARS),
     { isText: message.localType === 1 })
-  const speaker = message.isSend ? '我' : (message.senderDisplay || '对方')
+  const speaker = message.isSend ? '我' : speakerLabel(message)
   return `[${transcriptTime(message.createTime)}] ${speaker}：${body}`
 }
 
@@ -844,12 +861,12 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
             ? `[图片 #${m.localId}]`
             : privacyGate.maskMessageBody(clipWithMarker(flat, MSG_BODY_CHARS),
                                           { isText: m.localType === 1 })
-          // **已知的取舍，没改，记在这儿**：`senderUsername` 是消息表里那一列的**原值——wxid**
-          // （见 `wcdbCore` 的 `sender_username`）。所以这一行会把账号标识交给云端模型，
-          // 而它本来只是为了让模型分清群聊里谁说的。换成「对方」就不泄露了，但**群聊里所有
-          // 说话人会被压成同一个标签**，这个工具就答不了"谁说的"——那是个真损失，
-          // 所以这一步等一个能解析出人名的读取层（真修法在读取层，不在这里改字符串）。
-          return `[${fmtTime(m.createTime)}] ${m.isSend ? '用户' : (m.senderUsername || '对方')}: ${body}`
+          // 这一行原来用 `senderUsername`（**wxid 原列**），等于把账号标识交给云端模型。
+          // 曾经以为"改成「对方」就分不清群聊里谁说的，是个真损失"——实测之后不成立：
+          // `senderDisplay` 本来就有名字（见 `speakerLabel`），换成它两边都占，
+          // 名字对模型还比 wxid 有用。自己发的仍是「用户」（这是对人说"你发了什么"，
+          // 与转录里的「我」是两种口吻，各自有测试钉着）。
+          return `[${fmtTime(m.createTime)}] ${m.isSend ? '用户' : speakerLabel(m)}: ${body}`
         }).join('\n')
         // 有时间窗时先说清窗口：模型据此判断"这些是不是那天的"，也免得它把窗口内的最后
         // 一条当成"最新的"。

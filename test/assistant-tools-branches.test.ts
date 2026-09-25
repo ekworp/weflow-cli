@@ -115,11 +115,24 @@ test('get_messages 找到人后按时间与方向排版', async () => {
   svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
   svc.getMessages = async () => ([
     { createTime: 1758000000, isSend: true, content: '我发的' },
-    { createTime: 1758000060, isSend: false, senderUsername: '甲', content: '他回的' },
+    // `senderUsername` 是 wxid 原列、`senderDisplay` 才是名字（实测 176/179 是 id、174/179 是人名）
+    { createTime: 1758000060, isSend: false, senderDisplay: '甲', senderUsername: 'wxid_a',
+      content: '他回的' },
   ])
   const out = await run('get_messages', { contact: '甲' })
   assert.match(out, /用户: /)
   assert.match(out, /甲: /)
+  assert.doesNotMatch(out, /wxid/, '**这一行不许出现 wxid**：它出境，而它只是用来分清谁说的')
+})
+
+test('get_messages：只有 wxid、没有名字时退回「对方」，不把标识发出去', async () => {
+  svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
+  svc.getMessages = async () => ([
+    { createTime: 1758000060, isSend: false, senderUsername: 'wxid_somebody', content: '他回的' },
+  ])
+  const out = await run('get_messages', { contact: '甲' })
+  assert.match(out, /对方: /)
+  assert.doesNotMatch(out, /wxid_somebody/)
 })
 
 test('严格模式下第三方聊天正文不出境：正文被替换成字节数说明', async () => {

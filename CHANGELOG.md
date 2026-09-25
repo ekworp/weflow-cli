@@ -494,6 +494,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   speakers apart. Both implementations now use a resolved display name when there is one and `对方` otherwise, and
   neither falls back to the raw column.
 
+- **`get_messages` labelled speakers with a raw wxid, and that text goes to a cloud model.** The tool's output is a
+  transcript the assistant reads, and every line from the other side was tagged with the value of `senderUsername` -
+  which is a database column holding the sender's **wxid**, not a name. So asking "what did 老王 send me" produced
+  lines tagged with an opaque account identifier: an identifier leaving the machine across a boundary the project
+  treats as sensitive, in exchange for information the model cannot use. It is fixed by the same rule the drafting
+  transcript now follows - a resolved display name when there is one, `对方` otherwise - and by one shared helper
+  (`speakerLabel`), since "who is speaking" is exactly the kind of thing that grows a second implementation. This was
+  measured before it was changed, and the measurement is the reason it *could* be changed: across 8 sessions and 179
+  messages from other people, `senderDisplay` held a name 174 times, `senderUsername` was guid-shaped 176 times, and
+  the two were never the same value - so using the name keeps a group's speakers distinguishable rather than
+  collapsing them. The user's own lines still read `用户` there and `我` in the drafting transcript; those are
+  different framings on purpose and each is pinned by a test.
+
 - **The assistant was allowed to invent a reason for a tool failure, and did.** When drafting failed on 2026-09-25 the
   tool reported only "the judgement step failed (script exit code 1)" and the assistant answered with "the reason is
   probably that the model was inconsistent about whether to promise something" - a cause it had no evidence for. The
