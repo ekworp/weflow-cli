@@ -289,6 +289,24 @@ DRAFT_PROMPT = """你是中文即时通讯回复助手。下面是一段对话�
 {convo}
 """
 
+# 没有判断结果时用的那一版：Jev 调不通（没配 key / 免费到期 / 网络断）时的降级路径。
+# **不假装判断过**：直接告诉模型"这次没有判断"，让它自己把握分寸，并把"拿不准就问、
+# 不替我许新承诺"这两条底线写死——这正是原版靠判断结果才敢省掉的那部分。
+DRAFT_PROMPT_NO_JUDGE = """你是中文即时通讯回复助手。下面是一段对话。
+请给出 {count} 条候选回复，**{count} 条必须策略不同**（例如：一条稳妥承接、一条给具体行动或时间、一条简短低姿态）。
+
+要求：
+1. 只输出一个 JSON 数组，恰好 {count} 个字符串，不要任何解释、不要加引号以外的内容
+2. 每条不超过 {max_chars} 字，口语、自然，像真人在聊天软件里随手发的
+3. 用「我」的语气{style_hint}
+4. **不要编造对话里没有的事实**；不知道的就问，或者先不承诺
+5. **这次没有判断结果**（判断模型没调通），所以分寸你自己按上下文把握：
+   拿不准就少说、先问；**不要替我做新的承诺**；对方明显带着情绪时先接住情绪再谈事
+
+最近对话（时间从早到晚，「我」是我，「对方」是{name}）：
+{convo}
+"""
+
 
 def style_hint(own_lines):
     if not own_lines:
@@ -315,6 +333,13 @@ def own_voice_lines(lines):
 
 
 def build_draft_prompt(name, lines, judgment, count):
+    # `judgment=None` = 降级路径（Jev 没调通）：换那一版提示词，**不去编一段判断结果出来**
+    if not judgment:
+        return DRAFT_PROMPT_NO_JUDGE.format(
+            count=count, max_chars=DRAFT_MAX_CHARS, name=name,
+            style_hint=style_hint(own_voice_lines(lines)),
+            convo='\n'.join(lines),
+        )
     return DRAFT_PROMPT.format(
         count=count, max_chars=DRAFT_MAX_CHARS, name=name,
         style_hint=style_hint(own_voice_lines(lines)),
@@ -456,30 +481,36 @@ def run(payload, count, config, gate_commitment=False):
     if not lines:
         return {'success': False, 'error': '没有对话内容可用'}
 
-    jev_key = os.environ.get('TYPESAFE_API_KEY') or ''
-    if not jev_key:
-        from _utils import get_typesafe_key
-        jev_key = get_typesafe_key(config)
-    client = create_client(jev_key, config=config)
-    if client is None:
-        return {'success': False, 'error': '没有配置 typesafeApiKey，判断这一步跑不了'
-                                           '（weflow-cli config set typesafeApiKey "..."）'}
-
+    # **DeepSeek 是必须的**（候选只有它能写）；判断那一步（Jev）是**可降级**的。
     api_key = get_api_key(config)
     if not api_key:
         return {'success': False, 'error': '没有配置 deepseekApiKey，起草这一步跑不了'
                                            '（weflow-cli config set deepseekApiKey "..."）'}
 
-    judgment, usage = judge(client, name, lines)
-    if judgment is None:
-        return {'success': False, 'error': '判断没跑通（看上面的 WARN），这一轮不猜'}
-    judgment['usage'] = usage
+    # 判断（Jev）：能问就问，问不出来**也照样起草**——但那道闸门与排序就没有了，
+    # 所以下面会把"这次没有判断"一路带进结果里，页面/命令行都要如实说出来。
+    jev_key = os.environ.get('TYPESAFE_API_KEY') or ''
+    if not jev_key:
+        from _utils import get_typesafe_key
+        jev_key = get_typesafe_key(config)
+    client = create_client(jev_key, config=config)
+    judge_note = ''
+    judgment = None
+    if client is None:
+        judge_note = '没有配置 typesafeApiKey，判断这一步没跑'
+    else:
+        judgment, usage = judge(client, name, lines)
+        if judgment is None:
+            judge_note = '判断没调通（看上面的 WARN）：可能是 Jev 的免费期已过、key 失效或网络断'
+        else:
+            judgment['usage'] = usage
 
-    refused = evaluate_gate(judgment, gate_commitment)
-    if refused:
-        reason, advice = refused
-        return {'success': True, 'gate': 'refused', 'name': name,
-                'reason': reason, 'advice': advice, 'judgment': judgment, 'drafts': []}
+    if judgment is not None:
+        refused = evaluate_gate(judgment, gate_commitment)
+        if refused:
+            reason, advice = refused
+            return {'success': True, 'gate': 'refused', 'name': name, 'judged': True,
+                    'reason': reason, 'advice': advice, 'judgment': judgment, 'drafts': []}
 
     prompt = build_draft_prompt(name, lines, judgment, count)
     try:
@@ -490,9 +521,17 @@ def run(payload, count, config, gate_commitment=False):
     if not candidates:
         return {'success': False, 'error': '模型没给出可用的候选（原始输出不是 JSON 数组也不是逐行文本）'}
 
+    if judgment is None:
+        # 降级：没有判断就没有排序，也没有闸门。**如实带出去**（`judged: False` + 原因），
+        # 不假装判断过——那道闸门正是靠判断结果才存在的。
+        return {'success': True, 'gate': 'draft', 'name': name, 'judgment': None,
+                'judged': False, 'judgeNote': judge_note,
+                'drafts': [{'text': text, 'why': ''} for text in candidates], 'ranked': False,
+                'candidateCount': len(candidates), 'askedCount': count}
+
     drafts, ranked_ok = rank(client, name, lines, candidates, judgment)
     return {'success': True, 'gate': 'draft', 'name': name, 'judgment': judgment,
-            'drafts': drafts, 'ranked': ranked_ok,
+            'drafts': drafts, 'ranked': ranked_ok, 'judged': True,
             'candidateCount': len(candidates), 'askedCount': count}
 
 
@@ -536,7 +575,8 @@ def main():
                    'name': payload['name'], 'messages': len(payload['lines']),
                    'stateChars': state_chars, 'count': args.count,
                    'models': {'judge': 'Jev（决策）', 'draft': 'DeepSeek（生成）'},
-                   'calls': '判断 1 次 + 起草 1 次 + 排序 1 次',
+                   'calls': '判断 1 次 + 起草 1 次 + 排序 1 次（判断那一步调不通时降级：只发生成那一次，'
+                            '且没有闸门与排序）',
                    'readsLocalChat': True, 'invokesAI': True, 'writesNothing': True}
         if args.json:
             print(json.dumps(preview, ensure_ascii=False, indent=2))
@@ -562,6 +602,12 @@ def main():
             print('  · %s' % item)
     else:
         judgment = result['judgment']
+        if result.get('judged') is False:
+            print('**这次没有判断**（%s）。' % (result.get('judgeNote') or '判断那一步没调通'))
+            print('所以"涉钱/风险高就不给草稿"那道闸门没生效，下面几条是生成模型按上下文给的，自己看一眼：')
+            for index, item in enumerate(result.get('drafts') or [], 1):
+                print('  %d. %s' % (index, item.get('text')))
+            return 0
         print('判断：意图 %s · 需要 %s · 动作 %s · 该给实质 %s · 风险 %s（%s）'
               % (judgment.get('intent'), judgment.get('need'), judgment.get('action'),
                  '是' if (judgment.get('shouldReply') or 0) >= NOUL_TRUE else '否',

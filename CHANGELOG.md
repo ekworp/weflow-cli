@@ -319,7 +319,6 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   already allowed. The payload is still withheld. A message the user *typed* that happens to start with
   `[图片]` is still masked as text: only the reader's own non-text labels count as labels.
 
-### Added
 
 - **Right-click in the panel for a quick reply.** A new `quickReplyContacts` config key
   (`weflow-cli config set quickReplyContacts "咸鱼梦想家,老王"`) holds the contacts the menu offers; picking one asks the
@@ -337,7 +336,20 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   the answer went"), and the conversation shows a readable turn (`快速回复：<name>`) while what is actually sent is the
   explicit tool-naming request, so the chat log does not fill up with machine-shaped instructions.
 
-### Fixed
+### Changed
+
+- **Drafting no longer stops when the judgement model is unreachable.** Jev's free period ended on 2026-09-25, and
+  the first failure it produced here was already visible to a user as a bare "the tool errored (script exit code 1)"
+  - with the assistant then *inventing* a reason for it ("the model was inconsistent about whether to promise
+  something"), because the tool only reported the exit code. The judgement step is now degradable: when that call
+  fails, drafting continues on DeepSeek alone and returns the candidates **with `judged: false`** plus the reason, so
+  the CLI prints "这次没有判断…闸门没生效" before the list and the assistant tool prints the same. That warning is the
+  point: the gate (money, or risk >= 7) exists only because a judgement exists, so a degraded run must not look like
+  a normal one - and it must not look like one *to the model relaying it* either. Availability follows the same
+  logic: `deepseekApiKey` is now the only required key, and a missing `typesafeApiKey` no longer hides the tool.
+  Verified end to end with a deliberately bad Jev key: the candidates come back, the warning comes back, and the
+  tools never send anything.
+
 
 - **Dragging the ball in the chat window grew the window by the drag distance, and the extra width showed up as
   a gap between the ball and the bubble.** `panel:dragMove` re-read the window's *current* size with
@@ -350,7 +362,6 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   "bubble + gap + ball" appears between them - and expanding or collapsing re-asserts the exact size, which is
   why clicking the ball "reset" it. A test pins that `dragMove` never calls `getContentBounds()`.
 
-### Changed
 
 - **The MCP surface now says what it actually is, and `draft_reply` on that surface needs an explicit
   confirmation.** Two claims were wrong and are corrected here rather than dropped: `capabilities --json`
@@ -545,6 +556,7 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   its quoted text reduced to seven or eight characters - carried, but useless - and any long message
   was cut mid-sentence with nothing to show it had been cut. The limit is now 160, with a trailing `…`.
   Worst case stays bounded: 50 messages × ~180 characters ≈ 9k.
+
 
 ## 1.7.0
 

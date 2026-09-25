@@ -1341,6 +1341,17 @@ which is what the gate is for.
   went" (it went into a window that was behind something else). The conversation shows a readable turn
   ("快速回复：<name>") while what is actually sent is the explicit tool-naming request. Nothing here sends a
   message: the chain is structurally text-only, same as everywhere else.
+- **The judgement step is degradable now, and the degradation says so.** Jev's free period ended on
+  2026-09-25; when that call fails (expired, bad key, or a dropped connection - the first failure seen here was
+  an `http.client` read error) the tool no longer refuses to draft. It falls back to DeepSeek alone: three
+  candidates, no ranking, and **no gate** - because the gate (money, or risk >= 7 -> no draft) exists only
+  because a judgement exists. That is a deliberate trade the user asked for, and it is only acceptable because
+  the output **states it**: `judged: false` plus a `judgeNote` travel with the result, the CLI prints
+"这次没有判断…闸门没生效" before the candidates, and the assistant tool prints the same. A fallback that
+  looked like a normal run would be the worst outcome here, and the tests pin both directions (with a
+  judgement `evaluate_gate` is consulted exactly once; without one it is never consulted). The consequence
+  for availability follows: `deepseekApiKey` is now the only required key, and a missing `typesafeApiKey` no
+  longer hides the tool - hiding something that can run would be its own kind of lie.
 - **The MCP surface gets a stricter boundary than the panel does, on purpose, and it applies to all four tools that egress.** `draft_reply` is on the
   MCP tool list (that list is *derived* from the assistant tool table minus `save_memory` and `look_at_image`, so
   anything added there appears there too, and a tool that cannot work on that transport has to be excluded

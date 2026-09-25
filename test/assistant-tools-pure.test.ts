@@ -153,14 +153,14 @@ test('过滤的理由要说得出是哪一样缺了', () => {
   assert.equal(unavailableToolReason('search_semantic', () => 'k'), null)
 })
 
-test('起草要**两个** key：只缺一个也跑不通，也得说清缺的是哪一个', () => {
-  // 判断一步要 typesafe，生成一步要 deepseek。只配了一个的话，这条工具会跑到一半才炸，
-  // 而模型会把它当成"工具坏了"——摆出来之前就该过滤掉。
-  const onlyTypesafe = (key: string) => (key === 'typesafeApiKey' ? 'k' : '')
+test('起草只要 DeepSeek 一个 key —— 判断那一步可以降级', () => {
+  // **这条变过一次**：原先要求两个 key（判断要 typesafe、生成要 deepseek）。
+  // 2026-09-25 Jev 免费期结束，改成调不通就只用 DeepSeek 起草（输出里写明"没有判断、
+  // 闸门没生效"）。于是缺 typesafeApiKey **不该**把这个工具收起来——那会把一个能跑的工具藏掉。
   const onlyDeepseek = (key: string) => (key === 'deepseekApiKey' ? 'k' : '')
-  assert.match(unavailableToolReason('draft_reply', onlyTypesafe)!, /deepseekApiKey/)
-  assert.match(unavailableToolReason('draft_reply', onlyDeepseek)!, /typesafeApiKey/)
-  assert.match(unavailableToolReason('draft_reply', () => '')!, /typesafeApiKey/)
-  assert.equal(unavailableToolReason('draft_reply',
-    (key: string) => (key === 'typesafeApiKey' || key === 'deepseekApiKey' ? 'k' : '')), null)
+  assert.equal(unavailableToolReason('draft_reply', onlyDeepseek), null, '有 DeepSeek 就摆出来')
+  const onlyTypesafe = (key: string) => (key === 'typesafeApiKey' ? 'k' : '')
+  assert.match(unavailableToolReason('draft_reply', onlyTypesafe)!, /deepseekApiKey/,
+    '没有 DeepSeek 才是真跑不通')
+  assert.match(unavailableToolReason('draft_reply', () => '')!, /deepseekApiKey/)
 })

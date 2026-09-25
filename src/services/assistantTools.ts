@@ -647,9 +647,9 @@ export function unavailableToolReason(name: string, config: (key: any) => any = 
     return '微信读书需要 wereadApiKey'
   }
   if (name === 'draft_reply') {
-    // 起草要**两个**模型：判断（Jev）与生成（DeepSeek）。缺任何一个都跑不通，
-    // 而"跑不通"的工具不该摆出来让模型去试。
-    if (!String(config('typesafeApiKey') || '').trim()) return '起草回复需要 typesafeApiKey（判断那一步）'
+    // **只有 DeepSeek 是必须的**。判断那一步（Jev）现在可降级：调不通就只用生成模型起草，
+    // 输出里会写明"这次没有判断、闸门没生效"（2026-09-25 Jev 免费期结束那天改的）。
+    // 所以缺 typesafeApiKey **不**该把这个工具收起来——那会让"能跑的工具"被藏掉。
     if (!String(config('deepseekApiKey') || '').trim()) return '起草回复需要 deepseekApiKey（生成那一步）'
   }
   return null
@@ -1126,6 +1126,20 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
 
         const data = result.data ?? {}
         if (!data.success) return `(起草没跑通: ${String(data.error || '未知').slice(0, 120)})`
+        const picked = Array.isArray(data.drafts) ? data.drafts : []
+        // **降级那次（Jev 没调通）必须说清两件事**：这次没有判断，以及那道闸门没生效。
+        // 闸门（涉钱/高风险不给草稿）正是靠判断结果才存在的——不标出来，降级看起来就跟
+        // "判断过了"一模一样。**不以 `(` 开头**：那个前缀在本仓库表示"工具没产出内容"。
+        if (data.judged === false) {
+          if (!picked.length) return `(起草没给出候选：${String(data.judgeNote || '判断与生成都没跑通').slice(0, 120)})`
+          const lines = [`这次**没有判断**——${String(data.judgeNote || '判断那一步没调通')}。`,
+                         `所以"涉钱/风险高就不给草稿"那道闸门**没生效**，下面 ${picked.length} 条是生成模型`
+                         + `按上下文给的，你自己看一眼：`, '']
+          picked.forEach((draft: any, index: number) => { lines.push(`${index + 1}. ${draft.text}`) })
+          lines.push('')
+          lines.push('（这些只是文本，没有发送任何东西——回不回、怎么回由你决定。）')
+          return lines.join('\n')
+        }
         const judgment = data.judgment ?? {}
         const why = `对方${zhLabel(INTENT_LABELS, judgment.intent)}`
           + `；建议${zhLabel(ACTION_LABELS, judgment.action)}`

@@ -1401,3 +1401,24 @@ test('search_semantic：MCP 不带 confirm 时一个脚本都不调（这个脚�
     assert.equal(calls.length, 0, '语义检索脚本本身没有 --dry-run，所以预览只能按入参说——那就不许调它')
   } finally { bridge.setScriptRunner(null) }
 })
+
+test('draft_reply：判断没调通（降级）时，照样给候选但**必须写明没有判断、闸门没生效**', async () => {
+  // Jev 免费期 2026-09-25 结束后的降级路径：只有生成那一步跑。**闸门靠判断结果才存在**，
+  // 所以降级必须让人看得见——不然它跟"判断过了"长得一模一样。
+  draftWorld()
+  stubScript(JSON.stringify({
+    success: true, gate: 'draft', judged: false, ranked: false,
+    judgeNote: '判断没调通（看上面的 WARN）：可能是 Jev 的免费期已过、key 失效或网络断',
+    judgment: null,
+    drafts: [{ text: '嗯嗯，知道了', why: '' }, { text: '我看看，回头说', why: '' }],
+  }))
+  try {
+    const out = await withBalanced(async () => run('draft_reply', { contact: '老王' }))
+    assert.match(out, /没有判断/, '要说清这次没有判断')
+    assert.match(out, /闸门\*\*没生效/, '要说清那道闸门没生效')
+    assert.match(out, /1\. 嗯嗯，知道了/, '候选照给')
+    assert.match(out, /没有发送任何东西/)
+    assert.doesNotMatch(out, /^[(（]/, '不以 `(` 开头——那是"工具没产出内容"的信号')
+    assert.doesNotMatch(out, /对方undefined|风险 NaN/, '没有判断时不许去拼一段假的判断摘要')
+  } finally { bridge.setScriptRunner(null) }
+})

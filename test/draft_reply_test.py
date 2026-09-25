@@ -215,13 +215,67 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['drafts'], [])
         self.assertTrue(result['advice'])
 
-    def test_survives_a_failed_judgment_without_guessing(self):
+    def test_falls_back_to_the_generator_when_the_judgment_fails(self):
+        """**策略变过一次，这里钉的是新策略。**
+
+        原先：判断失败就整轮不产（"问不出来就不猜"）。2026-09-25 Jev 免费期结束，用户的要求是
+        "调不通就让 DeepSeek 自己给 3 条"。所以现在是**降级产出**——但必须把"没有判断"
+        一路带出去：那道闸门（涉钱/高风险不产）正是靠判断结果才存在的，
+        降级不能看起来像"判断过了"。
+        """
         class Failing(StubClient):
             def decide(self, state, questions):
                 raise RuntimeError('boom')
         result = self._run(Failing())
+        self.assertTrue(result['success'], '降级之后仍然是成功的产出')
+        self.assertEqual(result['gate'], 'draft')
+        self.assertFalse(result['judged'], '要如实标出"这次没有判断"')
+        self.assertIn('判断', result['judgeNote'], '要带上为什么没有判断')
+        self.assertEqual([d['text'] for d in result['drafts']], ['一', '二', '三'],
+                         '降级时照样给候选（按模型给的顺序）')
+        self.assertFalse(result['ranked'], '没有判断就没有排序，要如实说')
+
+    def test_no_judgment_means_the_gate_is_never_consulted(self):
+        """降级那条路上**闸门根本不会被问**——这正是不许把它说成"判断过了"的原因。
+
+        断言"没调用 evaluate_gate"而不是"结果里有候选"：后者在有闸门时也可能成立（比如
+        风险低），证明不了闸门被跳过。
+        """
+        class Failing(StubClient):
+            def decide(self, state, questions):
+                raise RuntimeError('boom')
+        with patch.object(dr, 'evaluate_gate') as gate:
+            result = self._run(Failing())
+            gate.assert_not_called()
+        self.assertTrue(result['success'])
+        self.assertFalse(result['judged'])
+        self.assertEqual(len(result['drafts']), 3)
+
+    def test_the_fallback_prompt_does_not_invent_a_judgment(self):
+        """降级用的提示词里**不许**出现判断结果（不编一段出来冒充）。"""
+        prompt = dr.build_draft_prompt('老王', LINES, None, 3)
+        self.assertNotIn('风险档位', prompt)
+        self.assertNotIn('对方真实意图', prompt)
+        self.assertIn('这次没有判断结果', prompt)
+        self.assertIn('不要替我做新的承诺', prompt)
+        self.assertIn('先问', prompt)
+        # 语气样本与硬约束照旧
+        self.assertIn('参考下面几行我平时说话的口气', prompt)
+        self.assertIn('只输出一个 JSON 数组', prompt)
+
+    def test_only_deepseek_key_is_required_now(self):
+        """判断那一步可以没有——DeepSeek 才是必须的那个（生成的只有它）。"""
+        with patch.object(dr, 'create_client', return_value=None),              patch.object(dr, 'get_api_key', return_value='fake-key'),              patch.object(dr, 'call_deepseek', return_value='["一", "二", "三"]'):
+            result = dr.run({'name': '老王', 'lines': LINES}, 3, {})
+        self.assertTrue(result['success'], '没配 typesafeApiKey 也要能起草')
+        self.assertFalse(result['judged'])
+        self.assertIn('typesafeApiKey', result['judgeNote'])
+
+    def test_deepseek_key_is_still_required(self):
+        with patch.object(dr, 'create_client', return_value=None),              patch.object(dr, 'get_api_key', return_value=''):
+            result = dr.run({'name': '老王', 'lines': LINES}, 3, {})
         self.assertFalse(result['success'])
-        self.assertIn('不猜', result['error'])
+        self.assertIn('deepseekApiKey', result['error'])
 
     def test_survives_a_failed_ranking_but_says_so(self):
         stub = StubClient(answers())
