@@ -1387,6 +1387,34 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-048: There is no in-process plugin loader; extension is in-repo, and the boundary for outside code is MCP
+
+**Status:** Active
+
+**Decision:** Code that extends this project is added to this repository (fork + PR). Code kept outside it reaches the
+project only through MCP or the CLI's `--json` surface. No plugin directory, no adapter registry, no public import
+surface (`package.json` has `bin` and nothing else). `docs/EXTENDING.md` is the checklist for the in-repo path and states
+this position rather than leaving it to be inferred.
+
+**Reason:** An in-process plugin would hold exactly the reach of the code it joins - the decrypted database path, the
+configuration (which contains every API key), the filesystem, and the message channel. The standing rule for this
+project is that sending, the assistant, MCP and cloud AI each keep an *explicit* permission boundary; a plugin loader
+removes the boundary by construction rather than crossing it, and no amount of manifest-declared "capabilities" repairs
+that, because the plugin is not sandboxed. MCP is the alternative that does keep a boundary: it is enumerable
+(`capabilities --json` lists what is exposed), scoped (the four tools that send user data to cloud models return a
+preview unless the caller passes `confirm: true`), and switchable off without touching this repository. The cost is
+accepted knowingly: third-party code cannot add a tool, and anything a plugin loader would have made convenient now
+needs a PR. The roadmap keeps a plugin/adapter mechanism as a future item with its own constraint already written down
+(extensions must not read configuration, databases or arbitrary files directly, and must be individually disableable) -
+so the door is not nailed shut, but nothing about it is implemented, and `docs/EXTENDING.md` lists it under "what does
+not exist yet" so a reader cannot mistake the gap for an oversight.
+
+**Consequences:** Adding a capability means editing this source tree, which is why the registries were made declarative
+and guarded (`test/tool-registry.test.ts`, `test/config-keys.test.ts`) - a framework that can only be extended by
+editing it had better make "did I edit all the places?" answerable. The CLI's interactive-menu entry remains the one
+extension point with no guard, and that gap is written down rather than papered over. Should a loader be built later,
+these guards are the parts that would have to be re-derived for the plugin path rather than deleted.
+
 ## Decision Template
 
 

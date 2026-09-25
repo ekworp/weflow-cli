@@ -61,8 +61,24 @@ test('capability discovery tells the truth about the MCP surface', () => {
   assert.deepEqual(capabilities.safety.mcpSurface.callsCloudModels,
     ['who_owes_reply', 'search_chats', 'search_semantic', 'draft_reply'])
   assert.deepEqual(capabilities.safety.mcpSurface.writesFiles, ['export_chat'])
-  assert.deepEqual(capabilities.safety.mcpSurface.requiresConfirm, ['draft_reply'],
-    '机器调用默认只给预览的那些工具要能被机器读到')
+  // `requiresConfirm` 以前断言的是 `['draft_reply']` —— **那是照着字段的值抄的，不是照着行为**。
+  // 逐个读 handler 才发现四个出境工具里写的是同一句 `if (ctx.requiresConfirm && args.confirm !== true)`
+  // （1010 / 1041 / 1094 / 1170 行），而字段只列了其中一个：一个漏报的机器可读安全字段，
+  // 和撒谎是同一件事。所以这条改成**从源码里数出来**，字段与代码不同步就红。
+  const toolSource = readFileSync(join(process.cwd(), 'src', 'services', 'assistantTools.ts'), 'utf8')
+  const chunks = toolSource.split(/case '([a-z_]+)': \{/).slice(1)
+  const gated: string[] = []
+  for (let i = 0; i < chunks.length; i += 2) {
+    if (chunks[i + 1].includes('ctx.requiresConfirm')) gated.push(chunks[i])
+  }
+  assert.deepEqual([...gated].sort(),
+    [...capabilities.safety.mcpSurface.requiresConfirm].sort(),
+    '机器调用默认只给预览的那些工具，字段必须与代码里真上了闸门的那几个一致')
+  // 这一条是**有意上紧**的：今天"会出境"与"上了闸门"恰好是同一批，所以新增一个出境工具时
+  // 它必须同时被两道清单认领 —— 漏掉任何一边都会红，逼出一次显式决定，而不是顺手加进去。
+  assert.deepEqual([...gated].sort(),
+    [...capabilities.safety.mcpSurface.callsCloudModels].sort(),
+    '会出境的工具必须一个个都上确认闸门')
   assert.equal(capabilities.read.exports.versionedContract, 'weflow-message/v1')
   assert.equal(capabilities.read.exports.rawContractPreserved, true)
   assert.equal(capabilities.read.exports.incrementalRead.stableCursor, false)

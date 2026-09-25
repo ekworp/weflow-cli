@@ -571,15 +571,21 @@ program
         // 读这一位的调用方按 false 走保守分支即可。
         mcpDefaultReadOnly: false,
         mcpSurface: {
-          derivedFrom: 'assistant tools minus save_memory',
+          // 原文只写了 "minus save_memory" —— 而那张表也排除了 `look_at_image`（MCP 只取文本，
+          // 它挂进侧信道的图没人接）。机器可读字段少说一句同样算不准，如实写全。
+          derivedFrom: 'assistant tools minus save_memory and look_at_image',
           writesFiles: ['export_chat'],
           // 逐个核实过（脚本里确实调云端模型的那些）：
           // who_owes_reply/search_chats → Jev；search_semantic → 阿里云百炼嵌入 + Jev 重排；draft_reply → Jev + DeepSeek。
           // `look_at_image` **不在这里**：它靠侧信道把图交给助手自己的模型，而 MCP 只取工具返回的文本，
           // 图没人接、回话却写着"你能看到它了"——所以它已经从 MCP 那张表里排除了（见 MCP_TOOL_DEFS）。
           callsCloudModels: ['who_owes_reply', 'search_chats', 'search_semantic', 'draft_reply'],
-          // 机器调用**默认只给预览**、必须显式 confirm 才出境的那些（MCP 独有的边界）
-          requiresConfirm: ['draft_reply'],
+          // 机器调用**默认只给预览**、必须显式 confirm 才出境的那些（MCP 独有的边界）。
+          // **这里是四个，不是"只有 draft_reply"**：逐个读 handler 才发现那四个工具里
+          // 写的是同一句 `if (ctx.requiresConfirm && args.confirm !== true)`（1010/1041/1094/1170）。
+          // 原先只列了 draft_reply，而测试是照着这个字段的值抄的，于是两处一起错、谁都没红。
+          // 现在测试改成**从源码里数**（见 test/assistant-tools.test.ts），改一处不同步就会红。
+          requiresConfirm: ['search_chats', 'who_owes_reply', 'draft_reply', 'search_semantic'],
         },
         mcpMessageLimit: { default: 100, max: 1000 },
       },

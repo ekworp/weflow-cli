@@ -344,6 +344,7 @@ python scripts/fav_server.py --date YYYY-MM-DD
 - [详细架构说明](./ARCHITECTURE.md)：模块、数据流与实现边界。
 - [项目维护状态](./docs/PROJECT_STATE.md)：当前能力、限制、优先级与交接入口。
 - [技术决策记录](./docs/DECISIONS.md)：长期维护中的关键设计取舍。
+- [扩展指南](./docs/EXTENDING.md)：加一个工具/配置键/命令/MCP 工具/Python 脚本要改哪几处，以及哪条测试会拦你。**目前没有插件加载器**，这份文档说的就是"为什么没有"和"现在怎么加"。
 - [分支与合并记录](./docs/BRANCHES.md)：分支用途、合并时间线与并行开发的对齐约定。
 - [发布清单](./docs/RELEASING.md)：版本号、打包敏感内容检查、npm 凭据、国内镜像同步。
 - [npm 发布速查](./docs/NPM-PUBLISH.md)：404 / 409 / ETARGET 是失败还是在传播，按症状查表。

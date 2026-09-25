@@ -345,6 +345,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   the contact list is empty** - a user who never configured `quickReplyContacts` would otherwise get a menu of two grey
   lines that does nothing when clicked, including no way to dismiss the ball.
 
+- **`docs/EXTENDING.md` - what to touch when adding to this project, and what will catch you.** The repository had no
+  document for its most common kind of change, so "add an assistant tool" existed only as tribal knowledge spread over
+  several files while "add a config key" was a comment at the top of a test. The guide gives one recipe per extension
+  kind (assistant tool, config key, CLI command, hand-written MCP tool, Python workflow), each with the places to touch
+  and **the test that fails if you miss one** - and, just as usefully, the two places where *nothing* will fail: the CLI
+  command's interactive-menu entry has no guard at all. It also states plainly that there is no plugin loader and no
+  public import surface, why that is deliberate (an in-process plugin would hold the same reach as the code it joins -
+  database path, every API key, the message channel - against a standing rule that those boundaries stay explicit), and
+  what a third party can use today instead (MCP, which is enumerable, scoped per tool, and switchable off).
+
 ### Changed
 
 - **Drafting no longer stops when the judgement model is unreachable.** Jev's free period ended on 2026-09-25, and
@@ -441,6 +451,32 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   windows.
 
 ### Fixed
+
+- **Nothing kept the tool table and its four consumers in agreement - now something does.** `TOOL_DEFS` (19 tools),
+  the `executeTool` switch, the availability rules, the MCP exclusion table and the MCP documentation table were five
+  hand-maintained lists with no assertion between them. The way that fails is silent in both directions: declare a tool
+  without a `case` and the model sees it, calls it, and gets `(未知工具: x)`; add a `case` without a declaration and it
+  is dead code no model can reach. `test/tool-registry.test.ts` now derives the set from the source and compares all
+  five - both directions, names unique, every declaration usable, every name in the two lookup tables real, and the
+  `docs/MCP.md` table equal to the actually-served surface. It found two live defects on its first run: the availability
+  rules and the MCP exclusion table became **declarative one-line entries** (`TOOL_REQUIREMENTS`, `MCP_EXCLUDED`, the
+  value being the reason) instead of name checks buried in if-chains, and **`wechat.export_messages` was missing from
+  the `docs/MCP.md` table** - a tool that is served but was not documented, i.e. the same direction of drift as the
+  duplicate row below. Five mutations (rename in the table, rename a case, a bogus exclusion name, a duplicated doc
+  row, a renamed served tool) each turn a specific assertion red.
+
+- **`capabilities --json` was under-reporting which MCP tools need `confirm: true`.** A machine-readable safety
+  field that under-reports is the same class of problem as one that lies. `safety.mcpSurface.requiresConfirm`
+  listed one tool (`draft_reply`) while **four** handlers carry the identical gate
+  (`if (ctx.requiresConfirm && args.confirm !== true)` - `search_chats`, `who_owes_reply`, `draft_reply`,
+  `search_semantic`). `docs/MCP.md` had been saying "all four" correctly all along; the two things that disagreed
+  were the field and its test, because the assertion had been written by copying the field's value rather than by
+  reading the code - so the pair stayed consistent with each other and wrong together. The assertion now **derives**
+  the set from the source (every `case` block that contains the gate) and compares it against both `requiresConfirm`
+  and `callsCloudModels`, so changing one without the other turns a test red; a mutation that restores the old
+  single-name list fails it. The same audit turned up a **duplicate row** in the `docs/MCP.md` tool table:
+  `wechat.who_owes_reply` appeared twice, and the stale copy was the one that did not say chat text leaves the
+  machine. Deleted.
 
 - **Clicking the ball did nothing.** The ball carried `-webkit-app-region: drag` so it could be dragged -
   and on Windows a drag region **swallows mouse events**, so the page never received the click. Dragging is

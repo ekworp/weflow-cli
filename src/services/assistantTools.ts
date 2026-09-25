@@ -585,16 +585,24 @@ export const TOOL_DEFS: ToolDef[] = [
  * MCP 那条路看得见的工具表。
  *
  * **它不叫 read-only**（曾经叫，而那是假的）：里面一直有写文件的 `export_chat`，也有几个会把
- * 用户数据发给云端模型、需要 `confirm: true` 的工具。这里只排除**在那条路上根本做不了事**的：
+ * 用户数据发给云端模型、需要 `confirm: true` 的工具。这里只排除**在那条路上根本做不了事**的，
+ * 而"为什么做不了"写在下面那张表里（值就是原因，不是 true）：
  *
  * - `save_memory`：写记忆。MCP 没有微信用户身份，挂的记忆桶是单独一条；让它写没有意义。
  * - `look_at_image`：它的做法是把图**挂进侧信道**（`ctx.pendingImages`）交给助手自己的模型看，
  *   而 MCP 那条路只把工具返回的**文本**交给客户端（见 `mcp-server/index.ts` 的 default 分支）——
  *   图没人接，回话里却写着"已附上图片…你能看到它了"，那是**一句假话**。
  *   按本仓"不摆一个跑不了的工具"那条立论（同 `unavailableToolReason`），它不该出现在这里。
+ *
+ * 做成表而不是写进 filter：这是**注册表的一部分**，`test/tool-registry.test.ts` 会盯着
+ * 表里的每个名字都真的存在于 `TOOL_DEFS`（写错一个名字 = 静默地没排除掉任何东西）。
  */
-export const MCP_TOOL_DEFS = TOOL_DEFS.filter(
-  tool => tool.function.name !== 'save_memory' && tool.function.name !== 'look_at_image')
+export const MCP_EXCLUDED: Record<string, string> = {
+  save_memory: 'MCP 没有微信用户身份，挂的记忆桶是单独一条，让它写没有意义',
+  look_at_image: 'MCP 只把工具返回的文本交给客户端，它挂进侧信道的图没人接，回话会变成一句假话',
+}
+
+export const MCP_TOOL_DEFS = TOOL_DEFS.filter(tool => !(tool.function.name in MCP_EXCLUDED))
 
 /** 脚本类工具的失败回话：桥接层已经分好类（超时/退出码/没有 JSON/脚本自己报错），
  *  这里把它和 stderr 尾巴合起来**过一遍脱敏**再交给模型——stderr 里可能有密钥形状的东西，
@@ -629,30 +637,39 @@ export function producedContent(text: string): boolean {
 }
 
 /**
- * 这台机器上**跑不了**的工具，不该出现在工具表里。
+ * "这台机器上跑不了"的**声明**：缺哪个配置键、缺了之后怎么跟用户说（值就是那句话）。
+ *
+ * 做成一张表而不是一串 `if (name === '...')`：加一个带前置条件的工具，现在是在这里加**一行**，
+ * 而不是在 if 链里再插一段；`test/tool-registry.test.ts` 盯着表里的每个名字都真的存在于 `TOOL_DEFS`
+ * （写错名字 = 那条规则永远不生效，而且不会有任何报错）。
+ *
+ * **只写"缺了就跑不了"的前置条件**，不写"暂时没数据"——没数据时工具自己会说该运行什么
+ * （`先运行 weflow-cli wiki compile`），那是有用的回答。
+ */
+export const TOOL_REQUIREMENTS: Record<string, { key: string; why: string }> = {
+  search_semantic: { key: 'dashscopeApiKey', why: '语义检索需要 dashscopeApiKey' },
+  get_weread: { key: 'wereadApiKey', why: '微信读书需要 wereadApiKey' },
+  draft_reply: {
+    key: 'deepseekApiKey',
+    // **只有 DeepSeek 是必须的**。判断那一步（Jev）现在可降级：调不通就只用生成模型起草，
+    // 输出里会写明"这次没有判断、闸门没生效"（2026-09-25 Jev 免费期结束那天改的）。
+    // 所以缺 typesafeApiKey **不**该把这个工具收起来——那会让"能跑的工具"被藏掉。
+    why: '起草回复需要 deepseekApiKey（生成那一步）',
+  },
+}
+
+/**
+ * 这台机器上**跑不了**的工具，不该出现在工具表里。规则本身在上面的 `TOOL_REQUIREMENTS` 里，这里只是执行它。
  *
  * 为什么按配置过滤：模型看见工具就会去试。这台机器没配 `dashscopeApiKey` 时 `search_semantic`
  * 必然失败——实测（评测的 `ambiguous-contact` 那次）模型连试两个检索工具、两个都报错，最后答复
  * 里带着"两个检索工具都跑不通"。那不是助手的问题，是**我们摆了一个跑不了的工具**。工具越少，
  * 选择也越准。
- *
- * 只按"缺了就跑不了"过滤，不按"暂时没数据"过滤——没数据时工具自己会说该运行什么
- * （`先运行 weflow-cli wiki compile`），那是有用的回答。
  */
 export function unavailableToolReason(name: string, config: (key: any) => any = configService.get.bind(configService)): string | null {
-  if (name === 'search_semantic' && !String(config('dashscopeApiKey') || '').trim()) {
-    return '语义检索需要 dashscopeApiKey'
-  }
-  if (name === 'get_weread' && !String(config('wereadApiKey') || '').trim()) {
-    return '微信读书需要 wereadApiKey'
-  }
-  if (name === 'draft_reply') {
-    // **只有 DeepSeek 是必须的**。判断那一步（Jev）现在可降级：调不通就只用生成模型起草，
-    // 输出里会写明"这次没有判断、闸门没生效"（2026-09-25 Jev 免费期结束那天改的）。
-    // 所以缺 typesafeApiKey **不**该把这个工具收起来——那会让"能跑的工具"被藏掉。
-    if (!String(config('deepseekApiKey') || '').trim()) return '起草回复需要 deepseekApiKey（生成那一步）'
-  }
-  return null
+  const need = TOOL_REQUIREMENTS[name]
+  if (!need) return null
+  return String(config(need.key) || '').trim() ? null : need.why
 }
 
 /** 这台机器上真正可用的工具表。快路径派发也要过同一道判据（见 `unavailableToolReason`）。 */

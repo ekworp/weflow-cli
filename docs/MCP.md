@@ -76,10 +76,10 @@ Copy this entry into your MCP client's configuration and ensure `cwd` points to 
 | `wechat.search_memory` | Search long-term assistant memory. | `~/.weflow-cli/assistant_memory.json` |
 | `wechat.search_chats` | Find which conversation discussed something (literal words). | Decrypted WeChat database, **words leave the machine - `confirm: true` required** |
 | `wechat.search_semantic` | Find chat messages by meaning, not literal words. | `dashscopeApiKey` config, network - **query and hits leave the machine, `confirm: true` required** |
-| `wechat.who_owes_reply` | Rank the conversations waiting on a reply. | Decrypted WeChat database |
-| `wechat.draft_reply` | Draft candidate replies. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
 | `wechat.who_owes_reply` | Rank the conversations waiting on a reply. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
+| `wechat.draft_reply` | Draft candidate replies. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
 | `wechat.export_chat` | Export one conversation to HTML, txt, json or excel. | Decrypted WeChat database, **writes under `output/exports/`** |
+| `wechat.export_messages` | Return a conversation's local messages as `weflow-message/v1` JSON. Read-only; returns no database path, key or configuration. | Decrypted WeChat database |
 | `wechat.get_reading_stats` | Which sources push most and what the daily processes. | `output/biz-daily/` |
 
 This table lists the tools shipped today; `weflow-cli mcp-config` prints the authoritative list for the
@@ -94,7 +94,7 @@ offered on it (the same rule `unavailableToolReason` applies elsewhere). The cha
 - Article and knowledge-base tools read files under the current project directory. Keep `cwd` scoped to your intended WeFlow CLI checkout.
 - Chat-data tools (`list_sessions`, `get_messages`, `search_favorites`, `get_sns`, `get_todos`) read your locally decrypted WeChat database. Only run this MCP server on machines where that is acceptable, and never expose the stdio server over a network.
 - `read_favorite`, `fetch_article`, and `search_public` make network requests; `read_favorite` rejects private/loopback URLs.
-- The MCP surface is **derived from the assistant's tool table minus `save_memory`**, not a hand-written read-only list - so it is *not* read-only, and this line used to claim it was. What it actually contains, declared in `capabilities --json` under `safety.mcpSurface`: one tool that writes (`export_chat`, new directories under `output/exports/` only) and four that send user data to cloud models (`who_owes_reply` and `search_chats` send chat text to the decision model, `search_semantic` sends the query for embedding and the hits for reranking, `draft_reply` sends a conversation to two models and needs `confirm: true`). Publishing, sending messages, mutating todos, changing configuration and writing assistant memory stay out.
+- The MCP surface is **derived from the assistant's tool table minus `save_memory`**, not a hand-written read-only list - so it is *not* read-only, and this line used to claim it was. What it actually contains, declared in `capabilities --json` under `safety.mcpSurface`: one tool that writes (`export_chat`, new directories under `output/exports/` only) and four that send user data to cloud models (`who_owes_reply` and `search_chats` send chat text to the decision model, `search_semantic` sends the query for embedding and the hits for reranking, `draft_reply` sends a conversation to two models - and **all four** require `confirm: true`, not just `draft_reply`; that is what `safety.mcpSurface.requiresConfirm` lists, and it is now checked against the source rather than restated). Publishing, sending messages, mutating todos, changing configuration and writing assistant memory stay out.
 - **Four tools on this surface send user data to cloud models, and each of them requires an explicit
   confirmation from the machine caller.** They are `who_owes_reply` (every conversation's text, one request
   each), `search_chats` (your question plus words extracted from the chats - not the message bodies),
