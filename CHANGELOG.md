@@ -4,6 +4,23 @@ The npm package is published separately from GitHub. It may lag behind the `mast
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- **The ball no longer casts a drop shadow.** The user reported that the mascot's background was
+  "not fully transparent" and asked for another round of matting. **It was not the image**: the PNGs
+  are clean - all four corners are `(0,0,0,0)`, the solid areas sit at alpha 253/255, and the only
+  low-alpha pixels are 674 anti-aliasing edge pixels within 4-8 px of solid ones. What they were
+  seeing was `filter: drop-shadow(...)` on the ball, which was there deliberately ("a transparent
+  subject needs it to separate from a light wallpaper") and pinned by a test.
+
+  The trade-off is recorded rather than glossed: that earlier check covered whether the **transparent
+  background** stayed legible against light, mid and dark wallpapers - not whether it does so
+  **without a shadow**, so this is a new, unverified visual change. If the cat ends up looking
+  unmoored, the line to bring back is a much fainter one, and it is written in `panel.css` next to
+  the `filter: none`. Hover feedback survives on `scale(1.02)` and `brightness(1.08)`.
+
 ## 1.8.1
 
 ### Changed
