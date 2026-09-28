@@ -25,7 +25,7 @@ const PANEL = join(ROOT, 'resources', 'panel')
  */
 const PANEL_FILES = ['index.html', 'renderer.js', 'panel.css', 'main.cjs', 'preload.cjs',
   'ball-position.cjs', 'tray-menu.cjs', 'quick-menu.cjs',
-  'mascot.png', 'mascot-happy.png', 'mascot-focus.png', 'mascot-sorry.png',
+  'mascot.png', 'mascot-happy.png', 'mascot-thinking.png', 'mascot-sorry.png',
   'mascot-tired.png', 'tray.png', 'package.json']
 
 function read(name: string): string {
@@ -275,7 +275,7 @@ test('三个真状态各有一张脸，而且"被捏"压得住它们', () => {
     return sheet.slice(at, sheet.indexOf('}', at))
   }
   const FOR_STATE = [
-    ['busy', 'mascot-focus.png'],
+    ['busy', 'mascot-thinking.png'],
     ['offline', 'mascot-sorry.png'],
     ['quota', 'mascot-tired.png'],
   ] as const

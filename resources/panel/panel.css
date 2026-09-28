@@ -172,13 +172,21 @@ body.quota #ball .glow {
   background-repeat: no-repeat;
 }
 
-/* 三个**真状态**各有一张脸：忙的时候专注、连不上时委屈、额度用完时累。
+/* 三个**真状态**各有一张脸：忙（思考中）、连不上时委屈、额度用完时累。
    接的全是现成的状态类（`setBallState` 早就挂 busy/offline/quota 了），**不新增状态机**；
    光晕照旧画——它是"余光能看见"的环境灯，表情是盯着看才见的细节，两者说的是同一件事，
    一个给余光一个给注视，不重复。
    **这三条必须写在下面 `ball-happy` 之前**：CSS 同特异性时后写的赢，而"用户正捏着它"
-   比"助手在忙"更该被看见（你捏它的时候它就该笑）。 */
-body.busy #ball .face { background-image: url('/panel/mascot-focus.png'); }
+   比"助手在忙"更该被看见（你捏它的时候它就该笑）。
+
+   `mascot-thinking.png`（2026-09-29 换的，前身叫 `mascot-focus.png`）：`busy` 的含义就是
+   "发出请求、在等回复"（`renderer.js` 的 `ask()` 一进来就挂上），所以这张脸画的是**思考**
+   ——眼神往左上瞟、眉平、嘴是一条平线、爪子搁在下巴上。出图用 `gpt-image-2-ca` 走
+   `/images/edits`（拿 `mascot.png` 当底，只改表情），再按上面那套参数归一化：
+   内容框 171x212、最远实心距离 125.2（上限 125.4）、**圆外实心像素 0**。
+   第一版提示词出的是"发愁"（嘴向下弯、眉压低），与 `sorry` 那张撞情绪，所以提示词里
+   明确写了"不是难过、不是发愁"。 */
+body.busy #ball .face { background-image: url('/panel/mascot-thinking.png'); }
 body.offline #ball .face { background-image: url('/panel/mascot-sorry.png'); }
 body.quota #ball .face { background-image: url('/panel/mascot-tired.png'); }
 

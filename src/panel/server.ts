@@ -63,7 +63,7 @@ const STATIC_FILES: Record<string, string> = {
   '/panel/mascot-happy.png': 'mascot-happy.png',
   // 三个真状态的脸（忙/连不上/额度用完）。与上面那张一样，**必须一起进白名单**——
   // 漏一张，那个状态一出现球就闪成空图，而响应里的 PANEL_ASSET_MISSING 页面上看不到。
-  '/panel/mascot-focus.png': 'mascot-focus.png',
+  '/panel/mascot-thinking.png': 'mascot-thinking.png',
   '/panel/mascot-sorry.png': 'mascot-sorry.png',
   '/panel/mascot-tired.png': 'mascot-tired.png',
 }
