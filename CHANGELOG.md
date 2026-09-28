@@ -2113,7 +2113,7 @@ That is the useful form of this result: a decision model proposed 741 merges, a 
 
 ### Fixed
 
-- Restored four pieces of matching logic in the HTML exporter that the `90b165a` clone-consolidation merge had silently dropped, all of which lowered media coverage without failing loudly:
+- Restored four pieces of matching logic in the HTML exporter that the `2d368c6` clone-consolidation merge had silently dropped, all of which lowered media coverage without failing loudly:
   - the `unique:<local_id>` fallback, which matches an image when that id resolves to exactly one distinct picture in the conversation (content-deduped, so the shard-collision risk that rules out a bare `local_id` does not apply);
   - `is_encoded_media_type`, needed because WeChat stores some forwards as high-bit variants of type 49 — the mask turns those into a plain 49, which is a registered type, so the branch guarding them had become unreachable;
   - the guard that keeps a type-49 row carrying a title or url on the link-card path instead of hiding it behind a cached thumbnail;
