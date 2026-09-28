@@ -4,7 +4,26 @@ The npm package is published separately from GitHub. It may lag behind the `mast
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.8.1
+
+### Changed
+
+- **The floating ball's "busy" face is now a thinking face, not a contemplative one.** `busy` is
+  exactly "a request went out and we are waiting" (`renderer.js`'s `ask()` sets it on entry), so the
+  face is drawn as thought: eyes glancing up-left, level brows, a flat mouth line, a paw under the
+  chin. The file was renamed `mascot-focus.png` -> `mascot-thinking.png` rather than overwritten -
+  a file named `focus` holding a thinking face is the next misreading - and all four places that
+  name it were updated together (CSS, the static whitelist, the packaging list, the state-to-file
+  assertion). The two reconciliation tests in `panel-packaging.test.ts` went red when the wiring
+  landed before the image did, which is how we know they actually watch that gap.
+
+  It is generated with `gpt-image-2-ca` through `/images/edits`, using the existing mascot as the
+  base so only the expression changes - a text-only redraw takes the style and framing with it. The
+  first prompt asked for "thinking" and produced **worry** (downturned mouth, lowered brows), which
+  collided with the offline face; the second spells out "level brows, flat mouth line, not sad, not
+  worried". Geometry is checked rather than eyeballed, because the ball clips to a circle: content
+  box 171x212 (the existing faces are 170x214), farthest solid pixel 125.2 against a 125.4 limit,
+  and **0 solid pixels outside the inscribed circle**.
 
 ### Fixed
 
