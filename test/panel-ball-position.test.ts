@@ -14,9 +14,9 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const mod = await import(pathToFileURL(join(process.cwd(), 'resources', 'panel', 'ball-position.cjs')).href)
-const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP,
+const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, PEEK_SIZE, HIDE_SNAP,
         defaultBallPosition, clampInto, isReachable, resolveStartPosition, bubbleLayout,
-        ballRectInWindow } = mod.default ?? mod
+        ballRectInWindow, edgeToHide, hiddenPosition, revealedPosition } = mod.default ?? mod
 
 /** 主屏 1707x960、任务栏占 48（与真机一致）；工作区原点 0,0 */
 const PRIMARY = { x: 0, y: 0, width: 1707, height: 912 }
@@ -238,4 +238,66 @@ test('气泡高度永远不超过设计高度，也永远为正', () => {
       `y=${y} 时算出 ${layout.bubbleHeight}`)
     assert.ok(anchored(layout, ballAt(1607, y)).vertical, `y=${y} 时球脱离了窗口边`)
   }
+})
+
+
+// ---------------------------------------------------------------- 半隐（躲到屏幕边上）
+
+test('半隐：只有**故意推到边**才藏 —— 正常放着的球（离边 24px）不许被判定成"想藏"', () => {
+  // 这条是整个功能最容易搞坏的地方：`HIDE_SNAP` 一旦 ≥ `EDGE_MARGIN`，球每一次松手
+  // 都会被判成"想藏"，于是它再也停不在正常位置上——而**别的测试全绿**。
+  assert.ok(HIDE_SNAP < EDGE_MARGIN,
+    `HIDE_SNAP(${HIDE_SNAP}) 必须小于 EDGE_MARGIN(${EDGE_MARGIN})，否则正常放着也会藏`)
+
+  // 默认角落（离右边 24px）松手：不藏
+  const normal = defaultBallPosition(PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.equal(edgeToHide(normal, [PRIMARY], BALL_SIZE), null, '正常位置不该触发半隐')
+  assert.equal(edgeToHide({ x: PRIMARY.width - BALL_SIZE - EDGE_MARGIN, y: 300 }, [PRIMARY], BALL_SIZE), null,
+    '贴着右边但留了 24px：也不藏')
+
+  // 推到底（gap 0）或推过头（负 gap）：藏
+  assert.equal(edgeToHide({ x: 0, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'left')
+  assert.equal(edgeToHide({ x: -8, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'left')
+  assert.equal(edgeToHide({ x: PRIMARY.width - BALL_SIZE, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'right')
+  assert.equal(edgeToHide({ x: PRIMARY.width - BALL_SIZE + 10, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'right')
+
+  // 屏幕中间：两侧都够不着
+  assert.equal(edgeToHide({ x: 800, y: 300 }, [PRIMARY], BALL_SIZE), null)
+})
+
+test('半隐：连**是哪块屏**一起返回（半隐时球心在屏幕外，事后按球心找不回来）', () => {
+  const hit = edgeToHide({ x: LEFT.x + 4, y: 300 }, [PRIMARY, LEFT], BALL_SIZE)
+  assert.equal(hit?.edge, 'left')
+  assert.deepEqual(hit?.area, LEFT, '要返回左副屏那块，不是主屏')
+
+  // 纵向不在某块屏里 → 它贴的不是那块屏的边
+  assert.equal(edgeToHide({ x: 0, y: PRIMARY.height + 200 }, [PRIMARY], BALL_SIZE), null,
+    '球在屏幕下方之外时，不该被当成"贴住了左边"')
+})
+
+test('半隐：只留 PEEK_SIZE 那么宽在工作区里，其余推到屏幕外', () => {
+  const left = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE, PEEK_SIZE)
+  assert.equal(left.x + BALL_SIZE - PRIMARY.x, PEEK_SIZE, '左边：露出来的正好是 PEEK_SIZE')
+  assert.ok(left.x < PRIMARY.x, '窗口确实伸到屏幕外了')
+  assert.equal(left.y, 300, '纵向不动')
+
+  const right = hiddenPosition({ x: PRIMARY.width - BALL_SIZE, y: 300 }, 'right', PRIMARY, BALL_SIZE, PEEK_SIZE)
+  assert.equal(PRIMARY.x + PRIMARY.width - right.x, PEEK_SIZE, '右边：露出来的正好是 PEEK_SIZE')
+  assert.equal(right.y, 300)
+})
+
+test('半隐 → 出来：完全露出来并留出平时的边距（和正常贴边的规矩一致）', () => {
+  const back = revealedPosition({ x: -62, y: 300 }, 'left', PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.deepEqual(back, { x: PRIMARY.x + EDGE_MARGIN, y: 300 })
+  const backR = revealedPosition({ x: PRIMARY.width - 34, y: 300 }, 'right', PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.deepEqual(backR, { x: PRIMARY.x + PRIMARY.width - BALL_SIZE - EDGE_MARGIN, y: 300 })
+})
+
+test('半隐的位置是**不可达**的 —— 重启后球自己回到默认角落，不会消失', () => {
+  // 这是"不持久化"那条决定的兜底：位置文件可能记着半隐时的坐标，而 `isReachable`
+  // 取的是**球心**，半隐时球心在屏幕外，于是启动时落回默认角落。
+  const hidden = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE, PEEK_SIZE)
+  assert.equal(isReachable(hidden, [PRIMARY], BALL_SIZE), false, '半隐的位置必须判为不可达')
+  const fallback = resolveStartPosition(hidden, [PRIMARY], PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.deepEqual(fallback, defaultBallPosition(PRIMARY, BALL_SIZE, EDGE_MARGIN))
 })

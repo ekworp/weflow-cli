@@ -8,6 +8,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Added
 
+- **Push the ball to a screen edge and it hides, leaving a sliver; click it to come back.** Drag the ball until it
+  touches the left or right edge of a monitor and let go - it slides out of the way, keeping about a third visible,
+  and the first click (or drag) brings it fully back. The click while hidden deliberately does *not* open the
+  conversation: on a hidden ball a click means "come back", not "let's talk"; a second click expands as usual. Only
+  the left and right edges do this - top and bottom would fight the taskbar and Windows' own edge snapping, and a
+  round ball half-hidden vertically reads as clipped rather than tucked away. The hidden state is **not remembered
+  across restarts**: a half-hidden ball is off-screen, so the existing "is the remembered position reachable" check
+  already sends it back to the default corner, which is why no separate flag is stored. The detection threshold is
+  deliberately smaller than the normal 24px edge margin, so a ball that is simply parked normally is never mistaken
+  for one being pushed off-screen (there is a test for exactly that).
+
 - **The ball's eyes follow your mouse.** Move the pointer and the mascot looks that way; stop moving and it settles
   and stops animating entirely (no 60 fps loop running for decoration on a window that is always open). The cursor
   position has to come from the main process - the ball is 96x96, so the pointer is outside the window almost all of

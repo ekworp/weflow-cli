@@ -49,6 +49,25 @@ let shortCircuitFailures = 0
 let ballAnchor = { side: 'left', anchorY: 'bottom' }
 
 /**
+ * 半隐（"躲起来"）：球被推到屏幕左/右边松手时，只留 `PEEK_SIZE` 那么宽露在外面。
+ *
+ * 用户要的是一个朴素的桌宠行为：推到边上就藏起来、点一下再出来。三个决定写在明处：
+ *
+ * - **只做左右**：上下贴边在 Windows 上会跟任务栏、窗口贴边打架；而且一个圆球从上下边
+ *   半隐看着像被切了，不像"躲"。
+ * - **半隐时第一次点击只是"出来"，不展开气泡**：藏起来的状态下点它，意思一定是"回来"，
+ *   不是"跟我说话"。点第二下才展开。这条不用通知页面——**页面自己不记形态**（它只发请求、
+ *   照着 `panel:mode` 做），所以不展开就不会有任何状态错位。
+ * - **不持久化**：重启后是完全露出来的。半隐时球心在屏幕外，`isReachable` 本来就判它
+ *   "不可达"、启动时落回默认角落——让这条既有的安全网顺手把"重启后球不见了"也挡掉，
+ *   而不是再存一个标志位。
+ *
+ * 存的是 `{edge, area}` 而不是只存 edge：恢复要用那块工作区，而半隐时球心在屏幕外，
+ * 再拿球心去找工作区是找不到的。
+ */
+let hiddenAt = null
+
+/**
  * 跑一条 CLI 命令（目前只用来停助手）。**这里踩过一个坑，写法不能再简化**：
  *
  * 直接把脚本路径当参数传（`spawn(process.execPath, [cliEntry, 'assistant', 'stop', …])`，
@@ -83,7 +102,8 @@ function spawnCli(cliArgs) {
 // `--ball-size` / `--bubble-width` / `--bubble-gap`（CSS 拿不到 JS 的值），那几份由
 // `test/panel-packaging.test.ts` 断言与本模块的这些值相等。
 const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, bubbleLayout, ballRectInWindow,
-        defaultBallPosition: defaultBall, clampInto, resolveStartPosition } = require('./ball-position.cjs')
+        defaultBallPosition: defaultBall, clampInto, resolveStartPosition,
+        edgeToHide, hiddenPosition, revealedPosition } = require('./ball-position.cjs')
 
 function workAreas() { return screen.getAllDisplays().map((d) => d.workArea) }
 function primaryWorkArea() { return screen.getPrimaryDisplay().workArea }
@@ -174,6 +194,27 @@ function schedulePositionSave() {
   if (!ballMode) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(flushPosition, 400)
+}
+
+/** 拖球松手：贴到左右边就藏进去。没贴边什么都不做。 */
+function maybeHideAtEdge() {
+  if (!ballMode || !win || win.isDestroyed()) return
+  const from = win.getContentBounds()
+  const hit = edgeToHide({ x: from.x, y: from.y }, workAreas())
+  if (!hit) return
+  const to = hiddenPosition({ x: from.x, y: from.y }, hit.edge, hit.area)
+  hiddenAt = { edge: hit.edge, area: hit.area }
+  win.setContentBounds({ x: to.x, y: to.y, width: BALL_SIZE, height: BALL_SIZE })
+}
+
+/** 从半隐出来：完全露出、留出平时的边距，并记一次位置（下次启动就停在边上）。 */
+function revealBall() {
+  if (!hiddenAt || !win || win.isDestroyed()) return
+  const from = win.getContentBounds()
+  const to = revealedPosition({ x: from.x, y: from.y }, hiddenAt.edge, hiddenAt.area)
+  hiddenAt = null
+  savePosition(to.x, to.y)
+  win.setContentBounds({ x: to.x, y: to.y, width: BALL_SIZE, height: BALL_SIZE })
 }
 
 /** 读端点文件。**任何一种不可信都当没读出来**（同 `src/panel/endpoint.ts` 的纪律） */
@@ -449,7 +490,15 @@ if (!app.requestSingleInstanceLock()) {
     // 眼珠跟着鼠标：主进程按 120ms 采样光标、只在变化时推。**不收发凭据、不出机器**。
     startCursorFeed()
 
-    ipcMain.handle('panel:setMode', (_event, mode, opts) => setMode(mode, opts))
+    ipcMain.handle('panel:setMode', (_event, mode, opts) => {
+      // 半隐时**第一次点击只是"出来"**，不展开气泡（理由见 `hiddenAt` 那段注释）。
+      // 页面不记形态，所以这一次不展开不会留下任何不一致。
+      if (hiddenAt) {
+        revealBall()
+        return { revealed: true }
+      }
+      return setMode(mode, opts)
+    })
 
     // 右键"快速回复"。**用原生菜单**：它画在窗口外面，所以球那个小窗口不用先展开
     // （页内菜单做不到这一点——它会被窗口裁掉）。选中回一个名字，关掉没选回 null。
@@ -475,6 +524,9 @@ if (!app.requestSingleInstanceLock()) {
     let dragOrigin = null
     ipcMain.handle('panel:dragStart', (_event, point) => {
       if (!win || win.isDestroyed()) return null
+      // 拖一个藏着的球 = 把它拉出来。**必须在读 bounds 之前**：`revealBall` 会挪窗口，
+      // 而下面的 `dragOrigin` 是拿窗口位置算的——先挪再记，球才不会在光标底下跳一下。
+      revealBall()
       const from = win.getContentBounds()
       // **尺寸也在这里记一次**（不只是位置）。理由见 dragMove 那段注释：
       // 每次移动去读"当前尺寸"会在**可缩放**的窗口上让尺寸跟着位移一起长。
@@ -506,7 +558,11 @@ if (!app.requestSingleInstanceLock()) {
       })
       return null
     })
-    ipcMain.handle('panel:dragEnd', () => { dragOrigin = null; return null })
+    ipcMain.handle('panel:dragEnd', () => {
+      dragOrigin = null
+      maybeHideAtEdge()      // 松手时贴到左右边就藏进去
+      return null
+    })
     ipcMain.handle('panel:info', () => ({ daemonRunning: !!readEndpoint(), endpointFile: ENDPOINT_FILE }))
     /**
      * 凭据失效时自愈：重读端点文件（守护进程每次启动都换 token），刷新 cookie 并重载。

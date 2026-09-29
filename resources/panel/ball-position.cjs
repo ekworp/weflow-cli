@@ -29,6 +29,52 @@ function defaultBallPosition(workArea, ballSize = BALL_SIZE, margin = EDGE_MARGI
   }
 }
 
+/** 半隐（"躲起来"）：贴住屏幕左右边时，只留这么宽露在工作区里。够点到，又一眼看出是藏起来了。 */
+const PEEK_SIZE = 34
+/**
+ * 松手时，球的边离工作区左右边界多近才算"想藏进去"。
+ *
+ * **必须小于 `EDGE_MARGIN`（24）**：正常放着不动的球永远离边 24px，阈值要是 ≥24，
+ * 那它每次松手都会被判成"想藏"——球就再也停不下来了。16 意味着要**故意往边上再推一把**。
+ */
+const HIDE_SNAP = 16
+
+/**
+ * 松手的位置算不算"贴住了某块屏的左右边"。
+ *
+ * 只做左右：上下贴边在 Windows 上会跟任务栏、窗口贴边打架，而且一个圆球从上下边半隐
+ * 看着也不像"躲"，像被切了。
+ *
+ * @returns {{edge:'left'|'right', area:object}|null} 连那块工作区一起返回——
+ *   调用方就不用再拿球心去找工作区了（半隐时球心本来就在屏幕外，找不到）。
+ */
+function edgeToHide(pos, workAreas, ballSize = BALL_SIZE, snap = HIDE_SNAP) {
+  for (const area of workAreas) {
+    const cy = pos.y + ballSize / 2
+    // 球得落在这块屏的**纵向**范围内，否则它贴的是另一块屏的边
+    if (cy < area.y || cy > area.y + area.height) continue
+    const leftGap = pos.x - area.x
+    const rightGap = (area.x + area.width) - (pos.x + ballSize)
+    if (leftGap <= snap && leftGap >= -ballSize) return { edge: 'left', area }
+    if (rightGap <= snap && rightGap >= -ballSize) return { edge: 'right', area }
+  }
+  return null
+}
+
+/** 半隐时窗口该放哪：只让 `peek` 那么宽留在工作区里，其余推到屏幕外。 */
+function hiddenPosition(pos, edge, workArea, ballSize = BALL_SIZE, peek = PEEK_SIZE) {
+  if (edge === 'left') return { x: workArea.x - ballSize + peek, y: pos.y }
+  if (edge === 'right') return { x: workArea.x + workArea.width - peek, y: pos.y }
+  return { x: pos.x, y: pos.y }
+}
+
+/** 从半隐恢复：完全露出来，并且按平时的规矩留出 `EDGE_MARGIN`，别贴在边上。 */
+function revealedPosition(pos, edge, workArea, ballSize = BALL_SIZE, margin = EDGE_MARGIN) {
+  if (edge === 'left') return { x: workArea.x + margin, y: pos.y }
+  if (edge === 'right') return { x: workArea.x + workArea.width - ballSize - margin, y: pos.y }
+  return { x: pos.x, y: pos.y }
+}
+
 /** 把一个 `size x size` 的方块挪进给定工作区（只挪，不改尺寸） */
 function clampInto(x, y, size, workArea) {
   const maxX = workArea.x + workArea.width - size
@@ -147,7 +193,7 @@ function ballRectInWindow(windowRect, anchor, ballSize = BALL_SIZE) {
 }
 
 module.exports = {
-  BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP,
+  BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, PEEK_SIZE, HIDE_SNAP,
   defaultBallPosition, clampInto, isReachable, resolveStartPosition, bubbleLayout,
-  ballRectInWindow,
+  ballRectInWindow, edgeToHide, hiddenPosition, revealedPosition,
 }
