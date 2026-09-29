@@ -88,6 +88,33 @@ const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, bubbleLayout, ballRectInWindow,
 function workAreas() { return screen.getAllDisplays().map((d) => d.workArea) }
 function primaryWorkArea() { return screen.getPrimaryDisplay().workArea }
 
+/**
+ * 鼠标位置的推送（给"眼珠跟着鼠标"用）。
+ *
+ * **为什么是轮询**：Electron 主进程**没有**鼠标移动事件，只有 `screen.getCursorScreenPoint()`
+ * 这个"主动去问"的 API。所以按固定间隔采样，而且**只在坐标真的变了时**才推一次——
+ * 鼠标不动时一次 IPC 都不发；鼠标在动时也只发十几分之一，剩下的交给渲染进程补间到 60fps。
+ *
+ * 间隔 120ms 是够的：眼珠那边有几百毫秒量级的缓动，采样比它快一截就行，再密只是白耗电。
+ * 窗口不可见或已销毁时**既不采样也不推**（收起来了就没人看，没必要测）。
+ */
+const CURSOR_POLL_MS = 120
+let cursorTimer = null
+let lastCursor = null
+
+function startCursorFeed() {
+  if (cursorTimer) return
+  cursorTimer = setInterval(() => {
+    if (!win || win.isDestroyed() || !win.isVisible()) return
+    const point = screen.getCursorScreenPoint()
+    if (lastCursor && lastCursor.x === point.x && lastCursor.y === point.y) return
+    lastCursor = point
+    win.webContents.send('panel:cursor', { x: point.x, y: point.y })
+  }, CURSOR_POLL_MS)
+  // 别让这个定时器成为"进程还活着的理由"——它只是画面装饰，不该拖着 app 不退
+  if (typeof cursorTimer.unref === 'function') cursorTimer.unref()
+}
+
 /** 小球该在哪儿。**默认放右下角**——从前不给 `x/y`，于是它落在 Windows 顺手给的位置
  * （本机实测 815,418，屏幕中偏左），那不叫"屏幕角落一个球"。 */
 function defaultBallPosition() { return defaultBall(primaryWorkArea(), BALL_SIZE, EDGE_MARGIN) }
@@ -419,6 +446,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => { win?.show(); win?.focus() })
 
   app.whenReady().then(async () => {
+    // 眼珠跟着鼠标：主进程按 120ms 采样光标、只在变化时推。**不收发凭据、不出机器**。
+    startCursorFeed()
+
     ipcMain.handle('panel:setMode', (_event, mode, opts) => setMode(mode, opts))
 
     // 右键"快速回复"。**用原生菜单**：它画在窗口外面，所以球那个小窗口不用先展开

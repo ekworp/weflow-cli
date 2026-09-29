@@ -104,7 +104,7 @@ header {
      浏览器降级那条路靠这条 `display: none` 永远看不见球（那一侧 `hidden` 属性也还在）。 */
   display: none;
   /* 固定尺寸、钉在窗口的某个角上（下面的 shell 规则给角）：**尺寸不跟着窗口长**，
-     否则展开过程中会看到一只被拉成巨型的猫。球形态下窗口就是 76×76，铺满即整窗。 */
+     否则展开过程中会看到一只被拉成巨型的猫。球形态下窗口就是 96×96（= `--ball-size`），铺满即整窗。 */
   position: fixed;
   width: var(--ball-size);
   height: var(--ball-size);
@@ -170,13 +170,36 @@ body.shell.anchor-top #ball { bottom: auto; top: 0; }
    空闲=原图），那才是主信号；光晕只是"余光能看见"的补充。想再要一个不占背景的提示，
    应该做成**外圈**（`box-shadow` 之类画在球外面），而不是再往猫背后放一层盘子。 */
 
-/* 上面那层：吉祥物本体，形状不变 */
+/* 上面那层：吉祥物本体，形状不变。
+   **注意是 `mascot-base.png` 而不是 `mascot.png`**：前者是把虹膜挖掉的版本（挖掉的地方填成
+   眼白），专门给"眼球跟着鼠标动"用的；后者眼球是画死的，拿它当底会看到两个瞳仁
+   （一个跟着动、一个不动）。两张图零偏移叠起来与原图**逐像素相同**，所以换底不改变外观。 */
 #ball .face {
-  background-image: url('/panel/mascot.png');
+  background-image: url('/panel/mascot-base.png');
   background-size: 100%;
   background-position: center;
   background-repeat: no-repeat;
 }
+
+/* 虹膜层：**唯一会动的那一层**，`renderer.js` 按鼠标方向给它 translate。
+   与 `.face` 同一张画布（256²）铺满，所以偏移量给对了它就还在原来的位置上。
+   只动 transform —— 合成器直接做，不重排、不重绘；这是这个效果几乎不耗电的原因。 */
+#ball .iris {
+  background-image: url('/panel/mascot-iris.png');
+  background-size: 100%;
+  background-position: center;
+  background-repeat: no-repeat;
+  will-change: transform;
+}
+
+/* **另外四张脸的眼睛是画死的**（瞳孔与高光都在图上），往上叠一层会动的虹膜就会看到
+   两个瞳仁。所以那几张脸出现时把虹膜层藏掉 —— 于是球只在"空闲"和"被捏"两种情况下有眼神，
+   忙 / 连不上 / 额度用完时不动。**这是刻意的**：那三种状态本来就该用整张脸说话，
+   而且它们恰恰是"不空闲"的时候，眼睛还在追着鼠标看反而不对。 */
+body.busy #ball .iris,
+body.offline #ball .iris,
+body.quota #ball .iris,
+body.ball-happy #ball .iris { display: none; }
 
 /* 三个**真状态**各有一张脸：忙（思考中）、连不上时委屈、额度用完时累。
    接的全是现成的状态类（`setBallState` 早就挂 busy/offline/quota 了），**不新增状态机**；

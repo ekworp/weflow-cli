@@ -343,6 +343,89 @@ function prefersReducedMotion() {
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
+// ------------------------------------------------------- 眼珠跟着鼠标（2026-09-30）
+
+/**
+ * 鼠标位置来自**主进程**（`onCursor`），不是页面的 `mousemove`：球只有 96×96，鼠标绝大多数
+ * 时间在窗口**外面**，渲染进程一个事件都收不到。
+ *
+ * 位移上限是**从美术上量出来的**，不是拍的（量法见提交信息里的脚本）：
+ *   - 虹膜到左边那道深色描边只剩约 2.6px（球上），再往左就裂开一条白缝；
+ *   - **向上几乎没有余量**（上面就是眼皮），向下宽一些；
+ *   - 所以夹的是一个**椭圆**，不是一个圆 —— 横向 2.6、向上 0.8、向下 2.6。
+ *
+ * 常量按**球的 96px** 写；球尺寸将来变了，下面按实测宽度等比缩放，不用回来改这些数。
+ */
+const IRIS_MAX_X = 2.6
+const IRIS_MAX_UP = 0.8
+const IRIS_MAX_DOWN = 2.6
+const IRIS_EASE = 0.18      // 每帧逼近目标的比例（一阶低通）
+const IRIS_FAR = 260        // 鼠标远过这个距离就当"看向最边上"，不再加分
+const IRIS_EPS = 0.02       // 到位判定（球上像素）
+
+let cursorTarget = null     // 鼠标的屏幕坐标；null = 还不知道它在哪
+let irisX = 0
+let irisY = 0
+let irisRaf = null
+
+/** 球心在屏幕上的位置。载荷是 DIP、`getBoundingClientRect` 也是 DIP，所以可以直接相减。 */
+function ballCenterOnScreen() {
+  const rect = ball.getBoundingClientRect()
+  return {
+    x: window.screenX + rect.left + rect.width / 2,
+    y: window.screenY + rect.top + rect.height / 2,
+  }
+}
+
+/** 往目标挪一帧。返回"还在动吗"——不动了外层就把 rAF 停掉。 */
+function stepIris() {
+  const size = ball.offsetWidth || 96
+  const k = size / 96
+  let tx = 0
+  let ty = 0
+  if (cursorTarget && !prefersReducedMotion()) {
+    const center = ballCenterOnScreen()
+    const dx = cursorTarget.x - center.x
+    const dy = cursorTarget.y - center.y
+    const dist = Math.hypot(dx, dy) || 1
+    const strength = Math.min(1, dist / (IRIS_FAR * k))   // 远处饱和：屏幕另一头也是"看那边"
+    const ux = (dx / dist) * strength
+    const uy = (dy / dist) * strength
+    tx = ux * IRIS_MAX_X * k
+    ty = uy * (uy < 0 ? IRIS_MAX_UP : IRIS_MAX_DOWN) * k
+  }
+  irisX += (tx - irisX) * IRIS_EASE
+  irisY += (ty - irisY) * IRIS_EASE
+  const done = Math.abs(irisX - tx) < IRIS_EPS && Math.abs(irisY - ty) < IRIS_EPS
+  if (done) {
+    irisX = tx
+    irisY = ty
+  }
+  const iris = ball.querySelector('.iris')
+  if (iris) iris.style.transform = `translate(${irisX.toFixed(2)}px, ${irisY.toFixed(2)}px)`
+  return !done
+}
+
+/**
+ * **静止就停 rAF**。一直跑 60fps 写 transform 会让合成器一直忙——那是为装饰付的电，
+ * 不值得（这个窗口是常驻的）。所以：鼠标动了才起循环，到位就停，下一次推送再起。
+ */
+function pumpIris() {
+  if (irisRaf !== null) return
+  if (typeof requestAnimationFrame !== 'function') return
+  irisRaf = requestAnimationFrame(() => {
+    irisRaf = null
+    if (stepIris()) pumpIris()
+  })
+}
+
+if (hasShell && window.weflowPanel && typeof window.weflowPanel.onCursor === 'function') {
+  window.weflowPanel.onCursor((point) => {
+    cursorTarget = point
+    pumpIris()
+  })
+}
+
 /** 气泡方位相关的类，每次切形态先全摘掉再按主进程说的挂上 */
 const LAYOUT_CLASSES = ['bubble-left', 'bubble-right', 'anchor-top']
 

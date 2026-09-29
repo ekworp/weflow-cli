@@ -4,6 +4,8 @@
 
 > 编号说明：`D-009` 从未使用（D-008 直接跳到 D-010），保留为空号；
 > 历史上曾有两条决策共用 `D-016`，其中「architecture visuals」一条改号为 `D-028`。
+> `D-056`~`D-058` 是**留给未合并分支** `feat/assistant-skills-scenes-tool-surface` 的（技能与场景那三条），
+> 本分支从 `master` 切出时那里还没有它们，为避免合并时撞号，这里直接从 `D-055` 跳到 `D-059`。
 
 ## D-001: Local-first data handling
 
@@ -1399,6 +1401,50 @@ which is what the gate is for.
 - Group chats are out of scope (the reference implementation documents the same limit, and local group
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
+
+## D-059: The ball's eyes follow the mouse - and that makes the cursor position a data flow, so it is written down
+
+**Status:** Active
+
+**Decision.** The mascot's irises track the cursor. The position comes from the **main process**
+(`screen.getCursorScreenPoint()`, sampled every 120 ms, pushed **only when the coordinates change**), because the
+renderer cannot see it: the ball is 96x96 and the pointer is outside the window almost all of the time, so
+`mousemove` never fires. The page eases toward the pushed point and **stops its rAF loop the moment it settles** -
+a permanently-running 60 fps transform would be a compositor cost paid for decoration, on a window that is always
+open.
+
+**Why there are now two images instead of one.** The mascot PNG has its eyes **drawn into** it, so nothing in it can
+move. `mascot-base.png` is the same art with the iris region repainted in the sclera colour, and `mascot-iris.png` is
+the iris (with its pupil and highlight) as its own layer. Composited at zero offset the two are **pixel-identical**
+to `mascot.png` - a test decodes all three PNGs and asserts that pixel by pixel, because every weaker check (same
+size, present in the whitelist, present in `PANEL_FILES`) stays green if somebody re-cuts them one pixel off, and a
+one-pixel misalignment is visible to a human and to nothing else. `mascot.png` stays in the repo as the source the
+other four expressions are generated from, but it is **no longer what the ball shows** - pointing the ball's face at
+it while an iris layer moves on top would show two pupils, one of them stationary.
+
+**The travel limits are measured, not chosen.** Scanning the source pixels along the iris: to its left there are
+about 7 px of sclera before the dark rim, and above it there is none at all (the upper lid sits on the iris). At the
+ball's 96 px that is roughly 2.6 px of usable travel sideways and essentially zero upward, so the clamp is an
+**ellipse** (2.6 sideways / 0.8 up / 2.6 down) rather than a circle. Past that the iris separates from the rim and
+the eye reads as a sticker sliding across the face. The constants are written for the 96 px ball and are scaled by
+the element's measured width, so changing `--ball-size` does not require re-deriving them.
+
+**The eyes move only on the two faces that have any to move.** Four of the five faces have their eyes baked in;
+stacking a moving iris on those shows two pupils. The iris layer is therefore hidden for `busy` / `offline` /
+`quota` / `ball-happy`. That is deliberate, not a limitation: those are precisely the "not idle" states, and they
+already speak with the whole face.
+
+**Why a data-flow entry.** Cursor coordinates are the panel's second input that does not come from the daemon (the
+first is the window geometry from `ball-position.cjs`). They travel **in-process only** - main process to this
+window's renderer - are narrowed in `preload.cjs` (two clamped integers; malformed payloads are dropped rather than
+handed to the page) along the same rule as every other channel, are never logged and never leave the machine, and
+the feed stops entirely while the window is hidden. "The app knows where your mouse is" is a data flow even when it
+never crosses the machine boundary, so it is recorded rather than left implicit.
+
+**Not yet verified live.** The wiring (the feed, the clamp, the reduced-motion path, the pixel identity) is covered
+by the suite, but the effect itself has not been run on a real window - that window only exists on a machine with
+Electron, via `weflow-cli panel`. The amplitudes come from the pixel measurements above; whether 2.6 px reads as
+"looking at you" at 96 px is a judgement only a person in front of the screen can make.
 
 ## D-055: The Vault's copy of an article is cleaned, the fetched original is not - and "which days does the copy run cover" was being decided by a marker that only one writer sets
 

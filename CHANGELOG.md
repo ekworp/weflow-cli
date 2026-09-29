@@ -6,6 +6,20 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+### Added
+
+- **The ball's eyes follow your mouse.** Move the pointer and the mascot looks that way; stop moving and it settles
+  and stops animating entirely (no 60 fps loop running for decoration on a window that is always open). The cursor
+  position has to come from the main process - the ball is 96x96, so the pointer is outside the window almost all of
+  the time and the page never sees a mousemove - and it is sampled at 120 ms, pushed **only when the coordinates
+  change**, kept strictly in-process, and never logged or sent anywhere (D-059). How far the eyes can travel is
+  **measured from the artwork**, not picked: the iris has about 7 px of sclera to its left and none above it, which
+  at the ball's size is roughly 2.6 px sideways and 0.8 px up - past that the eye reads as a sticker sliding, so the
+  movement is clamped to an ellipse. The eyes drift only on the idle and "pressed" faces; the thinking / offline /
+  tired faces have their eyes drawn in, so the moving layer is hidden there rather than showing two pupils. The ball
+  is otherwise pixel-for-pixel what it was: the new base image plus the iris layer, composited at rest, are asserted
+  to equal the old ball image exactly. If your system asks for reduced motion, the eyes stay still.
+
 ### Fixed
 
 - **The ball is never backed by anything now - the glow layer is gone entirely.** The user reported

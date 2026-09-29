@@ -76,4 +76,27 @@ contextBridge.exposeInMainWorld('weflowPanel', {
       done: !!(payload && payload.done),
     }))
   },
+  /**
+   * 鼠标在**屏幕**上的位置，用来做"眼珠跟着鼠标"。
+   *
+   * **为什么必须由主进程给**：球只有 96×96，鼠标绝大多数时间在窗口**外面**，
+   * 渲染进程的 `mousemove` 收不到任何东西。`screen.getCursorScreenPoint()` 只有主进程有。
+   * 主进程按固定间隔采样、**只在坐标变了的时候**推一次（见 main.cjs 那段）。
+   *
+   * 载荷照上面的规矩收窄：两个整数、夹进屏幕坐标的合理范围；坏载荷**直接丢掉**，
+   * 不交给页面。它只在**本机进程内**走（主进程 → 这个窗口的渲染进程），不出机器、不进日志。
+   */
+  onCursor: (cb) => {
+    if (typeof cb !== 'function') return
+    const clamp = (value) => {
+      const n = Math.round(Number(value))
+      return Number.isFinite(n) ? Math.min(Math.max(n, -32768), 32767) : null
+    }
+    ipcRenderer.on('panel:cursor', (_event, payload) => {
+      const x = clamp(payload && payload.x)
+      const y = clamp(payload && payload.y)
+      if (x === null || y === null) return
+      cb({ x, y })
+    })
+  },
 })
