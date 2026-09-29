@@ -364,8 +364,14 @@ def main():
     # 只查卡片目录会把这类全报成断链——实测 1,950 条，而它们在 Obsidian 里都是好的
     # （两边文件名本来就不同：卡片保留完整标题，阅读笔记截到 50 字）。
     card_stems = collect_card_stems(tuple(CARD_DIRS) + MATERIAL_DIRS)
+    resolvable = resolvable_names(pages)   # 只算一次（见下面那条注释）
     report = inspect(pages,
-                     lambda name: resolve(name, resolvable_names(pages), CARD_DIRS, card_stems),
+
+                     # **注意别把它写回 lambda 里**：闭包体是**调用时**求值的，
+                     # 写在里面等于每条链接都重建一次全部页名的集合 —— 实测文章线
+                     # （3,623 页）因此要 9 分 29 秒，聊天线（1,527 页）只要 3.2 秒。
+                     # 提出来算一次之后是同一条线的秒级。
+                     lambda name: resolve(name, resolvable, CARD_DIRS, card_stems),
                      card_links)
     report['success'] = True
     report['pagesDir'] = existing
