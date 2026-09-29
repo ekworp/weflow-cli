@@ -176,12 +176,38 @@ These hold for any extension, and the full statements live in `AGENTS.md` and `C
   reporting a real change.
 - Do not record a guess as a verified fact. When something has not been measured, say so where the claim is made.
 
+## Skills are content, not an extension point
+
+A skill is a directory containing `SKILL.md` (`name`/`description` frontmatter, optionally `version`, `triggers`,
+`enabled`), scanned from `skillDirs` (default `~/.claude/skills`, `~/.weflow-cli/skills`). **It does not follow any
+recipe above.** Nothing here is code that joins the process:
+
+- **It adds no tool.** The model sees a catalogue in the system prompt and can call `read_skill` to read one body. The
+  tool table is unchanged, so installing a skill cannot widen what the assistant is able to do.
+- **Its content is never executed.** No scripts, no dependencies, no installation step - the "installer" is the user
+  putting a directory where the scanner looks.
+- **It cannot read anything.** `read_skill` only ever returns a file named `SKILL.md` that the directory scan already
+  produced; an id shaped like a path is not a path. That is the P4 acceptance criterion (extensions must not read
+  configuration, databases or arbitrary files) satisfied by construction rather than by a check.
+- **It is disableable alone** (`config set skillDisabled <id>` or `enabled: false` in the file itself).
+- Bodies enter the prompt through `frameLocalData`, exactly like memory and scene text, because a `SKILL.md` is
+  local material that can contain a closing frame tag.
+
+The rules that *are* worth knowing when authoring one: read only the leading `---` block (bodies contain lines that look
+like frontmatter), block scalars are supported (`description: >-` with indented lines), and ids should stay
+lowercase-with-hyphens if the skill is meant to travel to another agent - this project keeps and warns about
+non-conforming ids (`clz_docx_to_mp` is in use here) rather than refusing them. `weflow-cli skill check` reports
+unreadable frontmatter, cross-root collisions, non-conforming ids and disabled skills.
+
 ## What does not exist yet
 
 Named here so that the gaps are not mistaken for omissions:
 
-- **A plugin loader / adapter interface.** Roadmap, not implemented (see above).
+- **A plugin loader / adapter interface.** Roadmap, not implemented (see above). Skills exist and are deliberately
+  *not* it: they are prompt-time material with no code path into this process.
 - **A public import surface.** No `exports`, `main` or `types`; the published package is a CLI, and `src/` is shipped
   without a stability promise.
 - **A versioned extension contract.** The versioned contracts that exist are data contracts (`weflow-message/v1`,
-  `weflow-sync/v1`), not code contracts.
+  `weflow-sync/v1`, `weflow-scenes/v1`), not code contracts.
+- **A skill installer.** There is no install/update/uninstall path and no per-agent deployment; the roots are read,
+  never written.

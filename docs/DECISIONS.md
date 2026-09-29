@@ -1400,6 +1400,154 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-058: The assistant reaches the MCP ceiling minus the exclusions - and two of the new capabilities carry a residual risk that is written down here rather than discovered later
+
+**Status:** Active
+
+**Decision.** The assistant's tool table was brought up to the same ceiling the MCP surface already had, minus
+everything the project has decided stays out. Three surfaces had drifted apart: the CLI exposes ~93 command
+declarations, `TOOL_DEFS` had 21 tools, and `mcp-server/index.ts` additionally hand-wrote 11 tools that the chat path
+could not reach at all (`get_review`, `get_concepts`, `format_article`, `list_themes`, `fetch_article`,
+`search_public`, plus the merged `get_stats`). Ten tools were added - `list_contacts`, `get_review`, `get_concepts`,
+`fetch_article`, `search_public`, `format_article`, `list_themes`, `lint_wiki`, `check_skills`, `set_todo_status` -
+the seven that existed only on the MCP side were **moved** into `TOOL_DEFS` (same tool names, same argument names,
+single implementation, so the hand-written table shrank from 11 entries to 4), and four existing tools were widened
+rather than duplicated: `get_daily_report` gained `full` (the human-readable daily) and cross-date search (which is
+what the MCP-only `search_articles` did), `get_todos` gained the item id and `group_by`, `get_weread` gained five
+`mode`s, `get_stats` gained the knowledge-base half it had been missing while the MCP copy had it.
+
+**The direction is safe because it is not a new kind of access.** Every capability added here was already reachable
+by an MCP client; the change removes an inconsistency rather than widening what the project exposes. What did *not*
+move is the ceiling itself: sending, publishing, configuration, access-list writes, `evidence-review`, `vault promote`,
+scene reads and writes, `login-wechat`/`logout`/`listen`/`assistant run`, `sns capture-key`, `decide` and `init`/`dbkey`
+all stay unreachable from a model-driven path, each with the decision or comment that says so.
+
+**Two capabilities carry a residual risk, and both were chosen deliberately by the user rather than slipped in.**
+
+*Network egress from the chat path.* `fetch_article` and `search_public` are now callable from a WeChat message. The
+user was shown the asymmetry - the MCP path is documented as a trusted local integration, while a chat message is
+untrusted input that can carry a prompt injection - and chose to expose them **without** a confirmation gate, matching
+MCP. What each actually is: `fetch_article` accepts only credential-free HTTPS URLs on the exact `mp.weixin.qq.com`
+host and **re-checks that allowlist on every redirect hop** (the default `follow` would validate only the entry URL;
+the test asserts the `redirect: 'manual'` option, because a stubbed fetch cannot observe undici's internal follow -
+that hole was found by a mutation check). `search_public` is the weaker one and is recorded as such: it scrapes a
+third-party search page, its URL is a constant so no allowlist applies, and **the model's query leaves the machine
+with no preview**. Anyone reviewing that decision should read it as: a chat-driven model can cause an arbitrary string
+to be sent to a search engine, and that is accepted. The mitigation that exists is not a gate but the shape of the
+data: the query is a search phrase, never chat content.
+
+*A bounded local write.* `set_todo_status` flips one existing todo between `done` and `pending`. It **cannot create,
+delete or edit** anything else - there is no `todos rm`, no `daily add/remove`, no `todos extract` in the tool table,
+and a test pins that (`工具表里没有任何删除待办的工具`). It carries **no** `ctx.requiresConfirm` gate, following the
+`export_chat` precedent (a write tool with no gate, because the gate set is machine-checked by
+`test/assistant-tools.test.ts` to be exactly `callsCloudModels` - adding a gate to a tool that does not send user data
+would either break that equality or require writing a false claim into `capabilities --json`). The residual risk is
+therefore stated plainly: **an MCP client does not get this tool at all** (`MCP_EXCLUDED`, because "mutating todos
+stays out" of that surface), while the chat/panel path can flip a status with no preview. Ambiguity is refused rather
+than resolved: a task-text match must be unique, and the reason is that a wrong guess looks like success while
+changing the wrong row.
+
+**Reason.** Adding tools is not free: it makes the model choose among more near-duplicates, which is a failure mode
+this project has already measured once (`get_reading_stats`'s description had to be rewritten after it stole WeRead's
+question space and answered a reading question with official-account push counts). So the widenings in this entry are
+mostly *replacements*: cross-date article search went into `get_daily_report` rather than a second article-finder,
+`todos remind`'s grouping went in as a parameter rather than a tool, per-book WeRead data went in as `mode` values
+rather than five tools, and `get_concept` was deliberately **not** added because `search_knowledge` already returns
+the page plus its neighbour subgraph and a second, weaker lookup is a net loss for routing.
+
+**Consequences.** Two injection points were added - `WEFLOW_ASSISTANT_BIZ_DAILY_DIR` and
+`WEFLOW_ASSISTANT_REVIEWS_DIR` - following `WEFLOW_ASSISTANT_EXPORT_ROOT`, and both are read **per call** rather than
+frozen at import so a test can swap fixtures inside one process. That closed the last uncovered tool branch: the test
+suite's coverage note had said for months that `get_daily_report` was never executed because its directory was a
+module-level constant with no injection point, and that the only possible assertion was a "either there is data or
+there is not" shape check - which is not an assertion. It is now asserted against a fixture, with its three branches
+(date, cross-date search, prose). The coverage claim is therefore "**all 31 tools are executed**" and the note says
+where each group lives. Locally-held identifiers were the other thing to get right: `list_contacts` returns names
+only (remark / display name / nickname - never `username`, never the avatar URL), because keeping wxids out of the
+model's context is a standing rule of this repository.
+
+## D-057: A scene is bound to a conversation by the one id that already exists, it is picked by three tiers that refuse to guess, and the model cannot write one
+
+**Status:** Active
+
+**Decision.** A scene is a named prompt preset - keywords, an extra instruction, an output spec, a required-skill list,
+an enabled flag - stored in its own versioned file (`~/.weflow-cli/assistant_scenes.json`, schema `weflow-scenes/v1`,
+unknown version quarantined rather than migrated, atomic write, same discipline as the memory file). A turn picks at
+most one scene through three tiers in order: an explicit **binding**, then a **keyword** hit in the incoming text, then
+the **last scene used** in that conversation. No tier matching means no scene section in the prompt - the default
+behaviour is byte-identical. When two scenes match a keyword of the same length the turn carries **no** scene and the
+trace records why, following `resolveUniqueTalker` and `resolvePanelUserId`: ambiguous input is refused, never guessed.
+
+**The binding key is `userId`, which is the conversation on the path that has conversations.** On the WeChat path
+`resolveInboundRouting` sets `conversationId` to the `@chatroom` id for a group and the peer's wxid for a direct chat,
+and `assistantService` passes exactly that through as `userId`; so binding by `userId` *is* binding by conversation, and
+it also gives the panel path (one stable bucket) something coherent to bind to. The cost is written down rather than
+discovered later: the MCP path collapses every caller into the literal `'mcp'`, so **MCP has no conversation to bind a
+scene to** - the same collapse that already applies to memory. Keying scenes per `userId` inside the *memory* file was
+rejected outright: that file is rewritten by an LLM during compression and fact extraction, and it can be quarantined
+wholesale, neither of which is an acceptable fate for something the user authored by hand.
+
+**The model cannot touch scenes, and that is the point.** There is no assistant tool that lists, reads, creates or
+binds them; scenes are administered by `weflow-cli scene …` and by one built-in chat command (`场景 <id>`, `场景 无`,
+`场景`). This is the same position the `隐私` built-in takes - a chat message must not be able to change configuration -
+and it is why `capabilities --json` reports `modelWritable: false` for the workflow. The built-in command is also the
+only prefix-matching command in the assistant, which is precisely the shape that silently eats ordinary sentences, so
+it is narrowed twice: the argument must name an existing scene id, and anything else (`场景切换怎么用`) falls through to
+the model untouched.
+
+**Reason:** the roadmap's P3 item asks for per-conversation control of the assistant rather than one global
+personality, and the three tiers are ordered by how much the user meant them: a binding is an explicit statement, a
+keyword is an inference from one message, and "last used" is only a convenience that keeps a habit from decaying. The
+refusal to break a tie is the same rule the codebase already applies to names - a coin flip between two scenes looks
+like the feature working while producing an answer nobody asked for.
+
+**Consequences:** `scene add`/`remove`/`bind`/`unbind`/`enable`/`disable` are two-phase (`--dry-run` then `--yes`),
+matching every other local mutation. The scene section enters the prompt wrapped by `frameLocalData`, because a
+scene's instruction is user-authored text that can contain `</weflow-local-data>`; scene ids are therefore validated
+against quotes and angle brackets before they reach the label, and sanitised again at render time. Verified end to end
+through the resident service with a stubbed model: the scene section appears in the system prompt, the trace carries a
+`note` step naming the scene and the tier that matched, a keyword tie produces no section plus an explanatory note, and
+a turn with no match produces no section at all.
+
+## D-056: A skill is material, not a plugin - it is referenced by path, it grants no tools, and a broken one is reported rather than skipped
+
+**Status:** Active
+
+**Decision.** The assistant can use skill packages: directories containing a `SKILL.md` with `name`/`description`
+frontmatter, scanned from a configurable list of roots (`skillDirs`, default `~/.claude/skills` and
+`~/.weflow-cli/skills`, overridable per-process by `WEFLOW_ASSISTANT_SKILL_DIRS`). Two read-only tools expose them -
+`list_skills` returns the catalogue (id, name, one-line description, version, state) and `read_skill` returns one
+body wrapped in `frameLocalData` - and the system prompt carries the catalogue so the model knows what exists. Skills
+are **not installed anywhere**: the prompt tells the model to read the file at its path, which is what the reference
+implementation does and is far cheaper than writing an installer per target agent. A referenced skill that is missing,
+disabled or unreadable is rendered as exactly that state, and the instruction is to continue and say which part was
+not done - never to silently drop the reference, and never to invent the capability.
+
+**This is the constrained form of the roadmap's plugin/adapter item (P4), and it is deliberately the smallest one that
+is still useful.** Its acceptance criteria were already written down - extensions must not read configuration,
+databases or arbitrary files, and must be individually disableable - and a prompt-time document satisfies all of them by
+construction: `read_skill` can only return a file named `SKILL.md` that a scan already produced, so an id like
+`../config.json` is not a path at all, and disabling is one config key (`skillDisabled`) or one line in the skill's own
+frontmatter (`enabled: false`). Nothing here executes skill content, and installing a skill does not add a tool to the
+model's table. D-048 stands: the only way to add a *capability* is still to edit this source tree.
+
+**Two rules were taken from real data rather than from the specification.** First, the id rule is **wider than
+Anthropic's**: that spec allows only lowercase letters, digits and single hyphens, which would reject five of the 28
+skills on the development machine (`clz_docx_to_mp`, `agent-dialog_management`, `clz_wechat_mp_ops`,
+`ylx_onehub_usage_monitor`, `ylx_research_evidence_synthesis`). Those are skills the user actually uses, so a
+non-conforming id is **warned about and kept**, and only the quoting characters that could escape a prompt label are
+refused. Second, the parser reads **only the leading `---` block** and understands block scalars: the same 28 files
+carry `categories:`/`created:`/`tags:` inside their bodies, so a whole-file scan reads body text as fields, and
+`description: >-` with indented continuation lines is how several of them are actually written - a naive line reader
+returns the two characters `>-` as the description.
+
+**Consequences:** symlinked skill directories are **followed** (a deliberate choice, not an oversight): developing a
+skill in a git checkout and linking it into `~/.claude/skills` is a normal workflow, the link is placed by the user and
+not by an extension, and the only file reachable through it is one named `SKILL.md`. A skill with no frontmatter block
+is reported as unreadable by `skill check` instead of being skipped - a skill that vanishes silently is indistinguishable
+from one that was never installed. Verified against the real 28 skills with `skill check`: 0 unreadable, 0 collisions, 5
+spec-deviation warnings, 1 self-disabled.
+
 ## D-055: The Vault's copy of an article is cleaned, the fetched original is not - and "which days does the copy run cover" was being decided by a marker that only one writer sets
 
 **Status:** Active

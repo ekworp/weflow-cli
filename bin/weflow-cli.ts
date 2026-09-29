@@ -23,6 +23,8 @@ import { WechatMessageService } from '../src/services/wechatMessageService.js'
 import { whitelistService, MAX_TEXT_LENGTH } from '../src/services/whitelistService.js'
 import { applyDerivedNtKeys, enableFavorites, detectFavDbPath } from '../src/services/initKeyService.js'
 import type { ChatSession } from '../src/types.js'
+import { disabledIds, describeSkill, readSkillBody, scanSkills, skillRoots, skillState } from '../src/services/assistantSkills.js'
+import { assistantScenes, validateSceneId, type Scene } from '../src/services/assistantScenes.js'
 
 const program = new Command()
 
@@ -282,7 +284,7 @@ program
       read: {
         sessions: { cli: 'sessions --json', mcp: 'wechat.list_sessions' },
         messages: { cli: 'messages <talker> --json', mcp: 'wechat.export_messages' },
-        contacts: { cli: 'contacts --json' },
+        contacts: { cli: 'contacts --json', mcp: 'wechat.list_contacts', localIdentifiersInModelContext: false },
         exports: {
           cli: 'export <talker> <json|txt|html|excel>',
           mcp: 'wechat.export_messages',
@@ -318,6 +320,31 @@ program
         dailyStats: { cli: 'daily-stats --json' },
         diagnostics: { cli: 'check --json' },
         todos: { cli: 'todos list --json' },
+        // 2026-09-29 三个界面对齐时新开的读取能力（D-058）。逐个写清它会不会出境，
+        // 因为其中两个会——`fetch_article` 白名单 + 逐跳复检，`search_public` 没有任何守卫。
+        review: { cli: 'review ...', mcp: 'wechat.get_review', writesReport: true },
+        concepts: { cli: 'wiki ...', mcp: 'wechat.get_concepts' },
+        articleFetch: {
+          cli: null,   // 没有对应的 CLI 命令：它本来就是为模型准备的读取能力
+          mcp: 'wechat.fetch_article',
+          network: true,
+          allowlist: 'https only, host must be exactly mp.weixin.qq.com',
+          redirectsReValidatedPerHop: true,
+          confirmationRequired: false,
+        },
+        publicArticleSearch: {
+          mcp: 'wechat.search_public',
+          network: true,
+          // **这条是如实的**：搜索词由模型决定、发到第三方搜索页，没有白名单也没有预览。
+          // 它在该项目的边界内是被明确接受的残余风险（D-058），这里不能写成"无出境"。
+          allowlist: null,
+          modelAuthoredQueryLeavesTheMachine: true,
+          confirmationRequired: false,
+        },
+        articleFormatting: { mcp: 'wechat.format_article', cli: null, writesNothing: true, network: false },
+        themes: { mcp: 'wechat.list_themes', writesNothing: true },
+        wikiLint: { cli: 'wiki lint --json', mcp: 'wechat.lint_wiki', readsLocalChat: false, writesNothing: true },
+        skillCheck: { cli: 'skill check --json', mcp: 'wechat.check_skills', writesNothing: true },
         awaiting: {
           cli: 'awaiting --yes',
           preview: 'awaiting --dry-run --json',
@@ -399,6 +426,33 @@ program
           preview: 'todos <done|undone|rm> <id> --dry-run --json',
           execute: 'todos <done|undone|rm> <id> --yes --json',
           confirmationRequired: true,
+        },
+        skills: {
+          list: 'skill list [--query <q>] --json',
+          show: 'skill show <id> --json',
+          check: 'skill check --json',
+          readOnly: true,
+          // 技能是**资料**，不是插件：助手只把它当提示词/正文读，不执行里面的脚本，
+          // 也不因为装了技能就多出任何工具（P4 验收标准：扩展读不到配置与数据库）。
+          installsAnything: false,
+          executesSkillCode: false,
+          grantsTools: false,
+          directories: 'skillDirs config (default: ~/.claude/skills, ~/.weflow-cli/skills)',
+          disable: 'config set skillDisabled <id,...>（技能自己也能写 enabled: false）',
+        },
+        scenes: {
+          list: 'scene list --json',
+          show: 'scene show <id> --json',
+          preview: 'scene <add|remove|enable|disable|bind|unbind> … --dry-run --json',
+          execute: 'scene <add|remove|enable|disable|bind|unbind> … --yes --json',
+          confirmationRequired: true,
+          // 场景只改**本机提示词预设**，不发消息、不读聊天、不调模型
+          readsLocalChat: false,
+          invokesAI: false,
+          sendsNothing: true,
+          stateLocation: 'local-user-config-dir',
+          stateSchema: 'weflow-scenes/v1',
+          modelWritable: false,
         },
         accessControlMutations: {
           preview: '<whitelist|blacklist> <add|rm> <target> --dry-run --json',
@@ -1011,6 +1065,7 @@ const configurableKeys = [
   'wereadApiKey',
   'assistantPrivacy', 'assistantWhitelist', 'assistantGroupWhitelist',
   'assistantGroupRequireMention', 'assistantFastRoute', 'assistantPanelUser', 'quickReplyContacts',
+  'skillDirs', 'skillDisabled',
   'dailySources', 'dailySourceCategories',
   'dailyExcludeTopics', 'dailyAiEnabled',
   'emoticonSeed',
@@ -5962,6 +6017,349 @@ dailyFavoritesCmd
   })
 
 program.commands.find(c => c.name() === 'daily')?.addCommand(dailyFavoritesCmd)
+
+// ==================== skill (本机技能包) ====================
+// 技能就是磁盘上的 `SKILL.md`，所以这里**没有安装/卸载**：读、看、体检三件事。
+// 体检（`check`）是最有用的一个 —— 它把"读不出来""不合规范""跨目录撞名"这些
+// 平时完全静默的问题一次报出来（少一个技能不会报错，只会少一个技能）。
+const skillCmd = program
+  .command('skill')
+  .description('本机技能包（SKILL.md）：列出、查看、体检')
+
+skillCmd
+  .command('list')
+  .description('列出扫描到的技能')
+  .option('--query <q>', '按关键词过滤（匹配 id、名称、说明、触发词）')
+  .option('--json', 'JSON 输出')
+  .action((opts) => {
+    const scan = scanSkills()
+    const disabled = disabledIds()
+    const q = String(opts.query || '').trim().toLowerCase()
+    const rows = scan.skills.filter(s => !q
+      || [s.id, s.name, s.description, ...s.triggers].some(x => String(x).toLowerCase().includes(q)))
+      .map(s => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        version: s.version,
+        state: skillState(s, disabled),
+        notes: s.notes,
+        // **不给路径**：这是机器输出，路径只有在用户明确要 `show` 时才出现
+      }))
+    if (opts.json) {
+      console.log(JSON.stringify({
+        success: true,
+        roots: skillRoots(),
+        missingRoots: scan.missingRoots,
+        total: rows.length,
+        skills: rows,
+      }))
+      return
+    }
+    if (!rows.length) {
+      console.log(chalk.gray(scan.skills.length ? `没有匹配「${opts.query}」的技能` : '没有扫描到技能'))
+      console.log(chalk.gray(`技能目录：${skillRoots().join('、')}`))
+      for (const dir of scan.missingRoots) console.log(chalk.gray(`  （不存在：${dir}）`))
+      return
+    }
+    for (const r of rows) {
+      const tag = r.state === 'disabled' ? chalk.gray('[已禁用] ') : ''
+      console.log(`${tag}${chalk.cyan(r.id)}${r.version ? chalk.gray(' v' + r.version) : ''}  ${r.name}`)
+      if (r.description) console.log(chalk.gray(`    ${r.description.slice(0, 100)}`))
+      for (const n of r.notes) console.log(chalk.yellow(`    ⚠ ${n}`))
+    }
+    console.log(chalk.gray(`\n共 ${rows.length} 个。正文：weflow-cli skill show <id>`))
+  })
+
+skillCmd
+  .command('show')
+  .argument('<id>', '技能 id')
+  .description('打印一个技能的 SKILL.md 正文')
+  .option('--json', 'JSON 输出')
+  .action((id, opts) => {
+    const body = readSkillBody(id)
+    if (!body.ok) {
+      if (opts.json) {
+        console.log(JSON.stringify({ success: false, code: 'SKILL_NOT_READABLE', error: body.text }))
+        process.exit(1)
+      }
+      console.log(chalk.red(body.text))
+      return
+    }
+    if (opts.json) {
+      const scan = scanSkills()
+      const info = scan.skills.find(s => s.id === id)
+      console.log(JSON.stringify({
+        success: true,
+        id,
+        name: info?.name ?? id,
+        version: info?.version ?? '',
+        truncated: !!body.truncated,
+        body: body.text,
+      }))
+      return
+    }
+    console.log(body.text)
+  })
+
+skillCmd
+  .command('check')
+  .description('体检：不可读的 SKILL.md、跨目录同名、非规范 id、被禁用的技能')
+  .option('--json', 'JSON 输出')
+  .action((opts) => {
+    const scan = scanSkills()
+    const disabled = disabledIds()
+    const disabledRows = scan.skills.filter(s => skillState(s, disabled) === 'disabled').map(s => s.id)
+    const warned = scan.skills.filter(s => s.notes.length).map(s => ({ id: s.id, notes: s.notes }))
+    const payload = {
+      success: true,
+      roots: skillRoots(),
+      missingRoots: scan.missingRoots,
+      total: scan.skills.length,
+      unreadable: scan.unreadable,
+      conflicts: scan.conflicts,
+      warned,
+      disabled: disabledRows,
+    }
+    if (opts.json) {
+      console.log(JSON.stringify(payload))
+      // 不可读 = 真出事了（有文件却读不出来），体检失败；警告与冲突只提示，不算失败
+      if (scan.unreadable.length) process.exit(1)
+      return
+    }
+    console.log(`技能目录：${skillRoots().join('、')}`)
+    for (const dir of scan.missingRoots) console.log(chalk.gray(`  不存在：${dir}`))
+    console.log(`扫描到 ${scan.skills.length} 个技能`)
+    if (scan.unreadable.length) {
+      console.log(chalk.red(`\n不可读 ${scan.unreadable.length} 个：`))
+      for (const u of scan.unreadable) console.log(chalk.red(`  ✗ ${u.file}\n    ${u.reason}`))
+    }
+    if (scan.conflicts.length) {
+      console.log(chalk.yellow(`\n跨目录同名 ${scan.conflicts.length} 个（靠前的目录胜出，不会覆盖）：`))
+      for (const c of scan.conflicts) console.log(chalk.yellow(`  ! ${c.id}\n    用：${c.winner}\n    忽略：${c.loser}`))
+    }
+    if (warned.length) {
+      console.log(chalk.yellow(`\n有提醒的 ${warned.length} 个：`))
+      for (const w of warned) for (const n of w.notes) console.log(chalk.yellow(`  · ${w.id}：${n}`))
+    }
+    if (disabledRows.length) console.log(chalk.gray(`\n已禁用：${disabledRows.join('、')}`))
+    if (!scan.unreadable.length && !scan.conflicts.length) console.log(chalk.green('\n没有不可读或撞名的技能'))
+  })
+
+// ==================== scene (会话场景) ====================
+const sceneCmd = program
+  .command('scene')
+  .description('会话场景：按会话生效的提示词预设（绑定 → 关键词 → 上次用过的）')
+
+/** 写场景是**本机文件写**，不是 python mutation：同样两段式，措辞照 todos 那条 */
+async function confirmSceneWrite(
+  opts: { dryRun?: boolean; yes?: boolean; json?: boolean },
+  preview: Record<string, unknown>,
+  message: string,
+  apply: () => { ok: boolean; reason?: string },
+): Promise<void> {
+  if (opts.dryRun) {
+    if (opts.json) console.log(JSON.stringify({ success: true, dryRun: true, ...preview }))
+    else console.log(chalk.cyan('预览：') + message)
+    return
+  }
+  if (!opts.yes) {
+    if (opts.json) {
+      console.log(JSON.stringify({
+        success: false,
+        code: 'CONFIRMATION_REQUIRED',
+        error: '先使用 --dry-run --json 预览，再由用户确认后使用 --yes --json 执行',
+      }))
+      process.exit(1)
+    }
+    const { confirmed } = await inquirer.prompt([{ type: 'confirm', name: 'confirmed', message, default: false }])
+    if (!confirmed) {
+      console.log(chalk.gray('已取消'))
+      return
+    }
+  }
+  const result = apply()
+  if (result.ok) assistantScenes.save()
+  const saved = result.ok && !assistantScenes.lastSaveError
+  if (opts.json) {
+    if (!result.ok) {
+      console.log(JSON.stringify({ success: false, code: 'SCENE_OPERATION_FAILED', error: result.reason }))
+      process.exit(1)
+    }
+    // 写失败要说出来：`save()` 不抛异常，代价是必须有地方把它讲出来
+    console.log(JSON.stringify({
+      success: saved,
+      ...(saved ? {} : { code: 'SCENE_SAVE_FAILED', error: assistantScenes.lastSaveError }),
+      ...preview,
+    }))
+    if (!saved) process.exit(1)
+    return
+  }
+  if (!result.ok) {
+    console.log(chalk.red(`✗ ${result.reason}`))
+    process.exit(1)
+  }
+  if (!saved) console.log(chalk.red(`⚠ 已改动内存，但落盘失败：${assistantScenes.lastSaveError}`))
+  else console.log(chalk.green('✓ 完成'))
+}
+
+sceneCmd
+  .command('list')
+  .description('列出所有场景')
+  .option('--json', 'JSON 输出')
+  .action((opts) => {
+    const scenes = assistantScenes.list()
+    if (opts.json) {
+      console.log(JSON.stringify({ success: true, total: scenes.length, scenes }))
+      return
+    }
+    if (!scenes.length) {
+      console.log(chalk.gray('还没有场景。加一个：'))
+      console.log(chalk.gray('  weflow-cli scene add --id 日报 --keywords 日报,推文 --instruction "按主题分组" --dry-run'))
+      return
+    }
+    for (const s of scenes) {
+      console.log(`${s.enabled ? chalk.cyan(s.id) : chalk.gray(s.id + ' [已停用]')}  ${s.name}`)
+      if (s.keywords.length) console.log(chalk.gray(`    关键词：${s.keywords.join('、')}`))
+      if (s.instruction) console.log(chalk.gray(`    ${s.instruction.split('\n')[0].slice(0, 80)}`))
+    }
+  })
+
+sceneCmd
+  .command('show')
+  .argument('<id>', '场景 id')
+  .description('打印一个场景的全部字段')
+  .option('--json', 'JSON 输出')
+  .action((id, opts) => {
+    const scene = assistantScenes.get(id)
+    if (!scene) {
+      if (opts.json) console.log(JSON.stringify({ success: false, code: 'SCENE_NOT_FOUND', error: `没有场景「${id}」` }))
+      else console.log(chalk.red(`没有场景「${id}」`))
+      process.exit(1)
+    }
+    if (opts.json) {
+      console.log(JSON.stringify({ success: true, scene }))
+      return
+    }
+    console.log(`id        ${scene.id}`)
+    console.log(`名称      ${scene.name}`)
+    console.log(`状态      ${scene.enabled ? '启用' : '已停用'}`)
+    console.log(`关键词    ${scene.keywords.join('、') || '（无）'}`)
+    console.log(`所需技能  ${scene.skills.join('、') || '（无）'}`)
+    console.log(`附加指令  ${scene.instruction || '（无）'}`)
+    if (scene.outputSpec) console.log(`输出规范  ${scene.outputSpec}`)
+  })
+
+sceneCmd
+  .command('add')
+  .description('新增一个场景')
+  .requiredOption('--id <id>', '场景 id（字母数字开头，可用 . _ -）')
+  .option('--name <name>', '显示名（默认用 id）')
+  .option('--keywords <list>', '关键词，逗号分隔')
+  .option('--instruction <text>', '附加指令（长文本用 --from-file）')
+  .option('--from-file <path>', '从文件读附加指令（多行中文走这条）')
+  .option('--output-spec <text>', '输出规范')
+  .option('--skills <list>', '所需技能 id，逗号分隔')
+  .option('--dry-run', '仅预览，不写入')
+  .option('--yes', '确认写入')
+  .option('--json', 'JSON 输出')
+  .action(async (opts) => {
+    const id = String(opts.id || '').trim()
+    const idError = validateSceneId(id)
+    if (idError) {
+      if (opts.json) console.log(JSON.stringify({ success: false, code: 'INVALID_SCENE_ID', error: idError }))
+      else console.log(chalk.red(idError))
+      process.exit(1)
+    }
+    let instruction = String(opts.instruction || '')
+    if (opts.fromFile) {
+      const path = String(opts.fromFile)
+      if (!existsSync(path)) {
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'FILE_NOT_FOUND', error: `读不到 ${path}` }))
+        else console.log(chalk.red(`读不到 ${path}`))
+        process.exit(1)
+      }
+      instruction = readFileSync(path, 'utf8')
+    }
+    const splitList = (v: unknown): string[] => String(v || '').split(/[,;]/).map(s => s.trim()).filter(Boolean)
+    const scene: Scene = {
+      id,
+      name: String(opts.name || '').trim() || id,
+      keywords: splitList(opts.keywords),
+      instruction,
+      outputSpec: String(opts.outputSpec || ''),
+      skills: splitList(opts.skills),
+      enabled: true,
+    }
+    await confirmSceneWrite(opts, { action: 'scene.add', scene: { ...scene, instruction: `(${instruction.length} 字)` } },
+      `确认新增场景「${scene.name}」？`, () => assistantScenes.add(scene))
+  })
+
+sceneCmd
+  .command('remove')
+  .argument('<id>', '场景 id')
+  .description('删除一个场景（连同指向它的绑定）')
+  .option('--dry-run', '仅预览，不删除')
+  .option('--yes', '确认删除')
+  .option('--json', 'JSON 输出')
+  .action(async (id, opts) => {
+    const scene = assistantScenes.get(id)
+    if (!scene) {
+      if (opts.json) console.log(JSON.stringify({ success: false, code: 'SCENE_NOT_FOUND', error: `没有场景「${id}」` }))
+      else console.log(chalk.red(`没有场景「${id}」`))
+      process.exit(1)
+    }
+    await confirmSceneWrite(opts, { action: 'scene.remove', id }, `确认删除场景「${scene.name}」？`,
+      () => { assistantScenes.remove(id); return { ok: true } })
+  })
+
+const toggleScene = (on: boolean) => async (id: string, opts: { dryRun?: boolean; yes?: boolean; json?: boolean }) => {
+  const scene = assistantScenes.get(id)
+  if (!scene) {
+    if (opts.json) console.log(JSON.stringify({ success: false, code: 'SCENE_NOT_FOUND', error: `没有场景「${id}」` }))
+    else console.log(chalk.red(`没有场景「${id}」`))
+    process.exit(1)
+  }
+  await confirmSceneWrite(opts, { action: on ? 'scene.enable' : 'scene.disable', id },
+    `确认${on ? '启用' : '停用'}场景「${scene.name}」？`,
+    () => ({ ok: assistantScenes.setEnabled(id, on) }))
+}
+
+sceneCmd.command('enable')
+  .argument('<id>', '场景 id')
+  .description('启用一个场景')
+  .option('--dry-run', '仅预览').option('--yes', '确认').option('--json', 'JSON 输出')
+  .action(toggleScene(true))
+
+sceneCmd.command('disable')
+  .argument('<id>', '场景 id')
+  .description('停用一个场景（它不再参与匹配）')
+  .option('--dry-run', '仅预览').option('--yes', '确认').option('--json', 'JSON 输出')
+  .action(toggleScene(false))
+
+sceneCmd
+  .command('bind')
+  .argument('<conversation>', '会话 id（微信里就是 conversationId；本机面板用它的记忆桶）')
+  .requiredOption('--scene <id>', '要绑定的场景 id')
+  .description('把某个场景固定绑到一个会话')
+  .option('--dry-run', '仅预览').option('--yes', '确认').option('--json', 'JSON 输出')
+  .action(async (conversation, opts) => {
+    const id = String(opts.scene || '').trim()
+    await confirmSceneWrite(opts, { action: 'scene.bind', conversation, scene: id },
+      `确认把场景「${id}」绑到会话 ${conversation}？`,
+      () => assistantScenes.bind(conversation, id))
+  })
+
+sceneCmd
+  .command('unbind')
+  .argument('<conversation>', '会话 id')
+  .description('解绑：这个会话回到按关键词自动挑')
+  .option('--dry-run', '仅预览').option('--yes', '确认').option('--json', 'JSON 输出')
+  .action(async (conversation, opts) => {
+    await confirmSceneWrite(opts, { action: 'scene.unbind', conversation },
+      `确认解绑会话 ${conversation}？`,
+      () => assistantScenes.bind(conversation, null))
+  })
 
 // ==================== assistant (第二大脑持久化 Agent) ====================
 const assistantCmd = program
