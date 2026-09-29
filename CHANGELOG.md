@@ -4,6 +4,30 @@ The npm package is published separately from GitHub. It may lag behind the `mast
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **The ball is never backed by anything now - the glow layer is gone entirely.** The user reported
+  it a second time: "the background is not transparent while it is thinking". That is the *same*
+  observation that led to the 2026-09-26 change, where an always-on glow was narrowed to
+  "only while there is a state" - so the remaining case was exactly the busy one. **The same
+  complaint arriving twice means the ask is not "draw less of it" but "not at all"**, so the whole
+  layer is removed: the element, the three state rules, the `radial-gradient`, `@property --hue`,
+  and the `drift` / `breathe` animations, including the two selectors still named inside
+  `prefers-reduced-motion` (the tests caught that leftover - a half-removal is what this change was
+  most likely to leave behind). The state light is not lost: all four states already have their own
+  face (thinking / sorry / tired / idle), and that is the primary signal.
+
+- **The pressed face is preloaded, because fetching it cost a frame.** The user reported that
+  clicking the ball flickers. Measured: a face served from the daemon takes **~15 ms** against a
+  16.7 ms frame at 60 Hz, and the faces are CSS backgrounds - fetched **when first used**, which is
+  the instant the ball is pressed. So the first press can render an empty face for a frame. The
+  repo's own comment had recorded the symptom before ("球在按下的一瞬间会闪成一张空图") and fixed
+  the whitelist at the time; the whitelist is correct, but the first use still waits for the
+  network. All five faces are now fetched when the page loads, inside the `hasShell` branch (the
+  browser fallback never shows the ball).
+
 ## 1.8.2
 
 ### Changed

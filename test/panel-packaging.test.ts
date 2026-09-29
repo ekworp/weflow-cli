@@ -394,33 +394,32 @@ test('球是**透明底**、且不带投影 —— 这两件事要一起改，�
 // 那边解了一次 PNG 才敢说"盘在"。这里不再重复断言尺寸与体积——同一件事两处断言，
 // 其中一处总会更弱，而更弱的那条会让人以为已经被保住了。
 
-test('球：空闲时只有猫，有状态时才亮光晕', () => {
-  // 2026-09-26 改。原先这层**一直**亮着（用户当初要的"会变动的背景"），但两个代价在用过
-  // 之后才显出来：球背后永远有一圈彩色圆盘，"这张图是透明的"根本看不出来；而它同时兼着
-  // 状态灯，一直亮着就等于没有状态灯——离线、忙碌、额度用完，球长得一模一样。
+test('球：背后什么都没有 —— 光晕那一层已整层去掉', () => {
+  // 三代历史，都记着，免得再来第四次：
+  // - 最早这层**一直**亮着（用户当初要的"会变动的背景"）；
+  // - 2026-09-26 缩成"只在有状态时画"，理由是"球背后永远有一圈彩色圆盘，'这张图是透明的'
+  //   根本看不出来"；
+  // - 2026-09-29 用户**又提了一次一模一样的话**（"思考的时候背景不是透明的"）——剩下的是
+  //   "忙"时那一圈。同一个意见提两次，说明要的不是"少画一点"，是**不要**。于是整层删掉。
   //
-  // 所以这条测试盯的是**新的**契约（不是把旧断言放宽）：空闲态不许画底，三个状态各自
-  // 必须真的有画出来的那条规则——只改 `--hue` 而不画背景，状态灯就是哑的。
+  // 这条盯的是**删干净**：元素、三条状态规则、驱动它的 `--hue`/`drift`/`breathe` 一个不留。
+  // 半删（比如留着 `@property --hue` 或那条 `radial-gradient`）是这次改动最容易留下的
+  // 状态，所以按"连驱动也一起没"来判，而不是只搜 `glow` 这个词。
   const html = code('index.html')
-  assert.match(html, /class="glow"/, '光晕那层还在（空闲时只是不画）')
-  assert.match(html, /class="face"/, '吉祥物那层')
-  const css = code('panel.css')
-  assert.match(css, /#ball \.glow\s*\{\s*background:\s*none/, '空闲态必须是干净的猫')
+  assert.doesNotMatch(html, /class="glow"/, '那层元素已经拿掉')
+  assert.match(html, /class="face"/, '吉祥物那层还在')
 
-  // **要按"光晕所在的规则"判，不能全文搜状态名。** 同一份 CSS 里
-  // `body.quota #ball .glow { animation: none }` 也是一条，于是"把 quota 从渐变选择器里
-  // 删掉"这种回归搜不出来——第一版断言就是这么漏的（变异检查实测到的：删掉 quota 那条，
-  // 测试照样绿）。所以这里先取出含径向渐变那条规则的选择器，再要求三个状态都在里面。
-  const gradientAt = css.indexOf('radial-gradient')
-  assert.ok(gradientAt > 0, '有状态时画的仍是那圈软边光晕')
-  const openBrace = css.lastIndexOf('{', gradientAt)
-  const gradientSelector = css.slice(css.lastIndexOf('}', openBrace) + 1, openBrace)
-  for (const state of ['busy', 'offline', 'quota']) {
-    assert.ok(new RegExp(`body\.${state} #ball \.glow`).test(gradientSelector),
-      `缺状态样式：${state} —— 要长在渐变那条规则的选择器里，不是只在别处提一句`)
-  }
-  assert.match(css, /@keyframes drift/)
-  assert.match(css, /@property --hue/, '色相要能被动画驱动')
+  const css = code('panel.css')
+  assert.doesNotMatch(css, /\.glow\b/, '不许再有 glow 的规则')
+  assert.doesNotMatch(css, /radial-gradient/, '那圈软边光晕的渐变也要去掉')
+  assert.doesNotMatch(css, /@property --hue/, '驱动色相的 @property 一并去掉')
+  assert.doesNotMatch(css, /@keyframes drift/, '色相动画一并去掉')
+  assert.doesNotMatch(css, /@keyframes breathe/, '呼吸动画一并去掉')
+
+  // **状态灯没有因此变哑**：四个状态各有一张脸，那才是主信号 —— 这条由上面那条
+  // `FOR_STATE` 用例盯着（它按"状态所在的规则"判，不全文搜状态名）。
+  const face = css.slice(css.indexOf('#ball .face'), css.indexOf('body.ball-happy'))
+  assert.match(face, /mascot\.png/, '空闲态：原图')
 })
 
 test('"减少动态效果"要照办 —— 常驻小球不能对着系统设置跳舞', () => {

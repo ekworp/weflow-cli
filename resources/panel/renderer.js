@@ -127,10 +127,11 @@ function renderEmptyState() {
 }
 
 /**
- * 球的背景跟着状态走（CSS 里 `body.busy/.offline/.quota #ball .glow`）。
+ * 球的**脸**跟着状态走（CSS 里 `body.busy/.offline/.quota #ball .face`）——
+ * 2026-09-29 之前还有一层会变色/呼吸的光晕，按用户要求整层去掉了（见 panel.css 那段注释）。
  *
  * 集中在一个函数里改：之前这些类名散在 ask()/refreshStatus() 各处的话，
- * 迟早有一条分支忘了摘掉 `busy`，球就一直亮着——那种"看起来在忙其实没在忙"比不显示更糟。
+ * 迟早有一条分支忘了摘掉 `busy`，球就一直挂着那张脸——那种"看起来在忙其实没在忙"比不显示更糟。
  * 传进来的每一项都**整体替换**，不做增量。
  */
 function setBallState(state) {
@@ -354,6 +355,21 @@ function toggleMode() {
 if (hasShell) {
   // `shell` 这个类决定球在不在场（见 panel.css）：浏览器降级那条路永远不该看见球
   document.body.classList.add('shell', 'mode-ball')
+  // **四张脸先取回来。**（2026-09-29 加的，用户报"点一下会闪一下"）
+  //
+  // 这些脸是 CSS 背景图，**什么时候用什么时候才去取**；而实测从守护进程取一张要
+  // **~15 毫秒**（60Hz 一帧是 16.7ms，正好一帧）。所以按下球的那一刻才开始取，第一帧
+  // 就是空的——看起来就是"闪一下"。仓库里那句老注释写过同一个症状
+  // （"球在按下的一瞬间会闪成一张空图"），当时的结论是静态白名单一张都不能漏；
+  // 现在白名单是对的，但**第一次用到仍然要等那一趟网络**。预取把它挪到页面刚加载时，
+  // 那时没人盯着球看。
+  //
+  // 放在 `hasShell` 里面：浏览器降级那条路根本不显示球，没必要替它取。
+  for (const face of ['mascot.png', 'mascot-happy.png', 'mascot-thinking.png',
+                      'mascot-sorry.png', 'mascot-tired.png']) {
+    const img = new Image()
+    img.src = '/panel/' + face
+  }
   ball.hidden = false
   collapse.hidden = false
 
