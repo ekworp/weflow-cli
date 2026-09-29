@@ -28,7 +28,29 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   network. All five faces are now fetched when the page loads, inside the `hasShell` branch (the
   browser fallback never shows the ball).
 
-## Unreleased
+- **Expanding the ball no longer makes it jump first.** The user described it precisely: click the
+  ball and it flashes off to one side, snaps back, and only then does the bubble open. The cause is
+  an ordering rule the collapse path already followed and the expand path did not: `setMode` resized
+  the window **first** and told the page **afterwards**. The ball is pinned to a *corner* of the
+  window, and which corner depends on the layout (`anchor-top` when the bubble opens upward,
+  `bubble-right` when it opens to the right) - so during those frames the ball was still drawn with
+  the default anchor, i.e. at a **different corner of the already-larger window**. Measured against
+  the real layout the vertical error is (bubble height - ball size), which is why it reads as a jump
+  rather than a flicker. Collapsing had the same trap and dodged it deliberately ("tell the page
+  first, then shrink, and wait at least one frame - otherwise a 76x76 window shows a sliver of the
+  bubble"); expanding now does the same: reposition the anchor, **wait for the page to actually
+  paint** (two `requestAnimationFrame`s via `executeJavaScript`, with a ceiling so a busy renderer
+  cannot stall the expansion), resize, and only then switch modes. It is two messages rather than
+  one because switching modes early shows the bubble inside the still-96px window - the same trap
+  from the other side.
+
+- **Clicking anywhere in the panel threw a `ReferenceError`.** `renderer.js` called
+  `closeQuickMenu()` on every document click and on Escape, and that function **does not exist** -
+  the menu is native now, opened by the main process outside the window, so there is no in-page menu
+  to close. The two calls were leftovers from the in-page implementation. Harmless in that a throw
+  inside one listener does not stop the others, but it fired on every click, and it was the
+  unhandled error jsdom kept reporting while the panel tests passed. Deleted, with the reason left
+  in place.
 
 ### Added
 

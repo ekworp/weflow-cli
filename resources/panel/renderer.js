@@ -358,15 +358,20 @@ const LAYOUT_CLASSES = ['bubble-left', 'bubble-right', 'anchor-top']
 function applyMode(payload) {
   const mode = payload && payload.mode === 'ball' ? 'ball' : 'chat'
   const side = payload && payload.side === 'right' ? 'right' : 'left'
-  document.body.classList.remove('mode-ball', 'mode-chat', 'closing', ...LAYOUT_CLASSES)
-  document.body.classList.add(mode === 'chat' ? 'mode-chat' : 'mode-ball')
+  // **只摆锚、不切形态**（`anchorOnly`）：展开分两步走，见 `main.cjs` 里"先摆锚、等页面
+  // 画完、再改窗口尺寸"那段。切形态会连带把气泡显出来，而那会儿窗口还是 96px ——
+  // 气泡恰好盖住球。所以第一步只动 `LAYOUT_CLASSES`。
+  const anchorOnly = !!(payload && payload.anchorOnly)
+  document.body.classList.remove(
+    ...(anchorOnly ? LAYOUT_CLASSES : ['mode-ball', 'mode-chat', 'closing', ...LAYOUT_CLASSES]))
+  if (!anchorOnly) document.body.classList.add(mode === 'chat' ? 'mode-chat' : 'mode-ball')
   if (mode === 'chat') {
     document.body.classList.add(side === 'right' ? 'bubble-right' : 'bubble-left')
     if (payload && payload.anchorY === 'top') document.body.classList.add('anchor-top')
     const height = Number(payload && payload.bubbleHeight)
     document.body.style.setProperty('--bubble-height',
       `${Number.isFinite(height) && height > 0 ? Math.round(height) : 560}px`)
-    input.focus()
+    if (!anchorOnly) input.focus()
   }
 }
 
@@ -482,10 +487,11 @@ if (hasShell) {
       }
     })()
   })
-  document.addEventListener('click', () => closeQuickMenu())
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeQuickMenu()
-  })
+  // 这里原来挂着两条 `closeQuickMenu()`（点了别处关菜单、Esc 关菜单）——**那是页内菜单时代的
+  // 旧址**：菜单现在是**原生**的（`openQuickMenu` 由主进程弹，画在窗口外面），没有"页内菜单"
+  // 可关，而 `closeQuickMenu` 这个函数**在文件里根本没有定义**。
+  // 后果是：点面板里任何地方、或按 Esc，都会抛一次未捕获的 ReferenceError（不致命，
+  // 但测试里 jsdom 会把它报出来，控制台也一直脏）。按"没有页内菜单"这个事实删掉。
 
   collapse.addEventListener('click', () => { requestMode('ball') })
 

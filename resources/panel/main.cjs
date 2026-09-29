@@ -283,7 +283,21 @@ async function buildWindow() {
  * （`fade` → 页面开始淡出；`done` → 页面换成球形态），因为窗口要等淡完才能缩，而页面
  * 要等窗口缩完才能把气泡摘掉——晚一帧就会在球那 96x96 的窗口里看见一条气泡的边。
  */
-function setMode(mode, opts) {
+/**
+ * 等渲染进程真的画完一帧。
+ *
+ * **不能只 `setTimeout`**：那是猜它画完了没有，机器忙的时候会猜错 —— 而猜错的后果就是退回成
+ * "球先闪一下"那个原始 bug。`executeJavaScript` 能把页面里 rAF 的结果等回来；再加一个上限，
+ * 页面没就绪时宁可漏一次（球闪一下）也不能把展开卡住。
+ */
+function nextPaint(target, timeoutMs = 120) {
+  const painted = target.webContents
+    .executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))')
+    .catch(() => 1)
+  return Promise.race([painted, new Promise((resolve) => setTimeout(resolve, timeoutMs))])
+}
+
+async function setMode(mode, opts) {
   if (!win) return
   const chat = mode === 'chat'
 
@@ -304,8 +318,25 @@ function setMode(mode, opts) {
     ballAnchor = { side: layout.side, anchorY: layout.anchorY }
     win.setAlwaysOnTop(false)     // 对话时不必压着别的窗口
     win.setSkipTaskbar(false)
+    win.setResizable(true)        // 展开后可调大小（要在 setContentBounds 之前，见函数开头那段）
+
+    // **先摆锚、等页面画完，最后才改窗口尺寸。**（2026-09-29 用户报"点一下球先闪到别处再闪回来"）
+    //
+    // 顺序反过来就是那个 bug：窗口先变大的那一两帧里，球还按**旧锚**画 —— 而球的锚在展开后
+    // 要换角（气泡在上方时球得钉在窗口上缘、气泡在右边时球得钉在左缘），默认锚是"右下"。
+    // 于是球被画在新窗口的另一个角上：实测纵向差 (气泡高 − 球高)，肉眼就是"跳一下再回来"。
+    //
+    // 折叠那条路早就是这么做的（先把 `panel:mode` 发出去，等一帧再缩窗口，见下面 shrink 那段），
+    // 展开这条漏了同一件事 —— 两半本来就该对称。
+    //
+    // 为什么要发**两条**消息：第一条只摆锚（`anchorOnly`），第二条才切形态。切早了气泡会显出来，
+    // 而那会儿窗口还是 96px，气泡正好盖住球 —— 那是同一个坑的另一面。
+    win.webContents.send('panel:mode', {
+      mode: 'chat', side: layout.side, anchorY: layout.anchorY,
+      bubbleHeight: layout.bubbleHeight, anchorOnly: true,
+    })
+    await nextPaint(win)
     win.setContentBounds(layout.window)
-    win.setResizable(true)        // 展开后可调大小
     // **展开之后要自己走到前面来。** 对话形态按设计不置顶，而"谁在最前面"此前完全靠运气：
     // 右键那条路尤其明显——球是置顶的、看得见，可原生菜单一关，Windows 可能把焦点还给了
     // 别的窗口，于是候选出在一个被压在后面的窗口里，用户的原话是"不知道消息返回到哪里了"。

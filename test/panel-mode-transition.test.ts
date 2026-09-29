@@ -93,6 +93,10 @@ async function boot(options: { reducedMotion?: boolean } = {}): Promise<Booted> 
     notifyChat: (side = 'left', anchorY = 'bottom', bubbleHeight = 560) => {
       modeListener?.({ mode: 'chat', side, anchorY, bubbleHeight })
     },
+    // 展开的第一步：只摆锚（`anchorOnly`），形态不动。主进程就是这么发的两段（见 main.cjs）。
+    notifyChatAnchorOnly: (side = 'left', anchorY = 'bottom', bubbleHeight = 560) => {
+      modeListener?.({ mode: 'chat', side, anchorY, bubbleHeight, anchorOnly: true })
+    },
     notifyFade: (fadeMs = CLOSE_FADE_MS) => { modeListener?.({ mode: 'ball', fadeMs }) },
     notifyShrunk: () => { modeListener?.({ mode: 'ball', done: true, fadeMs: 0 }) },
     clickBall: () => {
@@ -189,6 +193,25 @@ test('气泡方位照主进程说的挂类，翻边后不留旧类', async () =>
   assert.equal(app.bodyHas('anchor-top'), false)
   assert.ok(app.bodyHas('mode-ball'))
   app.window.close()
+})
+
+test('展开第一步：只摆锚、**不切形态**（切早了气泡会在 96px 窗口里盖住球）', async () => {
+  // 2026-09-29：用户报"点一下球先闪到别处再闪回来，然后气泡才展开"。成因是主进程**先改窗口、
+  // 后通知页面**——那一两帧里球还按默认锚（右下）画在新的、更大的窗口上，于是被画到另一个角。
+  // 修法是分两步：先只把锚摆好、等页面画完一帧，再改窗口尺寸，最后才切形态。
+  // 这条盯的是第一步的边界：**形态类不许动**（动了气泡就显出来，而那会儿窗口还是 96px）。
+  const env = await boot()
+  try {
+    env.notifyChatAnchorOnly('left', 'top', 480)
+    assert.equal(env.bodyHas('mode-ball'), true, '还是球形态：气泡必须继续藏着')
+    assert.equal(env.bodyHas('mode-chat'), false)
+    assert.equal(env.bodyHas('bubble-left'), true, '锚要摆好：气泡在左 → 球钉窗口右缘')
+    assert.equal(env.bodyHas('anchor-top'), true, '气泡在上方 → 球钉窗口上缘')
+    // 第二步（窗口已经放大之后）才切形态
+    env.notifyChat('left', 'top', 480)
+    assert.equal(env.bodyHas('mode-chat'), true, '第二步切过去，气泡这才展开')
+    assert.equal(env.bodyHas('mode-ball'), false)
+  } finally { env.window.close() }
 })
 
 test('气泡高度由主进程给（屏幕不够高时它变矮，球才不用动）', async () => {
