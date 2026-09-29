@@ -21,6 +21,17 @@ const { trayMenuTemplate } = require('./tray-menu.cjs')
 const { quickMenuTemplate } = require('./quick-menu.cjs')
 
 const ENDPOINT_FILE = join(os.homedir(), '.weflow-cli', 'assistant_endpoint.json')
+
+// 排查用：`WEFLOW_PANEL_DEBUG_PORT=9333` 时才开一个本机调试口（**默认关**，不设就没有）。
+//
+// 为什么需要它：「球看不见」这类问题我复现不了 —— 透明窗口**截图不可靠**（GDI 抓不到
+// DWM 合成的分层窗口，拍到的往往是它后面的东西），而窗口是不是隐藏、页面算出来的
+// `display`/`hidden` 是什么、有没有 JS 报错，全都在窗口**内部**。前两次只能靠"重启一下"
+// 糊过去，第三次就该有个能问的入口了。开放的是 127.0.0.1 上的 CDP，和 Chrome 的调试口同类。
+const DEBUG_PORT = Number(process.env.WEFLOW_PANEL_DEBUG_PORT || 0)
+if (Number.isInteger(DEBUG_PORT) && DEBUG_PORT > 0) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(DEBUG_PORT))
+}
 const POSITION_FILE = join(os.homedir(), '.weflow-cli', 'panel_position.json')
 const COOKIE_NAME = 'weflow_panel'
 /** 收起时气泡淡出多久。页面照着淡、主进程照着等——**只此一处**，两边不会走散。
