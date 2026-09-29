@@ -38,7 +38,7 @@ function candidates(): string[] {
 
 function canRun(cmd: string): boolean {
   try {
-    execFileSync(cmd, ['--version'], { stdio: 'ignore', timeout: 5000 })
+    execFileSync(cmd, ['--version'], { windowsHide: true, stdio: 'ignore', timeout: 5000 })
     return true
   } catch {
     return false
@@ -47,7 +47,7 @@ function canRun(cmd: string): boolean {
 
 function hasSqlcipher(cmd: string): boolean {
   try {
-    execFileSync(cmd, ['-c', 'import sqlcipher3'], { stdio: 'ignore', timeout: 10000 })
+    execFileSync(cmd, ['-c', 'import sqlcipher3'], { windowsHide: true, stdio: 'ignore', timeout: 10000 })
     return true
   } catch {
     return false

@@ -157,6 +157,15 @@ export function describeTurn(trace: TurnTrace): string[] {
 /**
  * 微信里 `轨迹` 那条要短。**不打印 userId**——它是账号标识，没必要出现在聊天里。
  */
+export function describeForPanel(trace: TurnTrace | undefined): { lines: string[]; reasoning: string } {
+  // 没有轨迹就**什么都不给**（面板据此不显示那一块），而不是给一句"还没记录"——
+  // 那句话在聊天里有用（用户主动问了「轨迹」），挂在每条回答下面只是噪音。
+  if (!trace) return { lines: [], reasoning: '' }
+  // 行直接复用 `describeForChat`：那份**已经面向用户**（微信发「轨迹」看的就是它），
+  // 而且它已经保证不打印 userId。再写一份迟早分叉。
+  return { lines: describeForChat(trace).split('\n'), reasoning: clipReasoning(trace.reasoning) }
+}
+
 export function describeForChat(trace: TurnTrace | undefined): string {
   if (!trace) return '还没有可看的轨迹：这条之前的记录不在本机（或这是第一条消息）。'
   const lines: string[] = [`上一轮（${(trace.at || '').slice(11, 19)}，${trace.elapsedMs}ms，往返 ${trace.rounds} 次）`]

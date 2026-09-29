@@ -304,6 +304,41 @@ main {
 
 /* 助手回答下的复制按钮。**常显**而不是 hover 才出现：这是个常驻小窗，
    鼠标常常不在它上面，hover 等于没有。做得很淡，不跟正文抢注意力。 */
+/* "思考过程"：挂在助手那条回答下面，**默认折叠**。
+   摊开会把每次回答都变成一屏日志，而不想看的人还得滚过它；想核对"它到底查没查"的人
+   点一下展开。视觉上刻意压暗压小——它是附注，不是回答的一部分。 */
+.thinking {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.thinking > summary {
+  cursor: pointer;
+  list-style: none;            /* 默认那个三角在深色底上很难看，自己画一个 */
+  user-select: none;
+}
+.thinking > summary::before {
+  content: '▸ ';
+  display: inline-block;
+  transition: transform .12s ease;
+}
+.thinking[open] > summary::before { transform: rotate(90deg); }
+.thinking > summary:hover { color: var(--text); }
+.thinking-line {
+  margin: 4px 0 0 14px;
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  opacity: .85;
+}
+/* 模型真返回的推理内容（多数模型不给，所以这一段常常根本不出现） */
+.thinking-reasoning {
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+  font-family: inherit;
+  opacity: .75;
+}
+
 .turn .copy {
   display: block;
   margin-top: 6px;

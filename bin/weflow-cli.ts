@@ -4520,6 +4520,7 @@ program
       }
 
       const child = spawn(getPythonCommand(), args, {
+        windowsHide: true,
         stdio: 'inherit',
         env: pythonProcessEnv(),
       })
@@ -5003,6 +5004,7 @@ program
         // 交互模式：使用 spawn 保持终端交互
         args.push('--interactive', '--top-k', String(topK))
         const child = spawn(getPythonCommand(), args, {
+          windowsHide: true,
           stdio: 'inherit',
           env: {
             ...pythonProcessEnv(opts.apiKey),
@@ -5783,6 +5785,7 @@ program
 
       dailyLog(chalk.cyan(`\n📰 正在生成 ${targetDate} 公众号日报${noAi ? '（AI 已关闭）' : ''}...\n`))
       const child = spawn(getPythonCommand(), args, {
+        windowsHide: true,
         stdio: opts.json ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         env: pythonProcessEnv(apiKey),
       })
@@ -5798,6 +5801,7 @@ program
       const dryRunArgs = [bizDaily, '--date', date, '--engine', 'local', '--dry-run']
       for (const source of opts.source || []) dryRunArgs.push('--source', source)
       const child = spawn(getPythonCommand(), dryRunArgs, {
+        windowsHide: true,
         stdio: opts.json ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         env: pythonProcessEnv(),
       })
@@ -6469,6 +6473,7 @@ program
     }
 
     const child = spawn(getPythonCommand(), [favServer, '--date', date, '--port', String(port)], {
+      windowsHide: true,
       stdio: 'inherit',
       env: pythonProcessEnv(),
     })
@@ -6571,12 +6576,12 @@ program
       const optionalDependencies = ['scrapling']
       let pythonVersion = ''
       try {
-        pythonVersion = execFileSync(getPythonCommand(), ['--version'], { encoding: 'utf8', timeout: 5000 }).trim()
+        pythonVersion = execFileSync(getPythonCommand(), ['--version'], { windowsHide: true, encoding: 'utf8', timeout: 5000 }).trim()
       } catch {}
       const dependencyStatus = (name: string): boolean => {
         if (!pythonVersion) return false
         try {
-          execFileSync(getPythonCommand(), ['-c', `import ${name}`], { stdio: 'ignore', timeout: 5000 })
+          execFileSync(getPythonCommand(), ['-c', `import ${name}`], { windowsHide: true, stdio: 'ignore', timeout: 5000 })
           return true
         } catch {
           return false
@@ -6632,7 +6637,7 @@ program
     const pythonCommand = getPythonCommand()
     let pythonOk = false
     try {
-      const pyVer = execFileSync(pythonCommand, ['--version'], { encoding: 'utf-8', timeout: 5000 }).trim()
+      const pyVer = execFileSync(pythonCommand, ['--version'], { windowsHide: true, encoding: 'utf-8', timeout: 5000 }).trim()
       console.log(chalk.white('Python: '), chalk.green(pyVer))
       pythonOk = true
     } catch {
@@ -6646,7 +6651,7 @@ program
       let allOk = true
       for (const dep of deps) {
         try {
-          execFileSync(pythonCommand, ['-c', `import ${dep}`], { stdio: 'ignore', timeout: 5000 })
+          execFileSync(pythonCommand, ['-c', `import ${dep}`], { windowsHide: true, stdio: 'ignore', timeout: 5000 })
           console.log(`  ${dep.padEnd(20)} ${chalk.green('✓')}`)
         } catch {
           console.log(`  ${dep.padEnd(20)} ${chalk.red('✗ 缺失')}`)
@@ -6667,7 +6672,7 @@ program
       console.log(chalk.white('\n可选依赖（提升抓取成功率）:'))
       for (const dep of optDeps) {
         try {
-          execFileSync(pythonCommand, ['-c', `import ${dep}`], { stdio: 'ignore', timeout: 5000 })
+          execFileSync(pythonCommand, ['-c', `import ${dep}`], { windowsHide: true, stdio: 'ignore', timeout: 5000 })
           console.log(`  ${dep.padEnd(20)} ${chalk.green('✓')}`)
         } catch {
           console.log(`  ${dep.padEnd(20)} ${chalk.gray('○ (pip install scrapling)')}`)
@@ -6924,6 +6929,7 @@ async function showInteractiveMenu() {
       const pipeline = join(resolvePackageRoot(), 'scripts', 'pipeline.py')
       console.log(chalk.cyan(`\n📰 正在生成 ${dateStr} 公众号日报...\n`))
       const child = spawn(getPythonCommand(), [pipeline, '--date', dateStr, '--interest', 'AI', '--skip-wiki'], {
+        windowsHide: true,
         stdio: 'inherit',
         env: pythonProcessEnv(apiKey),
       })

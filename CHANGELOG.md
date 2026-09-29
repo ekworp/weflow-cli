@@ -28,6 +28,41 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   network. All five faces are now fetched when the page loads, inside the `hasShell` branch (the
   browser fallback never shows the ball).
 
+## Unreleased
+
+### Added
+
+- **The panel shows what the assistant did, collapsed under each reply.** The user asked for the
+  thinking process to be visible but not in the way - so each answer now carries a `<details>` block
+  ("思考过程") that is **closed by default**: routing decision, any guard that pushed the turn back,
+  each tool call with its argument summary and byte count, the round count and the stop reason. The
+  lines come from the **same** `describeForChat` that the WeChat side's 「轨迹」 command prints, so the
+  two surfaces cannot drift into disagreeing about what happened - and that also means the panel
+  inherits the guarantee that `userId` never appears. When the model actually returns
+  `reasoning_content` it is appended (clipped, marked when cut); the current default model returns
+  none, and the trace says so rather than pretending.
+
+  One thing had to be defended: **the trace is an accessory, the reply is the result.** The first
+  version called the lookup unguarded, and the panel test went red immediately - its stub service
+  had no such method, so every ask became a 500. A throw there would have cost the user their answer
+  to gain nothing, so it is caught, and the test pins both halves (the trace comes through, and a
+  failing trace still returns the reply).
+
+### Fixed
+
+- **Every subprocess now runs without a console window.** The user reported a black command-line
+  window popping up while the assistant was thinking and using tools. The cause was not one bad
+  call: the daemon itself is started with `detached` + `stdio: 'ignore'` + `windowsHide`, so it has
+  **no console** - and Windows therefore creates a fresh one for every child it spawns unless that
+  call site says `windowsHide: true`. Fourteen of the fifteen sites did not, including the assistant
+  tool path itself (`pythonBridge`) and the Python probes (`--version`, `import sqlcipher3`).
+
+  Nothing was watching that before, which is why it was missed everywhere at once, so a test now
+  requires it: it walks `src/`, `bin/` and `resources/panel/`, strips comments (a comment that
+  mentions `spawn(` is not a call - that tripped the first draft), and fails listing any call site
+  without `windowsHide`. Writing the scan found a fifteenth site that a hand pass had missed
+  (`bin/weflow-cli-electron.cjs`), and the mutation check confirms removing one is caught.
+
 ## 1.8.2
 
 ### Changed

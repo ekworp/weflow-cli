@@ -125,6 +125,40 @@ test('微信那条轨迹：还没有记录时如实说，而不是给一段空�
   assert.match(trace.describeForChat(undefined), /还没有可看的轨迹/)
 })
 
+// --------------------------------------------------------------- 面板那份
+
+test('面板那份：与微信同一套行，且同样不出现 userId', () => {
+  // 面板把"思考过程"折叠着挂在每条回答下面，用的就是这一份。**必须是同一套行**——
+  // 两处各写一份格式，迟早会出现"微信里显示查了会话、面板里显示没查"这种互相矛盾。
+  const got = trace.describeForPanel(turn({
+    steps: [{ kind: 'tool', name: 'get_messages', args: 'contact=甲', bytes: 100, produced: true }],
+  }))
+  assert.deepEqual(got.lines, trace.describeForChat(turn({
+    steps: [{ kind: 'tool', name: 'get_messages', args: 'contact=甲', bytes: 100, produced: true }],
+  })).split('\n'))
+  assert.ok(got.lines.some((l) => l.includes('get_messages')), '工具那一步要在里面')
+  assert.ok(!got.lines.join('\n').includes('o9cq80-example-id'), '面板也不该拿到 userId')
+})
+
+test('面板那份：没有轨迹时给空数组而不是一句"还没记录"', () => {
+  // 那句"还没有可看的轨迹"在聊天里有用（用户主动问了「轨迹」），挂在每条回答下面只是噪音。
+  // 页面据此**不显示那一块**，所以这里必须是空的。
+  assert.deepEqual(trace.describeForPanel(undefined), { lines: [], reasoning: '' })
+})
+
+test('面板那份：模型真返回的推理原文附上，没有就是空串', () => {
+  assert.equal(trace.describeForPanel(turn()).reasoning, '', '默认模型不返回，别编')
+  const got = trace.describeForPanel(turn({ reasoning: '先看会话再定', reasoningChars: 7 }))
+  assert.equal(got.reasoning, '先看会话再定')
+})
+
+test('面板那份：过长的推理要截断并留记号', () => {
+  // 与终端那份同一个 `clipReasoning`：截断而不留记号，读起来就像"它想完了"。
+  const got = trace.describeForPanel(turn({ reasoning: '啊'.repeat(4000), reasoningChars: 4000 }))
+  assert.ok(got.reasoning.length < 4000, '不能把整段推理挂到面板上')
+  assert.match(got.reasoning, /…$/, '截断要留记号')
+})
+
 // --------------------------------------------------------------- 落盘
 
 test('记录一轮后能读回来，且顺序是新的在前', () => {

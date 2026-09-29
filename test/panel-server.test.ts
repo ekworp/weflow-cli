@@ -37,7 +37,7 @@ interface Stub {
 }
 
 /** 助手桩：`ask` 可配置成正常回、挂住不回、或直接抛 */
-function stubService(opts: { hang?: boolean; outcome?: any } = {}): { service: any; stub: Stub } {
+function stubService(opts: { hang?: boolean; outcome?: any; trace?: any } = {}): { service: any; stub: Stub } {
   const stub: Stub = { calls: [], hang: opts.hang, outcome: opts.outcome }
   if (opts.hang) {
     let release!: () => void
@@ -48,6 +48,9 @@ function stubService(opts: { hang?: boolean; outcome?: any } = {}): { service: a
   const service: any = {
     isChannelActive: () => false,
     quotaState: () => ({ used: 3, limit: 100 }),
+    // 真实接口上就有它（`/api/ask` 拿它给"思考过程"）。桩**不能省**——省了的话
+    // 服务端那一句就会抛，而它抛的后果是整条 ask 变 500（第一版正是这么被测试抓到的）。
+    recentTrace: () => opts.trace,
     ask: async (bucket: string, text: string) => {
       stub.calls.push({ bucket, text })
       if (stub.outcome && typeof stub.outcome.then === 'function') return stub.outcome
@@ -57,13 +60,14 @@ function stubService(opts: { hang?: boolean; outcome?: any } = {}): { service: a
   return { service, stub }
 }
 
-async function boot(opts: { hang?: boolean; outcome?: any } = {}, log?: string[]) {
+async function boot(opts: { hang?: boolean; outcome?: any; trace?: any } = {}, log?: string[]) {
   const { service, stub } = stubService(opts)
   const server = await startPanelServer({
     service, memoryBucket: 'wxid_me', channel: 'local', port: 0,
     onLog: log ? (l: string) => log.push(l) : undefined,
   })
-  return { server, stub, base: `http://127.0.0.1:${server.port}`, token: server.endpoint.token }
+  // 也把 service 交出去：有用例要现场把某个方法换成会抛的，验证「附加物坏了答复还在」
+  return { server, service, stub, base: `http://127.0.0.1:${server.port}`, token: server.endpoint.token }
 }
 
 function ask(base: string, token: string | null, body: unknown, headers: Record<string, string> = {}) {
@@ -203,6 +207,42 @@ test('问一句：把文本交给助手，带回答复，并说明用的是哪�
     assert.equal(body.reply, '收到')
     assert.equal(body.memoryBucket, 'wxid_me', '要把桶名带回去，界面才好显示')
     assert.deepEqual(stub.calls, [{ bucket: 'wxid_me', text: '我最近有什么待办？' }])
+  } finally { await server.close() }
+})
+
+test('答完之后把这一轮的轨迹带回去（页面折叠显示成"思考过程"）', async () => {
+  // 2026-09-29 加的：用户要"显示思考过程（默认折叠，可展开）"。轨迹与微信里发「轨迹」
+  // 看到的**是同一份**（同一个格式函数），所以两处不会各说各话。
+  // 桩要给一条**真的 TurnTrace**（服务端用 `describeForPanel` 把它格式化成行），
+  // 不是格式化之后的样子 —— 第一版就给错了形状，拿到的行是格式化后的垃圾。
+  const trace = {
+    at: '2026-09-29T12:00:00.000Z', userId: 'wxid_me', questionChars: 8,
+    steps: [{ kind: 'tool', name: 'get_messages', args: 'contact=甲', bytes: 100, produced: true }],
+    rounds: 2, toolCalls: 1, reasoning: '先看会话再定', reasoningChars: 7,
+    answerChars: 12, stop: 'answered', elapsedMs: 1200,
+  }
+  const { server, base, token } = await boot({ trace })
+  try {
+    const res = await ask(base, token, { text: '我和甲聊了什么？' })
+    const body: any = await res.json()
+    assert.equal(res.status, 200)
+    assert.ok(body.trace.lines.some((l: string) => l.includes('get_messages')), '工具那一步要在里面')
+    assert.equal(body.trace.reasoning, '先看会话再定')
+    assert.ok(!JSON.stringify(body.trace).includes('wxid_me'), '面板也不该拿到 userId')
+  } finally { await server.close() }
+})
+
+test('轨迹取不到时**照样回答复** —— 附加物坏了不能把结果弄丢', async () => {
+  // 第一版没有这层保护：桩服务没有 `recentTrace`，于是每条 ask 都成了 500。
+  // 轨迹是附加物、答复才是这一轮的结果，所以那一句必须 catch 住。
+  const { server, service, base, token } = await boot()
+  ;(service as any).recentTrace = () => { throw new Error('轨迹模块炸了') }
+  try {
+    const res = await ask(base, token, { text: '问一句' })
+    const body: any = await res.json()
+    assert.equal(res.status, 200, '答复必须照常回来')
+    assert.equal(body.reply, '收到')
+    assert.deepEqual(body.trace, { lines: [], reasoning: '' }, '拿不到轨迹就给空的，页面不显示那一块')
   } finally { await server.close() }
 })
 

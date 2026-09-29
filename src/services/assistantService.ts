@@ -359,6 +359,16 @@ export class AssistantService {
   private lastReasoning = ''
   /** 每个用户最近一轮的轨迹：微信里发「轨迹」看的就是它（跨进程的历史在文件里，见 assistantTrace） */
   private traces = new Map<string, TurnTrace>()
+
+  /**
+   * 最近一轮的轨迹，给**本机面板**用（`/api/ask` 回答完之后，面板把"思考过程"折叠着挂上去）。
+   *
+   * 与微信里那条「轨迹」是**同一个来源**（`this.traces`），所以两处不会各说各话。
+   * 只在本进程内存里：跨进程的历史在 `assistantTrace` 的文件里，面板要的是"刚刚那一轮"。
+   */
+  recentTrace(userId: string): TurnTrace | undefined {
+    return this.traces.get(userId)
+  }
   /**
    * 本轮已经调过的「工具名 + 参数」。同一条消息里重复调用**同样的参数**不会得到新信息，
    * 而实测（评测的 ambiguous-contact 用例）模型会连着调三次 list_sessions。

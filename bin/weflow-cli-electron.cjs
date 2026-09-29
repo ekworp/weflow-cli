@@ -46,6 +46,8 @@ const electronArgs = ['-e', script, '--', ...args];
 
 try {
   execFileSync(electronPath, electronArgs, {
+    // 从无控制台的父进程（守护进程/托盘）跑起来时，不写这个 Windows 会弹一个命令行窗口
+    windowsHide: true,
     stdio: 'inherit',
     env,
     cwd: process.cwd()

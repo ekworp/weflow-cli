@@ -85,6 +85,40 @@ function addTurn(who, text) {
 }
 
 /**
+ * 把这一轮的**轨迹**折叠着挂在回答下面（服务端 `/api/ask` 一并给回来）。
+ *
+ * **默认折叠**是有意的：轨迹多数时候是"我查了什么"，摊开会把每次回答都变成一屏日志，
+ * 而不想看的人还得滚过它。想核对"它到底查没查、查的是什么"的人点一下展开。
+ * 内容与微信里发「轨迹」看到的是同一份（同一个格式函数），所以两处不会各说各话。
+ *
+ * 全用 `textContent`（不用 innerHTML）：轨迹里有工具参数，是**用户数据**。
+ */
+function addThinking(turn, trace) {
+  const lines = trace && Array.isArray(trace.lines)
+    ? trace.lines.filter((line) => typeof line === 'string' && line.trim()) : []
+  const reasoning = trace && typeof trace.reasoning === 'string' ? trace.reasoning.trim() : ''
+  if (!lines.length && !reasoning) return      // 没有轨迹就什么都不挂（不是显示一个空壳）
+  const details = document.createElement('details')
+  details.className = 'thinking'
+  const summary = document.createElement('summary')
+  summary.textContent = '思考过程'
+  details.appendChild(summary)
+  for (const line of lines) {
+    const row = document.createElement('div')
+    row.className = 'thinking-line'
+    row.textContent = line
+    details.appendChild(row)
+  }
+  if (reasoning) {
+    const row = document.createElement('div')
+    row.className = 'thinking-line thinking-reasoning'
+    row.textContent = reasoning
+    details.appendChild(row)
+  }
+  turn.appendChild(details)
+}
+
+/**
  * 还没聊过时的开头。**空白是这里最糟的状态**：第一次打开的人看到一整片黑，
  * 既不知道它能干什么，也看不出它是活的（下面没有正在输入之类的动静）。
  * 例子做成可点的按钮——点一下就是真的问一句，走的还是同一条提交路径。
@@ -244,7 +278,8 @@ async function ask(text, display = null) {
     pending.remove()
 
     if (res.ok && body.ok) {
-      addTurn('it', body.reply)
+      const turn = addTurn('it', body.reply)
+      addThinking(turn, body.trace)
       // 配额用尽时服务端回的是一句**回答**（不是错误），所以上面照常显示；
       // 这里只是把状态条上的数字刷新一下
       void refreshStatus()

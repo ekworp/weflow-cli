@@ -45,6 +45,7 @@ function realRunner(scriptPath: string, args: string[],
                     options: { timeoutMs: number; stdin?: string; env?: Record<string, string> }): Promise<ScriptRun> {
   return new Promise((resolve, reject) => {
     const child = spawn(getPythonCommand(), [scriptPath, ...args], {
+      windowsHide: true,
       // 用户输入走**环境变量**而不是 argv：这是仓库写进测试的隐私纪律（进程列表里看不到正文）
       env: createPythonProcessEnv(options.env ?? {}),
       stdio: ['pipe', 'pipe', 'pipe'],

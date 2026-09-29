@@ -34,6 +34,7 @@ import {
   writeEndpoint, type PanelChannelMode, type PanelEndpoint,
 } from './endpoint.js'
 import type { AssistantService, TurnOutcome } from '../services/assistantService.js'
+import { describeForPanel } from '../services/assistantTrace.js'
 import { privacyGate } from '../services/assistantPrivacy.js'
 import { configService } from '../services/configService.js'
 import { resolvePackageRoot } from '../utils/packageRoot.js'
@@ -346,7 +347,20 @@ export async function startPanelServer(options: PanelServerOptions): Promise<Pan
         }
         const outcome = raced.value
         if (outcome.status === 'replied' || outcome.status === 'quota-exceeded') {
-          json(res, 200, { ok: true, status: outcome.status, reply: outcome.text, memoryBucket })
+          // 顺带把这一轮的**轨迹**给页面：它折叠着显示成"思考过程"（默认收起）。
+          // 与微信里发「轨迹」看到的**是同一份**（都来自 `traces`，同一个 `describeForChat` 格式，
+          // 同样不含 userId）。没有轨迹就给空对象——页面据此不显示那一块。
+          //
+          // **它出错不许把答复弄丢**：轨迹是附加物，答复才是这一轮的结果。所以这里 catch 住——
+          // 顶多少一块"思考过程"，不能因为附加物把 200 变成 500（第一版没包，测试立刻抓到：
+          // 桩服务没有 `recentTrace`，于是每条 ask 都成了 500）。
+          let trace = { lines: [] as string[], reasoning: '' }
+          try {
+            trace = describeForPanel(service.recentTrace(memoryBucket))
+          } catch { /* 附加物失败不影响答复 */ }
+          json(res, 200, {
+            ok: true, status: outcome.status, reply: outcome.text, memoryBucket, trace,
+          })
           return
         }
         if (outcome.status === 'not-running') {
