@@ -89,6 +89,15 @@ export interface EvalCase {
      * 时就是为了能区分这两者）。
      */
     argsMatch?: RegExp
+    /**
+     * 这些工具**一旦被调用就必须什么都没写成**（轨迹里那次调用的 `produced` 为 false）。
+     *
+     * 为什么不断「别调它」：写工具自己会拒绝不该写的（比如两条待办都匹配上时「只认唯一」），
+     * 而「先调、由工具拒绝」与「先问用户」**两条路都是安全的**。断「别调」会把其中一条好行为判红——
+     * 2026-09-30 实测：模型先查、看到两条、然后问用户是哪一条（教科书式的对），
+     * 而我先前写的 `mustCall: ['set_todo_status']` 把它判成了失败。真正该守的底线是**没有发生改动**。
+     */
+    neverSucceeds?: string[]
   }
 }
 
@@ -226,7 +235,7 @@ export const EVAL_CASES: EvalCase[] = [
     // 另一类库：整理过的概念页，不是聊天
     question: '关于扩散模型，我整理过哪些概念页？',
     expect: { mustCall: ['search_knowledge'], maxTools: 6, toolBudget: 3 },
-  },
+  },
   // ------------------------------------------------------------- 知识库（**本机真实数据**）
   //
   // 这三条与别的不一样：会话、消息、收藏都能合成，**概念页不能** —— `search_knowledge`
@@ -342,6 +351,65 @@ export const EVAL_CASES: EvalCase[] = [
       answerShouldMatch: /提取|extract/,
     },
   },
+  // ------------------------------------------- 2026-09-30 补：新工具的覆盖（此前一条断言都没有）
+  //
+  // 这十个工具是 2026-09-30 与 MCP 对齐时加进来的，但评测里**一个都没断言过**
+  // （只有 `list_contacts` 被别的用例顺带碰到）。代价是：工具面从 21 涨到 31 之后，
+  // "多出来那些会不会抢走本该给旧工具的活"没有任何东西盯着。下面这几条就是补这个缺口。
+  //
+  // **两条出网的工具故意不在这里**（`fetch_article` / `search_public`）：评测器把
+  // `globalThis.fetch` 包了一层，除 `/chat/completions` 外的出网一律抛错
+  // （"评测里出现第二个出口就说明有地方漏了"）。那是有意的设计，不是遗漏。
+  // **`get_concepts` 也暂时没测**：它读 `VAULT_WIKI_DIRS` 这个**模块常量**，没有注入点，
+  // 临时家目录里必然为空。要测它得先给工具或评测器加一个目录注入——`get_review` 同理
+  // （它有 `WEFLOW_ASSISTANT_REVIEWS_DIR`，但评测器目前不会设环境变量）。记在这里，不是忘了。
+
+  {
+    id: 'format-for-wechat',
+    // 两个纯本地工具（不联网、不写盘），最便宜也最能看出路由：得先知道有哪些主题，再拿主题去排版
+    question: '把这段话排版成能直接粘进公众号的样子：今天去河边跑了五公里，风很大。',
+    expect: { mustCall: ['format_article'], maxTools: 6, toolBudget: 3 },
+  },
+  {
+    id: 'themes-listed',
+    // 只要清单。顺手去排版是多余动作，所以这里盯一条"不该做"的底线
+    question: '公众号排版有哪些主题可选？',
+    expect: { mustCall: ['list_themes'], mustNotCall: ['format_article'], maxTools: 6, toolBudget: 3 },
+  },
+  {
+    id: 'skills-health',
+    // 与 `list_skills` 的区分：问"有没有问题"该走体检，不是列清单
+    question: '我的技能包有没有问题？',
+    expect: { mustCall: ['check_skills'], maxTools: 6, toolBudget: 3 },
+  },
+  {
+    id: 'wiki-health',
+    // 与 `search_knowledge` 的区分：问"有没有坏链/孤儿页"该走体检，不是去搜内容
+    question: '我的知识库有没有坏链接或者没人引用的孤儿页？',
+    expect: { mustCall: ['lint_wiki'], maxTools: 6, toolBudget: 3 },
+  },
+  {
+    id: 'todo-done',
+    // **写工具**的正面路径：清单只有一条，让它标记完成。
+    // 脚本桩对每次调用返回同一份 stdout（桩不区分参数），所以"写"那一步也会拿到这份 JSON，
+    // 也就是**这条用例证明不了"待办文件真的变了"**——那是
+    // `test/assistant-tools-branches.test.ts` 的活（注入假模型、确定性）。
+    // 这里盯的是"它有没有去调那个写工具、参数对不对"（`argsMatch` 从轨迹读）。
+    // `status=done` 用精确写法：写成 `done` 会连 `undone` 一起匹配上。
+    question: '把「买牛奶」那条待办标记成已完成。',
+    scripts: { 'extract_todos.py': { stdout: JSON.stringify({ items: [{ id: 't1', task: '买牛奶', status: 'pending' }], extracted: true, count: 1 }) } },
+    expect: { mustCall: ['set_todo_status'], maxTools: 6, toolBudget: 3, argsMatch: /status=done(\s|,|$)/ },
+  },
+  {
+    id: 'todo-ambiguous-refused',
+    // **写工具的安全底线**：两条都含"牛奶"时，唯一正确的动作是**拒绝**（工具自己"只认唯一"）。
+    // 断的是 `toolEmpty`——那次调用什么都没产出（本仓约定：括号开头 = 没有产出内容）。
+    // **不断"答复里必须有某个词"**：那是措辞、会飘（`todos-never-extracted` 那条吃过这个亏）。
+    // 也不断 `mustNotCall`：模型**应该**去调那个工具、由工具拒绝，而不是靠模型自己猜该不该写。
+    question: '把「牛奶」那条待办标记成已完成。',
+    scripts: { 'extract_todos.py': { stdout: JSON.stringify({ items: [{ id: 't1', task: '买牛奶', status: 'pending' }, { id: 't2', task: '订牛奶', status: 'pending' }], extracted: true, count: 2 }) } },
+    expect: { mustCall: ['get_todos'], maxTools: 6, toolBudget: 3, neverSucceeds: ['set_todo_status'] },
+  },
 ]
 
 export interface Observation {
@@ -357,6 +425,8 @@ export interface Observation {
   traceArgs: string[]
   /** 本轮每次工具调用有没有给出内容（与 `traceArgs` 一一对应） */
   traceProduced: boolean[]
+  /** 每次工具调用的**名字与产出**（同源）。`neverSucceeds` 要按名字判，所以不能只留两个平行数组 */
+  traceSteps: Array<{ name: string; produced: boolean }>
   /** 顶层异常（有的话，工具与答复都不作数） */
   error?: string
   elapsedMs: number
@@ -377,6 +447,14 @@ export function judge(spec: EvalCase, observed: Observation): string[] {
   }
   for (const tool of spec.expect.mustNotCall ?? []) {
     if (called.includes(tool)) problems.push(`不该调用 ${tool}`)
+  }
+  // 「调了但没写成」：写工具的底线。判定读**轨迹里的 produced**，不看模型的措辞。
+  for (const tool of spec.expect.neverSucceeds ?? []) {
+    // `?? []` 不是客套：`test/assistant-eval.test.ts` 的 `observed()` 助手不造 `traceSteps`，
+    // 直接 `.filter` 会在那边炸成 TypeError（而这与"判定对不对"无关，是最难查的那种红）。
+    const steps = observed.traceSteps ?? []
+    const wrote = steps.filter(x => x.name === tool && x.produced)
+    if (wrote.length) problems.push(`${tool} 实际写成了（那次调用给出了内容），这条不该发生`)
   }
   if (spec.expect.maxTools !== undefined && called.length > spec.expect.maxTools) {
     problems.push(`工具调用 ${called.length} 次，超过上限 ${spec.expect.maxTools}（${called.join('、')}）`)
@@ -476,6 +554,17 @@ export function readAuditSince(offset: number): { tools: string[]; cloudCalls: n
  * 轨迹读不出来就回空——那会让 argsMatch 失败，而不是静默通过。
  */
 /** 最后一轮里每次工具调用**有没有产出内容**（与 `readLastTraceArgs` 同源）。 */
+/** 最后一轮每次工具调用的名字与产出。与 `readLastTraceProduced` 同源，多了名字。 */
+export function readLastTraceSteps(): Array<{ name: string; produced: boolean }> {
+  try {
+    const lines = readFileSync(TRACE_FILE, 'utf8').split('\n').filter(Boolean)
+    const last = JSON.parse(lines[lines.length - 1])
+    return (last.steps ?? []).filter((s: any) => s.kind === 'tool')
+      .map((s: any) => ({ name: String(s.name ?? ''), produced: Boolean(s.produced) }))
+  } catch {
+    return []
+  }
+}
 export function readLastTraceProduced(): boolean[] {
   try {
     const lines = readFileSync(TRACE_FILE, 'utf8').split('\n').filter(Boolean)
@@ -606,6 +695,7 @@ export async function runCase(spec: EvalCase, userId: string): Promise<CaseResul
   const observed: Observation = { tools, cloudCalls, answer, facts, error,
                                  traceArgs: readLastTraceArgs(),
                                  traceProduced: readLastTraceProduced(),
+                                 traceSteps: readLastTraceSteps(),
                                  elapsedMs: Date.now() - started }
   return { spec, observed, problems: judge(spec, observed), warnings: softWarnings(spec, observed) }
 }

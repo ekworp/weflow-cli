@@ -7,6 +7,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **The assistant's behaviour eval now covers the tools the widened surface added.** Ten tools went in on
+  2026-09-30 and nine of them had no assertions at all - which matters because that is exactly how "did routing get
+  worse once there were ten more tools to choose from" goes unnoticed. Six cases were added (`format-for-wechat`,
+  `themes-listed`, `skills-health`, `wiki-health`, `todo-done`, `todo-ambiguous-refused`); the two that leave the
+  machine cannot be evaluated there by design, and two more have no injection point yet - all four are written down
+  in the case file rather than skipped quietly. The write cases came with a new floor, `neverSucceeds`: if the named
+  tool was called, that call must have produced nothing, so "asked the user instead of writing" and "called the tool
+  and was refused" both pass while an actual write fails. Full run the same day: **29 passed, 0 failed**.
 
 - **Skills: the assistant can read the skill packages you already have.** A skill is a directory with a `SKILL.md`
   (`name`/`description`), scanned from `skillDirs` - by default `~/.claude/skills` and `~/.weflow-cli/skills` - so the
