@@ -430,6 +430,15 @@ if (hasShell && window.weflowPanel && typeof window.weflowPanel.onCursor === 'fu
 const LAYOUT_CLASSES = ['bubble-left', 'bubble-right', 'anchor-top']
 
 /**
+ * 半隐相关的类：`ball-peek` 换成探头那张脸（并去掉球的圆角，好让那条直切边落在屏幕边上），
+ * `ball-peek-right` 再把图水平镜像一次给右边用。
+ *
+ * 贴哪条边只有主进程知道（它才管窗口位置），所以这一组**和形态一样是主进程说了算**，
+ * 页面只照着挂。同样先整体摘掉再按说的挂——散着写迟早有一条分支忘了摘。
+ */
+const PEEK_CLASSES = ['ball-peek', 'ball-peek-right']
+
+/**
  * 按主进程说的形态切 class。**这里是唯一改形态的地方**。
  *
  * 载荷带方位：`side` 是气泡在球的哪一边（球就在窗口的另一边），`anchorY` 是球贴窗口的
@@ -447,6 +456,14 @@ function applyMode(payload) {
   const anchorOnly = !!(payload && payload.anchorOnly)
   document.body.classList.remove(
     ...(anchorOnly ? LAYOUT_CLASSES : ['mode-ball', 'mode-chat', 'closing', ...LAYOUT_CLASSES]))
+  // 半隐与"锚"无关，所以 `anchorOnly` 那一步（展开的两个阶段）不许把它摘掉
+  if (!anchorOnly) {
+    document.body.classList.remove(...PEEK_CLASSES)
+    if (mode === 'ball' && payload && payload.peek) {
+      document.body.classList.add('ball-peek')
+      if (payload.peek === 'right') document.body.classList.add('ball-peek-right')
+    }
+  }
   if (!anchorOnly) document.body.classList.add(mode === 'chat' ? 'mode-chat' : 'mode-ball')
   if (mode === 'chat') {
     document.body.classList.add(side === 'right' ? 'bubble-right' : 'bubble-left')

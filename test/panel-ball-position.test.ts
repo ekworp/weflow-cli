@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const mod = await import(pathToFileURL(join(process.cwd(), 'resources', 'panel', 'ball-position.cjs')).href)
-const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, PEEK_SIZE, HIDE_SNAP,
+const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, HIDE_SNAP,
         defaultBallPosition, clampInto, isReachable, resolveStartPosition, bubbleLayout,
         ballRectInWindow, edgeToHide, hiddenPosition, revealedPosition } = mod.default ?? mod
 
@@ -275,15 +275,16 @@ test('半隐：连**是哪块屏**一起返回（半隐时球心在屏幕外，�
     '球在屏幕下方之外时，不该被当成"贴住了左边"')
 })
 
-test('半隐：只留 PEEK_SIZE 那么宽在工作区里，其余推到屏幕外', () => {
-  const left = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE, PEEK_SIZE)
-  assert.equal(left.x + BALL_SIZE - PRIMARY.x, PEEK_SIZE, '左边：露出来的正好是 PEEK_SIZE')
-  assert.ok(left.x < PRIMARY.x, '窗口确实伸到屏幕外了')
-  assert.equal(left.y, 300, '纵向不动')
+test('半隐：**整窗贴着边留在工作区内**（不推到屏幕外），纵向不动', () => {
+  // "藏在边后面"那个错觉由**图**给（`mascot-peek.png` 左边是一条笔直的切边），
+  // 窗口不必真的出去。这样窗口完整可见，点得到、也不跟贴边/任务栏打架。
+  const left = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE)
+  assert.deepEqual(left, { x: PRIMARY.x, y: 300 }, '左边：窗口左沿正好压在工作区左沿上')
+  assert.ok(left.x >= PRIMARY.x, '不许伸到工作区外')
 
-  const right = hiddenPosition({ x: PRIMARY.width - BALL_SIZE, y: 300 }, 'right', PRIMARY, BALL_SIZE, PEEK_SIZE)
-  assert.equal(PRIMARY.x + PRIMARY.width - right.x, PEEK_SIZE, '右边：露出来的正好是 PEEK_SIZE')
-  assert.equal(right.y, 300)
+  const right = hiddenPosition({ x: PRIMARY.width - BALL_SIZE, y: 300 }, 'right', PRIMARY, BALL_SIZE)
+  assert.deepEqual(right, { x: PRIMARY.x + PRIMARY.width - BALL_SIZE, y: 300 }, '右边：右沿压在工作区右沿上')
+  assert.ok(right.x + BALL_SIZE <= PRIMARY.x + PRIMARY.width, '同样不许出工作区')
 })
 
 test('半隐 → 出来：完全露出来并留出平时的边距（和正常贴边的规矩一致）', () => {
@@ -293,11 +294,14 @@ test('半隐 → 出来：完全露出来并留出平时的边距（和正常贴
   assert.deepEqual(backR, { x: PRIMARY.x + PRIMARY.width - BALL_SIZE - EDGE_MARGIN, y: 300 })
 })
 
-test('半隐的位置是**不可达**的 —— 重启后球自己回到默认角落，不会消失', () => {
-  // 这是"不持久化"那条决定的兜底：位置文件可能记着半隐时的坐标，而 `isReachable`
-  // 取的是**球心**，半隐时球心在屏幕外，于是启动时落回默认角落。
-  const hidden = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE, PEEK_SIZE)
-  assert.equal(isReachable(hidden, [PRIMARY], BALL_SIZE), false, '半隐的位置必须判为不可达')
-  const fallback = resolveStartPosition(hidden, [PRIMARY], PRIMARY, BALL_SIZE, EDGE_MARGIN)
-  assert.deepEqual(fallback, defaultBallPosition(PRIMARY, BALL_SIZE, EDGE_MARGIN))
+test('半隐的位置是**可达**的 —— 所以关掉再开，球会贴在边上（完整可见），不是消失', () => {
+  // 改成"整窗留在工作区内"之后这条跟着反了：位置文件里记的半隐坐标是可用的，
+  // 重启后球就停在屏幕边上、**完全看得见**，只是贴着边。
+  // 也就是说"重启后球不见了"这件事在新几何下**本来就不会发生**——不需要额外兜底。
+  const left = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE)
+  assert.equal(isReachable(left, [PRIMARY], BALL_SIZE), true, '贴边（完整在屏内）必须判为可达')
+  const restored = resolveStartPosition(left, [PRIMARY], PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.deepEqual(restored, left, '就用记下来的坐标，不挪')
+  // 而"球心在屏幕外"那种位置（旧的实现）仍然判不可达 —— 这条判据本身没变
+  assert.equal(isReachable({ x: -62, y: 300 }, [PRIMARY], BALL_SIZE), false)
 })

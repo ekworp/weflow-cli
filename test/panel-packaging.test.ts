@@ -26,7 +26,8 @@ const PANEL = join(ROOT, 'resources', 'panel')
 const PANEL_FILES = ['index.html', 'renderer.js', 'panel.css', 'main.cjs', 'preload.cjs',
   'ball-position.cjs', 'tray-menu.cjs', 'quick-menu.cjs',
   'mascot.png', 'mascot-happy.png', 'mascot-thinking.png', 'mascot-sorry.png',
-  'mascot-tired.png', 'mascot-base.png', 'mascot-iris.png', 'tray.png', 'package.json']
+  'mascot-tired.png', 'mascot-base.png', 'mascot-iris.png', 'mascot-peek.png',
+  'tray.png', 'package.json']
 
 function read(name: string): string {
   return readFileSync(join(PANEL, name), 'utf8')
@@ -333,6 +334,40 @@ test('眼珠跟着鼠标：通路接上了，且只在"有眼神"的那两张脸
   for (const state of ['busy', 'offline', 'quota', 'ball-happy']) {
     assert.ok(hides.includes(`body.${state} #ball .iris`), `${state} 那张脸要把虹膜藏掉`)
   }
+})
+
+test('半隐那张脸：文件、白名单、CSS，以及切边那两条（去圆角 + 不许悬停放大）', () => {
+  // 图是"身子藏在屏幕边后面、只把脑袋探出来"，**左边是一条笔直的切边**（内容贴画布 x=0）。
+  // 下面两条规则漏掉任何一条，"被屏幕边挡住"这个错觉就没了，而且**别的测试全绿**：
+  assert.ok(existsSync(join(PANEL, 'mascot-peek.png')), '缺 mascot-peek.png')
+  // 尺寸从 PNG 的 IHDR 读（宽高各 4 字节大端），和上面那条测试同一个读法——
+  // 不同尺寸的图贴上去会错位，而"文件在、白名单有、CSS 也指对了"全都不会红。
+  const pngSize = (name: string) => {
+    const buf = readFileSync(join(PANEL, name))
+    return [buf.readUInt32BE(16), buf.readUInt32BE(20)]
+  }
+  assert.deepEqual(pngSize('mascot-peek.png'), pngSize('mascot.png'), '要和其他球面图同尺寸（否则贴上去错位）')
+  const server = readFileSync(join(ROOT, 'src', 'panel', 'server.ts'), 'utf8')
+  assert.ok(server.includes("'/panel/mascot-peek.png': 'mascot-peek.png'"), '要在静态白名单里')
+
+  const sheet = code('panel.css')
+  assert.match(sheet, /body\.ball-peek #ball \{ border-radius: 0; \}/,
+    '必须去掉球的圆角 —— 圆角会把那条直切边剪成一段弧，一看就露馅')
+  assert.match(sheet, /body\.ball-peek #ball \.face \{ background-image: url\('\/panel\/mascot-peek\.png'\)/,
+    '半隐那张脸要接上')
+  assert.match(sheet, /body\.ball-peek-right #ball \.face \{ transform: scaleX\(-1\)/,
+    '贴右边用同一张图水平镜像，不另存一张素材')
+  assert.match(sheet, /body\.ball-peek #ball:hover/,
+    '半隐时不许悬停放大：scale(1.02) 会让切边离开屏幕边 1%（96px 上是 1px），那就是一条缝')
+  assert.match(sheet, /body\.ball-peek #ball \.iris \{[^}]*display: none/,
+    '这张脸的眼睛是画死的，虹膜层要藏掉（否则两个瞳仁）')
+
+  // 通路：贴哪条边只有主进程知道（它管窗口位置），页面照着挂类
+  const main = code('main.cjs')
+  assert.match(main, /peek: hit\.edge/, '藏起来时要告诉页面贴的是哪条边')
+  assert.match(main, /peek: null/, '出来时要收回这个状态')
+  assert.match(code('preload.cjs'), /payload\.peek === 'left'/, 'preload 要把 peek 收窄后放行')
+  assert.match(code('renderer.js'), /PEEK_CLASSES/, '页面要按主进程说的挂/摘半隐类')
 })
 
 test('球面用吉祥物图，托盘用合成好的带盘图标', () => {

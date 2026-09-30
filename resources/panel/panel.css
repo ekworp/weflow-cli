@@ -201,6 +201,24 @@ body.offline #ball .iris,
 body.quota #ball .iris,
 body.ball-happy #ball .iris { display: none; }
 
+/* ---- 半隐：躲在屏幕边后面探头（`mascot-peek.png`） ----
+
+   这张图的左边**是一条笔直的切边**（内容贴着画布 x=0），放上去时窗口的左边就是屏幕的边，
+   于是看着就像猫被显示器边框挡住了。两条随之而来的规矩：
+
+   1. **必须去掉球的圆角**：`border-radius: 50%` 会把那条直切边剪成一段弧，一看就露馅。
+   2. **悬停不许放大**：`scale(1.02)` 会让切边离开屏幕边 1%（在 96px 上是 1px）——那 1px
+      就是一条缝。所以半隐时把放大那两条关掉。
+
+   右边那张**不另存素材**，把同一张水平镜像即可。 */
+body.ball-peek #ball { border-radius: 0; }
+body.ball-peek #ball .face { background-image: url('/panel/mascot-peek.png'); }
+body.ball-peek-right #ball .face { transform: scaleX(-1); }
+/* 这张脸的眼睛是画死的（同忙/累那几张），叠会动的虹膜就是两个瞳仁 */
+body.ball-peek #ball .iris { display: none; }
+body.ball-peek #ball:hover,
+body.ball-peek #ball:active { transform: none; }
+
 /* 三个**真状态**各有一张脸：忙（思考中）、连不上时委屈、额度用完时累。
    接的全是现成的状态类（`setBallState` 早就挂 busy/offline/quota 了），**不新增状态机**；
    光晕照旧画——它是"余光能看见"的环境灯，表情是盯着看才见的细节，两者说的是同一件事，

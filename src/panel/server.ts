@@ -73,6 +73,10 @@ const STATIC_FILES: Record<string, string> = {
   // 同上：**漏一张，球在那个瞬间闪成空图**，而 PANEL_ASSET_MISSING 只写在响应里、页面上看不到。
   '/panel/mascot-base.png': 'mascot-base.png',
   '/panel/mascot-iris.png': 'mascot-iris.png',
+  // 半隐时那张脸（2026-09-30）：身子藏在屏幕边后面、只把脑袋探出来。
+  // 它的左边**必须是一条笔直的切边**（内容贴着画布 x=0），贴上去才跟屏幕边严丝合缝——
+  // 所以半隐时球的 `border-radius` 也要去掉（圆会把那条切边剪成弧）。
+  '/panel/mascot-peek.png': 'mascot-peek.png',
 }
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

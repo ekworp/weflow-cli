@@ -58,12 +58,12 @@ let ballAnchor = { side: 'left', anchorY: 'bottom' }
  * - **半隐时第一次点击只是"出来"，不展开气泡**：藏起来的状态下点它，意思一定是"回来"，
  *   不是"跟我说话"。点第二下才展开。这条不用通知页面——**页面自己不记形态**（它只发请求、
  *   照着 `panel:mode` 做），所以不展开就不会有任何状态错位。
- * - **不持久化**：重启后是完全露出来的。半隐时球心在屏幕外，`isReachable` 本来就判它
- *   "不可达"、启动时落回默认角落——让这条既有的安全网顺手把"重启后球不见了"也挡掉，
- *   而不是再存一个标志位。
+ * - **不持久化**：重启后是正常那张脸、离边 24px。半隐时窗口**整窗贴在边上、完全可见**
+ *   （切边靠图给，窗口不出去），所以记下来的坐标是可达的——重启后球就停在屏幕边上，
+ *   不是不见了。也就是说这件事不需要标志位，也不会出"球丢了"的事故。
  *
- * 存的是 `{edge, area}` 而不是只存 edge：恢复要用那块工作区，而半隐时球心在屏幕外，
- * 再拿球心去找工作区是找不到的。
+ * 存的是 `{edge, area}` 而不是只存 edge：恢复要用那块工作区，而半隐时球心虽然还在屏内，
+ * 但按球心去找工作区会拿到"离球心最近的那块"，不如直接记住当时用的是哪块。
  */
 let hiddenAt = null
 
@@ -205,9 +205,12 @@ function maybeHideAtEdge() {
   const to = hiddenPosition({ x: from.x, y: from.y }, hit.edge, hit.area)
   hiddenAt = { edge: hit.edge, area: hit.area }
   win.setContentBounds({ x: to.x, y: to.y, width: BALL_SIZE, height: BALL_SIZE })
+  // 换姿势这件事只有主进程知道（它才管窗口贴哪条边），所以由它告诉页面：
+  // 页面照 `ball-peek` / `ball-peek-right` 换成探头那张脸、并摘掉圆角。
+  win.webContents.send('panel:mode', { mode: 'ball', peek: hit.edge, done: true })
 }
 
-/** 从半隐出来：完全露出、留出平时的边距，并记一次位置（下次启动就停在边上）。 */
+/** 从半隐出来：完全露出、留出平时的边距，并记一次位置。 */
 function revealBall() {
   if (!hiddenAt || !win || win.isDestroyed()) return
   const from = win.getContentBounds()
@@ -215,6 +218,7 @@ function revealBall() {
   hiddenAt = null
   savePosition(to.x, to.y)
   win.setContentBounds({ x: to.x, y: to.y, width: BALL_SIZE, height: BALL_SIZE })
+  win.webContents.send('panel:mode', { mode: 'ball', peek: null, done: true })
 }
 
 /** 读端点文件。**任何一种不可信都当没读出来**（同 `src/panel/endpoint.ts` 的纪律） */

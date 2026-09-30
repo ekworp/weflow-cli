@@ -73,6 +73,9 @@ contextBridge.exposeInMainWorld('weflowPanel', {
       anchorY: payload && payload.anchorY === 'top' ? 'top' : 'bottom',
       bubbleHeight: clampInt(payload && payload.bubbleHeight, 10000, 1),
       fadeMs: clampInt(payload && payload.fadeMs, 2000),
+      // 半隐：'left' / 'right' / null（null = 正常那张脸）。只认这两个字符串，
+      // 别的一律当 null —— 和上面几个字段同一条规矩，不把主进程给的东西原样透传。
+      peek: payload && (payload.peek === 'left' || payload.peek === 'right') ? payload.peek : null,
       done: !!(payload && payload.done),
     }))
   },

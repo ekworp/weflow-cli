@@ -8,16 +8,20 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Added
 
-- **Push the ball to a screen edge and it hides, leaving a sliver; click it to come back.** Drag the ball until it
-  touches the left or right edge of a monitor and let go - it slides out of the way, keeping about a third visible,
-  and the first click (or drag) brings it fully back. The click while hidden deliberately does *not* open the
-  conversation: on a hidden ball a click means "come back", not "let's talk"; a second click expands as usual. Only
-  the left and right edges do this - top and bottom would fight the taskbar and Windows' own edge snapping, and a
-  round ball half-hidden vertically reads as clipped rather than tucked away. The hidden state is **not remembered
-  across restarts**: a half-hidden ball is off-screen, so the existing "is the remembered position reachable" check
-  already sends it back to the default corner, which is why no separate flag is stored. The detection threshold is
-  deliberately smaller than the normal 24px edge margin, so a ball that is simply parked normally is never mistaken
-  for one being pushed off-screen (there is a test for exactly that).
+- **Push the ball to a screen edge and it hides behind it, peeking out; click it to come back.** Drag the ball
+  until it touches the left or right edge of a monitor and let go: the ball ducks behind the edge and reappears as
+  the cat **peeking out from behind it** - head and front paws out, body hidden, with a dedicated drawing whose
+  left side is a straight cut that lands exactly on the screen edge (so it reads as "behind the bezel" rather than
+  "a ball that got clipped"). The first click (or drag) brings the normal ball back; that click deliberately does
+  *not* open the conversation, because on a hidden ball a click means "come back", not "let's talk" - a second
+  click expands as usual. Only the left and right edges: top and bottom would fight the taskbar and Windows' own
+  edge snapping. The window itself stays **fully on screen**, flush against the edge - the illusion comes from the
+  drawing, so nothing is pushed off-screen, the whole thing stays clickable, and a restart just puts the ball back
+  at the edge (not lost). Two rules make or break the effect and both have tests, because everything else stays
+  green without them: the ball's circular clip has to be off in this state (a circle would slice that straight cut
+  into an arc), and hover-zoom has to be off too (scaling by 1.02 lifts the cut 1px off the edge - a visible seam).
+  The detection threshold is deliberately below the normal 24px edge margin, so a ball that is merely parked is
+  never mistaken for one being pushed off (also tested).
 
 - **The ball's eyes follow your mouse.** Move the pointer and the mascot looks that way; stop moving and it settles
   and stops animating entirely (no 60 fps loop running for decoration on a window that is always open). The cursor

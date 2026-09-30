@@ -29,13 +29,13 @@ function defaultBallPosition(workArea, ballSize = BALL_SIZE, margin = EDGE_MARGI
   }
 }
 
-/** 半隐（"躲起来"）：贴住屏幕左右边时，只留这么宽露在工作区里。够点到，又一眼看出是藏起来了。 */
-const PEEK_SIZE = 34
 /**
- * 松手时，球的边离工作区左右边界多近才算"想藏进去"。
+ * 半隐（"躲起来"）：贴住屏幕左右边时，**整窗留在工作区内、贴着边**。
  *
- * **必须小于 `EDGE_MARGIN`（24）**：正常放着不动的球永远离边 24px，阈值要是 ≥24，
- * 那它每次松手都会被判成"想藏"——球就再也停不下来了。16 意味着要**故意往边上再推一把**。
+ * 不再把窗口推到屏幕外：姿势换成了"身子藏在边后面探头"（`mascot-peek.png`），
+ * 那张图的左边是一条笔直的切边，窗口贴边时它正好落在屏幕边上——**切的错觉由图和位置一起给**，
+ * 窗口自己不用出去。顺带三个好处：不在屏幕外的窗口不会跟贴边/任务栏打架、
+ * 露出的部分整个可点、而且**窗口完整可见**（上次那版是半截在屏幕外）。
  */
 const HIDE_SNAP = 16
 
@@ -61,10 +61,10 @@ function edgeToHide(pos, workAreas, ballSize = BALL_SIZE, snap = HIDE_SNAP) {
   return null
 }
 
-/** 半隐时窗口该放哪：只让 `peek` 那么宽留在工作区里，其余推到屏幕外。 */
-function hiddenPosition(pos, edge, workArea, ballSize = BALL_SIZE, peek = PEEK_SIZE) {
-  if (edge === 'left') return { x: workArea.x - ballSize + peek, y: pos.y }
-  if (edge === 'right') return { x: workArea.x + workArea.width - peek, y: pos.y }
+/** 半隐时窗口该放哪：**贴着工作区的左/右边，整窗留着**（切边由图给，见上）。 */
+function hiddenPosition(pos, edge, workArea, ballSize = BALL_SIZE) {
+  if (edge === 'left') return { x: workArea.x, y: pos.y }
+  if (edge === 'right') return { x: workArea.x + workArea.width - ballSize, y: pos.y }
   return { x: pos.x, y: pos.y }
 }
 
@@ -193,7 +193,7 @@ function ballRectInWindow(windowRect, anchor, ballSize = BALL_SIZE) {
 }
 
 module.exports = {
-  BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, PEEK_SIZE, HIDE_SNAP,
+  BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, HIDE_SNAP,
   defaultBallPosition, clampInto, isReachable, resolveStartPosition, bubbleLayout,
   ballRectInWindow, edgeToHide, hiddenPosition, revealedPosition,
 }
