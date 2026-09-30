@@ -26,7 +26,8 @@ const PANEL = join(ROOT, 'resources', 'panel')
 const PANEL_FILES = ['index.html', 'renderer.js', 'panel.css', 'main.cjs', 'preload.cjs',
   'ball-position.cjs', 'tray-menu.cjs', 'quick-menu.cjs',
   'mascot.png', 'mascot-happy.png', 'mascot-thinking.png', 'mascot-sorry.png',
-  'mascot-tired.png', 'tray.png', 'package.json']
+  'mascot-tired.png', 'mascot-base.png', 'mascot-iris.png', 'mascot-peek.png',
+  'tray.png', 'package.json']
 
 function read(name: string): string {
   return readFileSync(join(PANEL, name), 'utf8')
@@ -98,7 +99,8 @@ test('preload 只暴露固定的几个方法，且**不含**通用的 on/send', 
   // （球的脸图 401 → 变空白）。它**只让主进程重读端点文件并重载**，页面依旧拿不到 token ——
   // 所以加它不违反这条用例的本意，但**必须显式改这一行**，不能悄悄变宽。
   assert.deepEqual(exposed,
-    ['dragEnd', 'dragMove', 'dragStart', 'info', 'onMode', 'openQuickMenu', 'quit', 'repair', 'setMode'])
+    ['dragEnd', 'dragMove', 'dragStart', 'info', 'onCursor', 'onMode', 'openQuickMenu',
+      'quit', 'repair', 'setMode'])
   // 通用订阅才是危险的：通道名一旦由渲染进程决定，那层隔离就名存实亡
   assert.doesNotMatch(preload, /on\s*:\s*\(/, '不许暴露通用的 on(name, cb)')
   assert.doesNotMatch(preload, /send\s*:\s*\(/)
@@ -306,10 +308,76 @@ test('捏一下的表情走一个入口，按下变脸、松手就收', () => {
   assert.equal(direct.length, 1, `ball-happy 只该在 setBallFace 里被增删，实际 ${direct.length} 处`)
 })
 
+test('眼珠跟着鼠标：通路接上了，且只在"有眼神"的那两张脸上叠虹膜', () => {
+  // 数据通路：主进程采样（主进程没有鼠标事件，只能主动问）→ preload 收窄 → 渲染进程缓动。
+  const main = code('main.cjs')
+  assert.match(main, /screen\.getCursorScreenPoint\(\)/, '光标只有主进程问得到')
+  assert.match(main, /webContents\.send\('panel:cursor'/, '要推给页面')
+  // **坐标没变就别推**：鼠标不动还照推，等于给常驻窗口白加每分钟几百次 IPC
+  assert.match(main, /lastCursor\.x === point\.x && lastCursor\.y === point\.y/,
+    '坐标没变时应当直接 return')
+  // 收起来的窗口别采样：没人看，没必要测
+  assert.match(main, /win\.isVisible\(\)\) return/, '窗口不可见时不采样')
+
+  const preload = code('preload.cjs')
+  assert.match(preload, /ipcRenderer\.on\('panel:cursor'/, '通道名写死在 preload 里（不暴露通用 on）')
+
+  const renderer = code('renderer.js')
+  assert.match(renderer, /weflowPanel\.onCursor\(/, '页面订阅它')
+  // 系统要求减少动效时眼珠不许动 —— 常驻小球不能对着系统设置跳舞
+  assert.match(renderer, /cursorTarget && !prefersReducedMotion\(\)/, 'reduced-motion 下不追鼠标')
+
+  // **眼睛画死在图上的那两张脸**（three states + 被捏）：叠一层虹膜就是两个瞳仁。
+  const sheet = code('panel.css')
+  const hides = sheet.slice(sheet.indexOf('body.busy #ball .iris'),
+    sheet.indexOf('body.busy #ball .face'))
+  for (const state of ['busy', 'offline', 'quota', 'ball-happy']) {
+    assert.ok(hides.includes(`body.${state} #ball .iris`), `${state} 那张脸要把虹膜藏掉`)
+  }
+})
+
+test('半隐那张脸：文件、白名单、CSS，以及切边那两条（去圆角 + 不许悬停放大）', () => {
+  // 图是"身子藏在屏幕边后面、只把脑袋探出来"，**左边是一条笔直的切边**（内容贴画布 x=0）。
+  // 下面两条规则漏掉任何一条，"被屏幕边挡住"这个错觉就没了，而且**别的测试全绿**：
+  assert.ok(existsSync(join(PANEL, 'mascot-peek.png')), '缺 mascot-peek.png')
+  // 尺寸从 PNG 的 IHDR 读（宽高各 4 字节大端），和上面那条测试同一个读法——
+  // 不同尺寸的图贴上去会错位，而"文件在、白名单有、CSS 也指对了"全都不会红。
+  const pngSize = (name: string) => {
+    const buf = readFileSync(join(PANEL, name))
+    return [buf.readUInt32BE(16), buf.readUInt32BE(20)]
+  }
+  assert.deepEqual(pngSize('mascot-peek.png'), pngSize('mascot.png'), '要和其他球面图同尺寸（否则贴上去错位）')
+  const server = readFileSync(join(ROOT, 'src', 'panel', 'server.ts'), 'utf8')
+  assert.ok(server.includes("'/panel/mascot-peek.png': 'mascot-peek.png'"), '要在静态白名单里')
+
+  const sheet = code('panel.css')
+  assert.match(sheet, /body\.ball-peek #ball \{ border-radius: 0; \}/,
+    '必须去掉球的圆角 —— 圆角会把那条直切边剪成一段弧，一看就露馅')
+  assert.match(sheet, /body\.ball-peek #ball \.face \{ background-image: url\('\/panel\/mascot-peek\.png'\)/,
+    '半隐那张脸要接上')
+  assert.match(sheet, /body\.ball-peek-right #ball \.face \{ transform: scaleX\(-1\)/,
+    '贴右边用同一张图水平镜像，不另存一张素材')
+  assert.match(sheet, /body\.ball-peek #ball:hover/,
+    '半隐时不许悬停放大：scale(1.02) 会让切边离开屏幕边 1%（96px 上是 1px），那就是一条缝')
+  assert.match(sheet, /body\.ball-peek #ball \.iris \{[^}]*display: none/,
+    '这张脸的眼睛是画死的，虹膜层要藏掉（否则两个瞳仁）')
+
+  // 通路：贴哪条边只有主进程知道（它管窗口位置），页面照着挂类
+  const main = code('main.cjs')
+  assert.match(main, /peek: hit\.edge/, '藏起来时要告诉页面贴的是哪条边')
+  assert.match(main, /peek: null/, '出来时要收回这个状态')
+  assert.match(code('preload.cjs'), /payload\.peek === 'left'/, 'preload 要把 peek 收窄后放行')
+  assert.match(code('renderer.js'), /PEEK_CLASSES/, '页面要按主进程说的挂/摘半隐类')
+})
+
 test('球面用吉祥物图，托盘用合成好的带盘图标', () => {
   // 两处各存一张图标，改了球忘了托盘是迟早的事——这张图是用户自己的吉祥物，本来就该一致。
   const css = code('panel.css')
-  assert.match(css, /url\('\/panel\/mascot\.png'\)/, '球面用吉祥物')
+  // 球面自 2026-09-30 起是**两层**：底图（挖掉虹膜的吉祥物）+ 一层会动的虹膜。
+  // **两层都要断言**：只断其中一层的话，另一层被误删时球会在那一刻闪成空图，
+  // 而这条测试照样是绿的（白名单那条也只管"文件在不在"）。
+  assert.match(css, /url\('\/panel\/mascot-base\.png'\)/, '球面底图是吉祥物（挖掉虹膜的版本）')
+  assert.match(css, /url\('\/panel\/mascot-iris\.png'\)/, '球面上还有一层会动的虹膜')
   assert.match(css, /background-color:/, '要有兜底色：图取不到时不该是一块白')
   const main = code('main.cjs')
   assert.match(main, /nativeImage\.createFromPath/, '托盘图标从文件读')
@@ -387,7 +455,7 @@ test('球是**透明底**、且不带投影 —— 这两件事要一起改，�
   assert.doesNotMatch(block, /drop-shadow/, '不许有投影：它会被读成"背景没透明"')
   assert.doesNotMatch(block, /inset 0 0 0 1px/, '不许留着圆环（没有底时它是个悬空的圈）')
   assert.doesNotMatch(block, /background-color:\s*#/, '不许有实心底色')
-  assert.match(block, /url\('\/panel\/mascot\.png'\)/, '图还是吉祥物')
+  assert.match(block, /url\('\/panel\/mascot-base\.png'\)/, '图还是吉祥物（底图那层）')
 })
 
 // 托盘图标的**像素**断言（盘到底在不在、角是不是透的）在 `test/panel-tray-pixels.test.ts`，
@@ -419,7 +487,9 @@ test('球：背后什么都没有 —— 光晕那一层已整层去掉', () => 
   // **状态灯没有因此变哑**：四个状态各有一张脸，那才是主信号 —— 这条由上面那条
   // `FOR_STATE` 用例盯着（它按"状态所在的规则"判，不全文搜状态名）。
   const face = css.slice(css.indexOf('#ball .face'), css.indexOf('body.ball-happy'))
-  assert.match(face, /mascot\.png/, '空闲态：原图')
+  // 空闲态的脸是 `mascot-base.png`（挖掉虹膜的底图）——`mascot.png` 那张眼球画死在图上，
+  // 叠一层会动的虹膜就会看到两个瞳仁，所以它退居"其它表情的生图底稿"，不再直接上球。
+  assert.match(face, /mascot-base\.png/, '空闲态：吉祥物底图')
 })
 
 test('"减少动态效果"要照办 —— 常驻小球不能对着系统设置跳舞', () => {

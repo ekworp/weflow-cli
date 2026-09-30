@@ -14,9 +14,9 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const mod = await import(pathToFileURL(join(process.cwd(), 'resources', 'panel', 'ball-position.cjs')).href)
-const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP,
+const { BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, HIDE_SNAP,
         defaultBallPosition, clampInto, isReachable, resolveStartPosition, bubbleLayout,
-        ballRectInWindow } = mod.default ?? mod
+        ballRectInWindow, edgeToHide, hiddenPosition, revealedPosition } = mod.default ?? mod
 
 /** 主屏 1707x960、任务栏占 48（与真机一致）；工作区原点 0,0 */
 const PRIMARY = { x: 0, y: 0, width: 1707, height: 912 }
@@ -238,4 +238,70 @@ test('气泡高度永远不超过设计高度，也永远为正', () => {
       `y=${y} 时算出 ${layout.bubbleHeight}`)
     assert.ok(anchored(layout, ballAt(1607, y)).vertical, `y=${y} 时球脱离了窗口边`)
   }
+})
+
+
+// ---------------------------------------------------------------- 半隐（躲到屏幕边上）
+
+test('半隐：只有**故意推到边**才藏 —— 正常放着的球（离边 24px）不许被判定成"想藏"', () => {
+  // 这条是整个功能最容易搞坏的地方：`HIDE_SNAP` 一旦 ≥ `EDGE_MARGIN`，球每一次松手
+  // 都会被判成"想藏"，于是它再也停不在正常位置上——而**别的测试全绿**。
+  assert.ok(HIDE_SNAP < EDGE_MARGIN,
+    `HIDE_SNAP(${HIDE_SNAP}) 必须小于 EDGE_MARGIN(${EDGE_MARGIN})，否则正常放着也会藏`)
+
+  // 默认角落（离右边 24px）松手：不藏
+  const normal = defaultBallPosition(PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.equal(edgeToHide(normal, [PRIMARY], BALL_SIZE), null, '正常位置不该触发半隐')
+  assert.equal(edgeToHide({ x: PRIMARY.width - BALL_SIZE - EDGE_MARGIN, y: 300 }, [PRIMARY], BALL_SIZE), null,
+    '贴着右边但留了 24px：也不藏')
+
+  // 推到底（gap 0）或推过头（负 gap）：藏
+  assert.equal(edgeToHide({ x: 0, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'left')
+  assert.equal(edgeToHide({ x: -8, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'left')
+  assert.equal(edgeToHide({ x: PRIMARY.width - BALL_SIZE, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'right')
+  assert.equal(edgeToHide({ x: PRIMARY.width - BALL_SIZE + 10, y: 300 }, [PRIMARY], BALL_SIZE)?.edge, 'right')
+
+  // 屏幕中间：两侧都够不着
+  assert.equal(edgeToHide({ x: 800, y: 300 }, [PRIMARY], BALL_SIZE), null)
+})
+
+test('半隐：连**是哪块屏**一起返回（半隐时球心在屏幕外，事后按球心找不回来）', () => {
+  const hit = edgeToHide({ x: LEFT.x + 4, y: 300 }, [PRIMARY, LEFT], BALL_SIZE)
+  assert.equal(hit?.edge, 'left')
+  assert.deepEqual(hit?.area, LEFT, '要返回左副屏那块，不是主屏')
+
+  // 纵向不在某块屏里 → 它贴的不是那块屏的边
+  assert.equal(edgeToHide({ x: 0, y: PRIMARY.height + 200 }, [PRIMARY], BALL_SIZE), null,
+    '球在屏幕下方之外时，不该被当成"贴住了左边"')
+})
+
+test('半隐：**整窗贴着边留在工作区内**（不推到屏幕外），纵向不动', () => {
+  // "藏在边后面"那个错觉由**图**给（`mascot-peek.png` 左边是一条笔直的切边），
+  // 窗口不必真的出去。这样窗口完整可见，点得到、也不跟贴边/任务栏打架。
+  const left = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE)
+  assert.deepEqual(left, { x: PRIMARY.x, y: 300 }, '左边：窗口左沿正好压在工作区左沿上')
+  assert.ok(left.x >= PRIMARY.x, '不许伸到工作区外')
+
+  const right = hiddenPosition({ x: PRIMARY.width - BALL_SIZE, y: 300 }, 'right', PRIMARY, BALL_SIZE)
+  assert.deepEqual(right, { x: PRIMARY.x + PRIMARY.width - BALL_SIZE, y: 300 }, '右边：右沿压在工作区右沿上')
+  assert.ok(right.x + BALL_SIZE <= PRIMARY.x + PRIMARY.width, '同样不许出工作区')
+})
+
+test('半隐 → 出来：完全露出来并留出平时的边距（和正常贴边的规矩一致）', () => {
+  const back = revealedPosition({ x: -62, y: 300 }, 'left', PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.deepEqual(back, { x: PRIMARY.x + EDGE_MARGIN, y: 300 })
+  const backR = revealedPosition({ x: PRIMARY.width - 34, y: 300 }, 'right', PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.deepEqual(backR, { x: PRIMARY.x + PRIMARY.width - BALL_SIZE - EDGE_MARGIN, y: 300 })
+})
+
+test('半隐的位置是**可达**的 —— 所以关掉再开，球会贴在边上（完整可见），不是消失', () => {
+  // 改成"整窗留在工作区内"之后这条跟着反了：位置文件里记的半隐坐标是可用的，
+  // 重启后球就停在屏幕边上、**完全看得见**，只是贴着边。
+  // 也就是说"重启后球不见了"这件事在新几何下**本来就不会发生**——不需要额外兜底。
+  const left = hiddenPosition({ x: 0, y: 300 }, 'left', PRIMARY, BALL_SIZE)
+  assert.equal(isReachable(left, [PRIMARY], BALL_SIZE), true, '贴边（完整在屏内）必须判为可达')
+  const restored = resolveStartPosition(left, [PRIMARY], PRIMARY, BALL_SIZE, EDGE_MARGIN)
+  assert.deepEqual(restored, left, '就用记下来的坐标，不挪')
+  // 而"球心在屏幕外"那种位置（旧的实现）仍然判不可达 —— 这条判据本身没变
+  assert.equal(isReachable({ x: -62, y: 300 }, [PRIMARY], BALL_SIZE), false)
 })

@@ -12,10 +12,13 @@
        奇怪的方窗口，所以那边永远看不见球（`hidden` 属性与 CSS 里那条 `display:none`
        都是为它留的）。 -->
   <button id="ball" type="button" title="第二大脑（点击展开 · 可拖动）" hidden>
-    <!-- 两层：底下一层是会动的光晕（背景），上面一层是吉祥物。
-         分开是为了让光晕能变而猫不动——直接给 #ball 设 background 的话，
-         光晕与猫共用同一层，动不了其中一个。 -->
+    <!-- 两层：底下是球面（`mascot-base.png`，眼球位置是空的），上面是可以单独平移的虹膜。
+         分开是为了让**眼珠能跟着鼠标动而猫不动**——直接给 #ball 设 background 的话，
+         两者共用同一层，就动不了其中一个。
+         注意底面用的是 `mascot-base.png` 而**不是** `mascot.png`：后者眼球是画死的，
+         直接用会看到两个瞳仁（一个动的、一个不动的）。两张图零偏移叠起来与原图逐像素相同。 -->
     <span class="face" aria-hidden="true"></span>
+    <span class="iris" aria-hidden="true"></span>
   </button>
 
   <!-- 对话气泡。**单独一层**：它要有自己的圆角与底色，而展开时窗口比它大一圈

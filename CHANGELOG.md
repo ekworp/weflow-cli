@@ -60,6 +60,32 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   per-call injection points, which closed the **last uncovered tool branch** - `get_daily_report` had never been
   executed because its directory was a frozen module constant, so the only possible assertion was a shape check that
   asserted nothing. All 31 tool branches are now executed against fixtures.
+- **Push the ball to a screen edge and it hides behind it, peeking out; click it to come back.** Drag the ball
+  until it touches the left or right edge of a monitor and let go: the ball ducks behind the edge and reappears as
+  the cat **peeking out from behind it** - head and front paws out, body hidden, with a dedicated drawing whose
+  left side is a straight cut that lands exactly on the screen edge (so it reads as "behind the bezel" rather than
+  "a ball that got clipped"). The first click (or drag) brings the normal ball back; that click deliberately does
+  *not* open the conversation, because on a hidden ball a click means "come back", not "let's talk" - a second
+  click expands as usual. Only the left and right edges: top and bottom would fight the taskbar and Windows' own
+  edge snapping. The window itself stays **fully on screen**, flush against the edge - the illusion comes from the
+  drawing, so nothing is pushed off-screen, the whole thing stays clickable, and a restart just puts the ball back
+  at the edge (not lost). Two rules make or break the effect and both have tests, because everything else stays
+  green without them: the ball's circular clip has to be off in this state (a circle would slice that straight cut
+  into an arc), and hover-zoom has to be off too (scaling by 1.02 lifts the cut 1px off the edge - a visible seam).
+  The detection threshold is deliberately below the normal 24px edge margin, so a ball that is merely parked is
+  never mistaken for one being pushed off (also tested).
+
+- **The ball's eyes follow your mouse.** Move the pointer and the mascot looks that way; stop moving and it settles
+  and stops animating entirely (no 60 fps loop running for decoration on a window that is always open). The cursor
+  position has to come from the main process - the ball is 96x96, so the pointer is outside the window almost all of
+  the time and the page never sees a mousemove - and it is sampled at 120 ms, pushed **only when the coordinates
+  change**, kept strictly in-process, and never logged or sent anywhere (D-059). How far the eyes can travel is
+  **measured from the artwork**, not picked: the iris has about 7 px of sclera to its left and none above it, which
+  at the ball's size is roughly 2.6 px sideways and 0.8 px up - past that the eye reads as a sticker sliding, so the
+  movement is clamped to an ellipse. The eyes drift only on the idle and "pressed" faces; the thinking / offline /
+  tired faces have their eyes drawn in, so the moving layer is hidden there rather than showing two pupils. The ball
+  is otherwise pixel-for-pixel what it was: the new base image plus the iris layer, composited at rest, are asserted
+  to equal the old ball image exactly. If your system asks for reduced motion, the eyes stay still.
 
 ### Fixed
 - **`wiki lint` was O(links x pages) and took 9.5 minutes on the article line.** The link-existence

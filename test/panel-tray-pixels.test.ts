@@ -89,3 +89,36 @@ test('球面那张图**不带**盘 —— 盘是 CSS 画的，不是烤进图里
     assert.equal(mascot.at(x, y).a, 0, `(${x},${y}) 应当是透明的`)
   }
 })
+
+test('眼球那两层的**逐像素对齐** —— 底图 + 虹膜零偏移必须与原图完全相同', () => {
+  // 为什么也值得解一次像素：这两张图是从 `mascot.png` 切出来的，将来谁重新切一次、
+  // 哪怕只偏 1 个像素，眼睛就会**错位**（底图空着的位置和虹膜落点对不上）。
+  // 而那几种情况下**什么都不会红**：尺寸照样 256×256、照样在白名单里、照样在 PANEL_FILES 里，
+  // 上面那些断言全绿——只有人眼能看出来的东西，正是这个仓库坚持写像素断言的理由。
+  const src = decodePng(join(PANEL, 'mascot.png'))
+  const base = decodePng(join(PANEL, 'mascot-base.png'))
+  const iris = decodePng(join(PANEL, 'mascot-iris.png'))
+  assert.equal(base.width, src.width, '底图要与原图同宽，否则叠上去就错位')
+  assert.equal(base.height, src.height, '底图要与原图同高')
+  assert.equal(iris.width, src.width, '虹膜层要与原图同宽')
+  assert.equal(iris.height, src.height, '虹膜层要与原图同高')
+
+  let mismatch = 0          // 叠起来不等于原图的像素
+  let baseStray = 0         // 底图在**虹膜之外**被改动的像素（不该有）
+  let opaque = 0            // 虹膜层的不透明像素
+  for (let y = 0; y < src.height; y++) {
+    for (let x = 0; x < src.width; x++) {
+      const o = src.at(x, y)
+      const b = base.at(x, y)
+      const i = iris.at(x, y)
+      if (i.a > 0) opaque++
+      const c = i.a > 0 ? i : b
+      if (c.r !== o.r || c.g !== o.g || c.b !== o.b || c.a !== o.a) mismatch++
+      if (i.a === 0 && (b.r !== o.r || b.g !== o.g || b.b !== o.b || b.a !== o.a)) baseStray++
+    }
+  }
+  assert.equal(mismatch, 0, '底图 + 虹膜（零偏移）与原图不等 —— 眼睛会错位')
+  assert.equal(baseStray, 0, '底图只能在虹膜覆盖的地方与原图不同')
+  assert.ok(opaque > 500, `虹膜层只有 ${opaque} 个不透明像素，像是切空了`)
+  assert.ok(opaque < 20000, `虹膜层有 ${opaque} 个不透明像素，像是把整只眼（含眼皮）切进去了`)
+})

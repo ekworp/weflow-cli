@@ -29,6 +29,52 @@ function defaultBallPosition(workArea, ballSize = BALL_SIZE, margin = EDGE_MARGI
   }
 }
 
+/**
+ * 半隐（"躲起来"）：贴住屏幕左右边时，**整窗留在工作区内、贴着边**。
+ *
+ * 不再把窗口推到屏幕外：姿势换成了"身子藏在边后面探头"（`mascot-peek.png`），
+ * 那张图的左边是一条笔直的切边，窗口贴边时它正好落在屏幕边上——**切的错觉由图和位置一起给**，
+ * 窗口自己不用出去。顺带三个好处：不在屏幕外的窗口不会跟贴边/任务栏打架、
+ * 露出的部分整个可点、而且**窗口完整可见**（上次那版是半截在屏幕外）。
+ */
+const HIDE_SNAP = 16
+
+/**
+ * 松手的位置算不算"贴住了某块屏的左右边"。
+ *
+ * 只做左右：上下贴边在 Windows 上会跟任务栏、窗口贴边打架，而且一个圆球从上下边半隐
+ * 看着也不像"躲"，像被切了。
+ *
+ * @returns {{edge:'left'|'right', area:object}|null} 连那块工作区一起返回——
+ *   调用方就不用再拿球心去找工作区了（半隐时球心本来就在屏幕外，找不到）。
+ */
+function edgeToHide(pos, workAreas, ballSize = BALL_SIZE, snap = HIDE_SNAP) {
+  for (const area of workAreas) {
+    const cy = pos.y + ballSize / 2
+    // 球得落在这块屏的**纵向**范围内，否则它贴的是另一块屏的边
+    if (cy < area.y || cy > area.y + area.height) continue
+    const leftGap = pos.x - area.x
+    const rightGap = (area.x + area.width) - (pos.x + ballSize)
+    if (leftGap <= snap && leftGap >= -ballSize) return { edge: 'left', area }
+    if (rightGap <= snap && rightGap >= -ballSize) return { edge: 'right', area }
+  }
+  return null
+}
+
+/** 半隐时窗口该放哪：**贴着工作区的左/右边，整窗留着**（切边由图给，见上）。 */
+function hiddenPosition(pos, edge, workArea, ballSize = BALL_SIZE) {
+  if (edge === 'left') return { x: workArea.x, y: pos.y }
+  if (edge === 'right') return { x: workArea.x + workArea.width - ballSize, y: pos.y }
+  return { x: pos.x, y: pos.y }
+}
+
+/** 从半隐恢复：完全露出来，并且按平时的规矩留出 `EDGE_MARGIN`，别贴在边上。 */
+function revealedPosition(pos, edge, workArea, ballSize = BALL_SIZE, margin = EDGE_MARGIN) {
+  if (edge === 'left') return { x: workArea.x + margin, y: pos.y }
+  if (edge === 'right') return { x: workArea.x + workArea.width - ballSize - margin, y: pos.y }
+  return { x: pos.x, y: pos.y }
+}
+
 /** 把一个 `size x size` 的方块挪进给定工作区（只挪，不改尺寸） */
 function clampInto(x, y, size, workArea) {
   const maxX = workArea.x + workArea.width - size
@@ -147,7 +193,7 @@ function ballRectInWindow(windowRect, anchor, ballSize = BALL_SIZE) {
 }
 
 module.exports = {
-  BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP,
+  BALL_SIZE, EDGE_MARGIN, BUBBLE_SIZE, BUBBLE_GAP, HIDE_SNAP,
   defaultBallPosition, clampInto, isReachable, resolveStartPosition, bubbleLayout,
-  ballRectInWindow,
+  ballRectInWindow, edgeToHide, hiddenPosition, revealedPosition,
 }
