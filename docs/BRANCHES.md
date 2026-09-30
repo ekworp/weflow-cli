@@ -32,6 +32,18 @@
 | 2026-09-01 | `Mandark6/master` | `master` | PR #6，合并提交 `42e1859` | 外部贡献 |
 | 2026-09-10 | `feat/export-enhancements` | `master` | 快进至 `64dcf2f` | 表情原版图、`--per-page` 分页、表情包本地解密、图片缩放；并修复跨分片未生效 |
 | 2026-09-10 | `draft/weflow-cli-improvements` | — | **未合并，已作废** | 基于过期 master；独有功能已移植，见下方「2026-09-10」条目 |
+| 2026-09-30 | `feat/assistant-skills-scenes-tool-surface` | `master` | 合并提交 `1b14c35` | 技能包与场景；工具面 21→31 并与 MCP 上限对齐；`wiki lint` 9 分 29 秒→3.4 秒 |
+| 2026-09-30 | `feat/panel-eye-follow` | `master` | 合并提交 `1e4c305` | 悬浮球眼珠跟随鼠标；半隐（推到屏幕边就躲起来探头） |
+
+两处说明（这次合并**不是快进**，有手工解冲突，记下来免得下次当成"随手拼的"）：
+
+- **两条特性分支互不重叠**（助手那支动 `src/services/assistant*` 与 `mcp-server/`，悬浮球那支动 `resources/panel/`），
+  冲突只在三个文档文件里，都是**两边往同一处追加**：`CHANGELOG.md` 保留双方；`docs/DECISIONS.md` 按既有倒序排（D-059 前、D-058 后）。
+  只有 `docs/PROJECT_STATE.md` 是**同几行的两个版本、真相是混的**，逐行取：评测行与 Assistant 行取助手那支（23 用例 / 31 工具，那支更强），
+  面板行取悬浮球那支（含眼球跟随与半隐；比过长度 9043 vs 12024，助手那支**没有改过**这一行），助手新增的两行保留。
+- **测试数重新量过**：合并前两边各自写着 766 与 694，都不是合并后的真值；合并后实测 **775 条全过**，文档按实测值改。
+
+两条分支都尚未删除（按约定 `feat/*` 合并后可删），保留着便于回溯。
 
 ### 2026-09-10 · `draft/weflow-cli-improvements`
 
