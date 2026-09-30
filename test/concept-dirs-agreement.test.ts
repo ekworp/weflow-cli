@@ -72,7 +72,7 @@ test('六个声明处对「概念页目录」的清单完全一致', () => {
     ['scripts/create_reading_notes.py（init 建的目录）', () => conceptsOnly(quoted(
       block(read('scripts', 'create_reading_notes.py'), 'VAULT_DIRS = [', ']', 'scripts/create_reading_notes.py')))],
     ['src/services/assistantTools.ts（助手检索与概念邻居）', () => conceptsOnly(quoted(
-      block(read('src', 'services', 'assistantTools.ts'), 'const VAULT_WIKI_DIRS = [', ']', 'src/services/assistantTools.ts')))],
+      block(read('src', 'services', 'assistantTools.ts'), 'const vaultDirs = (): string[] => {', '}', 'src/services/assistantTools.ts')))],
     ['mcp-server/index.ts（MCP 的概念工具）', () => conceptsOnly(quoted(
       block(read('mcp-server', 'index.ts'), 'const VAULT_WIKI_DIRS = [', ']', 'mcp-server/index.ts')))],
     ['bin/weflow-cli.ts（init 预览里建的目录）', () => conceptsOnly(quoted(

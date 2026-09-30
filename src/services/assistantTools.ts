@@ -50,10 +50,16 @@ export function wikiIndexPath(conceptDir: string): string {
   return join(conceptDir, '..', '00-Overview.md')
 }
 
-const VAULT_WIKI_DIRS = [
-  join(PKG_ROOT, 'output', 'wechat-vault', 'Wiki', 'Concepts'),
-  join(PKG_ROOT, 'output', 'wechat-vault', 'Chat', 'Concepts'),
-]
+/**
+ * 知识库那两条线的 `Concepts` 目录。**同样可注入**（`WEFLOW_ASSISTANT_VAULT_DIR`），
+ * 与上面 `bizDailyDir` / `reviewsDir` 是同一条理由：评测跑在临时家目录里，包内那个
+ * `output/wechat-vault/` 必然为空，`get_concepts` 就只能测到「还没编译过」那一支——
+ * 要给它写用例，就得能把这个根换掉。（做成函数而不是常量：环境变量要在**每次调用**时读。）
+ */
+const vaultDirs = (): string[] => {
+  const root = process.env.WEFLOW_ASSISTANT_VAULT_DIR || join(PKG_ROOT, 'output', 'wechat-vault')
+  return [join(root, 'Wiki', 'Concepts'), join(root, 'Chat', 'Concepts')]
+}
 
 /**
  * 概念名 → 文件名。**与 `compile_wiki` 是同一套规则**（非法字符换下划线、截到 60 字）。
@@ -104,7 +110,7 @@ function relatedNames(pagePath: string): string[] {
  * - **没建页的邻居照旧报数**（`missing`），不静默吞掉。
  */
 export function conceptSubgraph(pageName: string, depth = 2, maxNodes = 30,
-                                wikiDirs: string[] = VAULT_WIKI_DIRS): {
+                                wikiDirs: string[] = vaultDirs()): {
   levels: Array<Array<{ name: string; brief: string; via: string }>>
   truncated: boolean
   missing: number
@@ -176,7 +182,7 @@ export function conceptBrief(text: string): string {
  *
  * 有页的邻居连定义一起给；没有页的只报个数（`missing`），免得模型去追一个取不到的名字。
  */
-export function conceptNeighbors(pageName: string, wikiDirs: string[] = VAULT_WIKI_DIRS): { linked: Array<{ name: string; brief: string }>; missing: number } {
+export function conceptNeighbors(pageName: string, wikiDirs: string[] = vaultDirs()): { linked: Array<{ name: string; brief: string }>; missing: number } {
   // **传字符串会静默地按字符遍历**（`for (const dir of 'D:\vault')` 挨个字符看过去），
   // 于是 `join('D', '某概念.md')` 不存在，函数安静地回一句「没有邻居」。2026-09-27 把参数
   // 从单个目录改成目录数组时，测试里正好踩到这个——类型拦得住 `src/`（`tsc` 覆盖它），
@@ -1912,7 +1918,7 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
       case 'search_knowledge': {
         const kw = String(args.keyword || '')
         if (!kw) return '(缺少 keyword 参数)'
-        const liveDirs = VAULT_WIKI_DIRS.filter(dir => existsSync(dir))
+        const liveDirs = vaultDirs().filter(dir => existsSync(dir))
         if (!liveDirs.length) return '(知识库尚未生成, 先运行 weflow-cli wiki compile)'
         // **两个目录一起搜**（文章知识库 + 聊天知识库）。分开是用户要求的，但"分开"
         // 不该变成"搜不到"——只读一个的话，另一半会静默缺席。
@@ -2003,7 +2009,7 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
           lines.push('日报文章: 还没有日报数据')
         }
         const conceptCounts: string[] = []
-        for (const dir of VAULT_WIKI_DIRS) {
+        for (const dir of vaultDirs()) {
           const idx = wikiIndexPath(dir)
           if (!existsSync(idx)) continue
           const m = readFileSync(idx, 'utf8').match(/共\s*(\d+)\s*个概念/)
@@ -2119,7 +2125,7 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
       case 'get_concepts': {
         const limit = boundedToolInteger(args.limit, 40, 120)
         const out: string[] = []
-        for (const dir of VAULT_WIKI_DIRS) {
+        for (const dir of vaultDirs()) {
           const line = dir.split(/[\\/]/).includes('Chat') ? '聊天线' : '文章线'
           const index = wikiIndexPath(dir)
           if (!existsSync(index)) { out.push(`【${line}】还没有总览索引（还没编译过这一线的知识库）`); continue }
@@ -2149,7 +2155,7 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // 两个知识库都要查（本仓的分线纪律：只查一个，另一半的断链永远看不见）
         const parts: string[] = []
         let totalBad = 0
-        for (const dir of VAULT_WIKI_DIRS) {
+        for (const dir of vaultDirs()) {
           const line = dir.split(/[\\/]/).includes('Chat') ? '聊天线' : '文章线'
           if (!existsSync(dir)) { parts.push(`【${line}】目录不存在，跳过`); continue }
           // 超时给 60 秒：本机最大的一条线（3,623 页）实测 **3.4 秒**（脚本里的 O(n²) 修掉之后，

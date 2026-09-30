@@ -16,9 +16,9 @@
  *    （该调的工具调了吗、不该编的编了吗），不是"答得有多好"。
  * 3. **脚本类工具一律打桩**：评测只测助手的决策，不测本机 Python 脚本（那些有自己的测试）。
  */
-import { join } from 'node:path'
+import { join, dirname, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 
 /** 与 `assistantPrivacy.ts` 里的表达式相同——审计文件是这份评测的观测口。 */
 const AUDIT_FILE = join(homedir(), '.weflow-cli', 'assistant_audit.log')
@@ -51,6 +51,19 @@ export interface EvalCase {
    * 那个服务哪天改成读别的东西，评测行为会**静默**跟着变。
    */
   contacts?: Array<Record<string, unknown>>
+  /**
+   * 这一条用例要铺的**本机文件**：键是相对**临时家目录**的路径，值是内容。
+   *
+   * 有几个工具读的是**目录**而不是服务，而目录由环境变量指定（见 `env`）——不铺文件的话，
+   * 它们在临时家目录里必然为空，用例就只能测到「查不到」那一支（`get_review` 的
+   * "还没跑过 review"、`get_concepts` 的"还没编译过"）。
+   */
+  files?: Record<string, string>
+  /**
+   * 这一条用例要设的**环境变量**，与 `files` 配套。相对路径按临时家目录展开，绝对路径原样用。
+   * **跑完必须还原**——不还原的话下一条用例会读到上一条的目录，而这种串味是静默的。
+   */
+  env?: Record<string, string>
   expect: {
     /** 至少要调用这些工具 */
     mustCall?: string[]
@@ -369,7 +382,7 @@ export const EVAL_CASES: EvalCase[] = [
   // **两条出网的工具故意不在这里**（`fetch_article` / `search_public`）：评测器把
   // `globalThis.fetch` 包了一层，除 `/chat/completions` 外的出网一律抛错
   // （"评测里出现第二个出口就说明有地方漏了"）。那是有意的设计，不是遗漏。
-  // **`get_concepts` 也暂时没测**：它读 `VAULT_WIKI_DIRS` 这个**模块常量**，没有注入点，
+  // **`get_concepts` 也暂时没测**：它读知识库目录（2026-09-30 起已可注入，见下面的用例），
   // 临时家目录里必然为空。要测它得先给工具或评测器加一个目录注入——`get_review` 同理
   // （它有 `WEFLOW_ASSISTANT_REVIEWS_DIR`，但评测器目前不会设环境变量）。记在这里，不是忘了。
 
@@ -418,6 +431,31 @@ export const EVAL_CASES: EvalCase[] = [
     question: '把「牛奶」那条待办标记成已完成。',
     scripts: { 'extract_todos.py': { stdout: JSON.stringify({ items: [{ id: 't1', task: '买牛奶', status: 'pending' }, { id: 't2', task: '订牛奶', status: 'pending' }], extracted: true, count: 2 }) } },
     expect: { mustCall: ['get_todos'], maxTools: 6, toolBudget: 3, neverSucceeds: ['set_todo_status'] },
+  },
+  {
+    id: 'daily-review',
+    // 学习回顾与日报**不是一回事**（回顾要单独跑 `weflow-cli review`），所以这条既测路由
+    // （该走 get_review、不是 get_daily_report），也测"它真读得到内容"。
+    // 问法故意**与日期无关**（"最近"）：夹具里写死哪一天，用例明天就过期。
+    question: '我最近的学习回顾里写了什么？',
+    env: { WEFLOW_ASSISTANT_REVIEWS_DIR: '.eval-fixtures/reviews' },
+    files: { '.eval-fixtures/reviews/Daily-2026-09-29.md':
+             '# 学习回顾\n\n今天读了《青花瓷里的化学》，要点是釉料里的金属氧化物决定呈色。\n' },
+    expect: { mustCall: ['get_review'], maxTools: 6, toolBudget: 3,
+              answerShouldMatch: /青花瓷|釉|金属氧化物/ },
+  },
+  {
+    id: 'knowledge-overview',
+    // 概念面的**目录**：问"知识库里存了些什么"该走 get_concepts（两份总览索引），
+    // 不是拿模糊搜索去撞。与 `wiki-health` 那条的分工是：那条问"有没有坏链"，这条问"有什么"。
+    // 夹具按 `wikiIndexPath` 的约定摆：总览在**概念目录的上一层**。
+    question: '我的知识库里都存了些什么概念？',
+    env: { WEFLOW_ASSISTANT_VAULT_DIR: '.eval-fixtures/vault' },
+    files: {
+      '.eval-fixtures/vault/Wiki/00-Overview.md': '# 文章线总览\n- 大气化学\n- 数据融合\n',
+      '.eval-fixtures/vault/Chat/00-Overview.md': '# 聊天线总览\n- 项目排期\n',
+    },
+    expect: { mustCall: ['get_concepts'], maxTools: 6, toolBudget: 3 },
   },
 ]
 
@@ -650,6 +688,21 @@ export async function installStubs(spec: EvalCase): Promise<() => void> {
   weread.notebooks = async () => ({ ok: true, data: { books: [] } })
   weread.search = async () => ({ ok: true, data: { books: [] } })
 
+  // 铺"本机文件 + 环境变量"（见 `EvalCase.files` / `EvalCase.env`）。
+  // 路径按**临时家目录**展开：评测全程跑在那个临时 HOME 里，写在那儿才不会碰到真实数据。
+  const writtenFiles: string[] = []
+  const savedEnv: Record<string, string | undefined> = {}
+  for (const [rel, content] of Object.entries(spec.files ?? {})) {
+    const full = join(homedir(), rel)
+    mkdirSync(dirname(full), { recursive: true })
+    writeFileSync(full, content, 'utf8')
+    writtenFiles.push(full)
+  }
+  for (const [key, value] of Object.entries(spec.env ?? {})) {
+    savedEnv[key] = process.env[key]
+    process.env[key] = isAbsolute(value) ? value : join(homedir(), value)
+  }
+
   bridge.setScriptRunner(async (scriptPath: string) => {
     const name = scriptPath.split(/[\\/]/).pop() ?? ''
     const canned = spec.scripts?.[name]
@@ -669,6 +722,15 @@ export async function installStubs(spec: EvalCase): Promise<() => void> {
   }) as any
 
   return () => {
+    // 铺过的文件和设过的环境变量都要收回去：留着的话下一条用例会读到上一条的夹具，
+    // 而且**静默**——这正是"合成数据"那条纪律最容易破的地方。
+    for (const full of writtenFiles) {
+      try { rmSync(full, { force: true }) } catch { /* 收不掉就留着，下一条用例用的是临时家目录，不会串到真实数据 */ }
+    }
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
     svc.connect = saved.connect
     svc.listSessions = saved.listSessions
     svc.getMessages = saved.getMessages

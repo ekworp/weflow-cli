@@ -7,6 +7,15 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **Two more behaviour-eval cases cover the tools that had no testable data at all.** `daily-review`
+  (`get_review`) and `knowledge-overview` (`get_concepts`) both read directories rather than services, and
+  with the eval running in a temporary home those directories are always empty - which is why neither tool
+  could be asserted beyond "nothing here yet". `WEFLOW_ASSISTANT_VAULT_DIR` was added as a third per-call
+  injection point (the same mechanism `WEFLOW_ASSISTANT_BIZ_DAILY_DIR` and `WEFLOW_ASSISTANT_REVIEWS_DIR`
+  already use), and the eval can now lay down fixture files and set those variables for a case. Same day, a
+  real gap surfaced: `listContacts` had never been stubbed, so `list_contacts` was calling the real service
+  against a temp home and always coming back empty - two cases were running on that accident while the
+  harness claims synthetic data. It is stubbed now, with contacts derived from the case's own sessions.
 - **The assistant's behaviour eval now covers the tools the widened surface added.** Ten tools went in on
   2026-09-30 and nine of them had no assertions at all - which matters because that is exactly how "did routing get
   worse once there were ten more tools to choose from" goes unnoticed. Six cases were added (`format-for-wechat`,

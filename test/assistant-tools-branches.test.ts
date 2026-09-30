@@ -452,7 +452,7 @@ test('get_stats 汇总本地数据，并同时报出知识库那一半', async (
   // 前四行由夹具决定，所以逐字断言（旧版只断言两行——日报那半读的是真实机器）
   assert.match(await run('get_stats', {}),
     /^会话数: 2\n收藏总数: 9\n日报文章: 3 篇，覆盖 2 天（2026-01-01 ~ 2026-01-02）\n主题分布: AI2、新闻1/m)
-  // 概念页那半读 VAULT_WIKI_DIRS（跨语言共用的常量，没有注入点）：只断言形状
+  // 概念页那半读知识库目录（2026-09-30 起可用 WEFLOW_ASSISTANT_VAULT_DIR 注入，同 bizDailyDir/reviewsDir）：只断言形状
   assert.match(await run('get_stats', {}), /(概念页: .+|没有日报数据)/,
     '知识库那一半要么给出数，要么说明为什么没有')
 
