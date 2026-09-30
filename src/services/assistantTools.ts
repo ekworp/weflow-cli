@@ -7,6 +7,8 @@ import { configService } from './configService.js'
 import { runPythonJson } from './pythonBridge.js'
 import { exportService } from './exportService.js'
 import type { AssistantMemory } from './assistantMemory.js'
+import { frameLocalData } from './assistantMemory.js'
+import { disabledIds, readSkillBody, scanSkills, skillRoots, skillState } from './assistantSkills.js'
 import { privacyGate } from './assistantPrivacy.js'
 import { existsSync, readFileSync, readdirSync } from 'fs'
 import { basename, join } from 'path'
@@ -15,14 +17,39 @@ import { resolvePackageRoot } from '../utils/packageRoot.js'
 import type { Contact } from '../types.js'
 import { clipWithMarker } from '../utils/text.js'
 import { resolveSince, resolveUntil } from '../utils/dateRange.js'
+import { isAllowedWeChatArticleUrl, safeDate } from '../utils/mcpSecurity.js'
 
 const PKG_ROOT = resolvePackageRoot(import.meta.url)
-const BIZ_DAILY_DIR = join(PKG_ROOT, 'output', 'biz-daily')
+/**
+ * 日报目录。**可以用 `WEFLOW_ASSISTANT_BIZ_DAILY_DIR` 指到别处**。
+ *
+ * 为什么加这个注入点：`get_daily_report` 一直是本文件里**唯一从没被执行过的工具分支**，
+ * 原因写在测试文件头上——它读的是模块级常量路径，没有注入点，断言只能写成"没数据/有数据皆可"，
+ * 那种测试看着像覆盖、其实什么也没钉住。同 `WEFLOW_ASSISTANT_EXPORT_ROOT` 的先例（见 `export_chat`）。
+ */
+// 做成函数而不是模块常量：环境变量在**每次调用**时读，测试才能在同一进程里换夹具
+// （同 `export_chat` 的 `WEFLOW_ASSISTANT_EXPORT_ROOT` 做法）。常量只在 import 时求值，
+// 那会让「目录不存在」这类分支永远测不到——写出来的断言就只能是摆设。
+const bizDailyDir = (): string =>
+  process.env.WEFLOW_ASSISTANT_BIZ_DAILY_DIR || join(PKG_ROOT, 'output', 'biz-daily')
+/** 学习回顾目录。同样可注入：否则 `get_review` 的断言只能依赖这台机器上有没有跑过 `review`。 */
+const reviewsDir = (): string =>
+  process.env.WEFLOW_ASSISTANT_REVIEWS_DIR || join(PKG_ROOT, 'output', 'reviews', 'Daily')
 /** 单条聊天消息进上下文的字数上限（见 get_messages：引用消息要放得下正文+被引原文） */
 const MSG_BODY_CHARS = 160
 // 知识页住在哪几个目录。**两个是有意的**：文章知识库与聊天知识库分开（用户 2026-09-27
 // 要求），所以读的一方要把**两个都读**——只读一个，分出去的那一半就静默地搜不到。
 // 与 Python 的 `_utils.CONCEPT_DIRS` 是同一份清单，有测试钉住两者一致（跨语言没法共用常量）。
+/**
+ * 总览索引在哪：**在概念目录的上一层**——`Wiki/Concepts/` 的兄弟是 `Wiki/00-Overview.md`。
+ *
+ * 抽成函数是为了能直接测：这段路径写错过一次（写成 `join(dir, '00-Overview.md')`，于是一直读不到），
+ * 而当时那条测试只能断言「有内容或没有」这种形状——真实机器上有索引、CI 上没有，两条路都绿。
+ */
+export function wikiIndexPath(conceptDir: string): string {
+  return join(conceptDir, '..', '00-Overview.md')
+}
+
 const VAULT_WIKI_DIRS = [
   join(PKG_ROOT, 'output', 'wechat-vault', 'Wiki', 'Concepts'),
   join(PKG_ROOT, 'output', 'wechat-vault', 'Chat', 'Concepts'),
@@ -413,6 +440,80 @@ export function extractText(html: string): string {
 }
 
 /** 确保数据库已连接 (connect 幂等, 已连接时直接返回) */
+/**
+ * 抓页面 HTML：微信内置浏览器 UA + Referer 绕 WAF，最多试两次。`read_favorite` 与 `fetch_article` 共用。
+ *
+ * `maxRedirects > 0` 时**自己跟跳转并逐跳复检白名单**：默认的 `redirect: 'follow'` 只看入口，
+ * 一次 302 就能把白名单绕过去（拿到一个被允许的入口，跳到内网地址）。`fetch_article`
+ * 收的是用户/模型给的任意 URL，所以要这道闸；`read_favorite` 收的是用户**自己收藏**的链接，
+ * 保持原行为不动（那里用 denylist，且收藏里本来就有各种站）。
+ */
+async function fetchArticleHtml(
+  url: string,
+  opts: { maxRedirects?: number; allowHop?: (u: string) => boolean } = {},
+): Promise<{ status: number; html: string }> {
+  const maxRedirects = opts.maxRedirects ?? 0
+  let current = url
+  let lastStatus = 0
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    if (maxRedirects > 0 && opts.allowHop && !opts.allowHop(current)) {
+      return { status: lastStatus, html: '' }   // 某一跳出了白名单：宁可空手而归
+    }
+    let html = ''
+    let status = 0
+    let followed = false
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(current, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.38(0x18002633) NetType/WIFI Language/zh_CN',
+            'Referer': 'https://mp.weixin.qq.com/',
+            'Accept': 'text/html,application/xhtml+xml',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+          },
+          ...(maxRedirects > 0 ? { redirect: 'manual' as const } : {}),
+          signal: AbortSignal.timeout(20_000),
+        })
+        status = res.status
+        if (maxRedirects > 0 && status >= 300 && status < 400) {
+          const location = res.headers.get('location')
+          if (!location) return { status, html: '' }
+          current = new URL(location, current).toString()
+          followed = true
+          break     // 换一跳，重来
+        }
+        html = (await res.text()).slice(0, 500_000)
+        // 正文验证: 必须含 js_content (否则是验证页, 重试)
+        if (res.ok && html.includes('js_content')) break
+      } catch { /* 超时/网络错误 → 重试 */ }
+    }
+    if (html) return { status, html }
+    lastStatus = status
+    // 没跟跳转就走完了两次尝试：就是抓不到，别再拿同一个地址重试下去
+    if (!followed) return { status, html: '' }
+  }
+  return { status: lastStatus, html: '' }
+}
+
+/** 读响应体但设上限：第三方搜索页可能很大，不让它把内存吃掉（超了就截断，不报错） */
+async function readTextLimited(response: Response, maxBytes: number): Promise<string> {
+  const buf = await response.arrayBuffer()
+  return Buffer.from(buf).subarray(0, maxBytes).toString('utf8')
+}
+
+/**
+ * 从抓到的 HTML 里取正文：优先正常页面的 `js_content`，取不到再走 WAF 挑战页的 `content_noencode`。
+ * 返回的文本已按 `maxChars` 截断。
+ */
+function articleTextFromHtml(html: string, maxChars: number): string {
+  let text = html.includes('js_content') ? extractText(html) : ''
+  if (!text || (text.match(/[一-鿿]/g) || []).length < 50) {
+    const decoded = extractFromChallengePage(html)
+    if (decoded) text = stripTags(decoded)
+  }
+  return text.slice(0, maxChars)
+}
+
 async function ensureDb(): Promise<void> {
   await chatService.connect()
 }
@@ -420,10 +521,10 @@ async function ensureDb(): Promise<void> {
 /** 最近一份**有内容**的日报是哪天，以及那是几天前。算不出来就回空串——不猜。 */
 function lastDailyNote(): string {
   try {
-    const days = readdirSync(BIZ_DAILY_DIR)
+    const days = readdirSync(bizDailyDir())
       .filter(name => /^\d{4}-\d{2}-\d{2}$/.test(name)).sort().reverse().slice(0, 30)
     for (const day of days) {
-      const file = join(BIZ_DAILY_DIR, day, '.articles.json')
+      const file = join(bizDailyDir(), day, '.articles.json')
       if (!existsSync(file)) continue
       const payload = JSON.parse(readFileSync(file, 'utf8'))
       if ((payload?.articles ?? []).length) {
@@ -441,6 +542,15 @@ interface TalkerCandidate {
 }
 
 class ToolInputError extends Error {}
+
+/**
+ * 把待办 id 露给模型。**不露出来它就指不到具体哪一条**——`set_todo_status` 只能靠 id
+ * 或唯一的任务文字定位，而任务文字常常是长句、几条之间又很像。
+ * 给完整 id（CLI 那边支持 id 前缀，但前缀要唯一才安全，这里不赌）。
+ */
+function idTag(t: any): string {
+  return t?.id ? ` [id: ${t.id}]` : ''
+}
 
 export function boundedToolInteger(value: unknown, fallback: number, maximum: number, field = 'limit'): number {
   if (value === undefined || value === null || value === '') return fallback
@@ -596,13 +706,19 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'function',
     function: {
       name: 'get_daily_report',
-      description: '获取公众号日报: 某天推送了哪些文章(标题/来源/分类/AI摘要)。适合「今天/某天公众号推了什么」「最近有哪些AI文章」类问题。',
+      description: '获取公众号日报: 推送了哪些文章(标题/来源/分类/AI摘要)。'
+        + '适合「今天/某天公众号推了什么」「最近有哪些AI文章」「搜一下关于X的文章」类问题。'
+        + '**给 date 就是那一天的；不给 date 只给关键词/分类就是跨日期搜**（默认最近 7 天，用 days 调）。'
+        + '要当天那份**人读的日报正文**（不是条目清单）加 full。',
       parameters: {
         type: 'object',
         properties: {
-          date: { type: 'string', description: '日期 YYYY-MM-DD, 默认最新一期' },
+          date: { type: 'string', description: '日期 YYYY-MM-DD；省略则最新一期（或配合关键词跨日期搜）' },
           topic: { type: 'string', description: '分类过滤: AI | 学术 | 新闻 | 文学 | 投资' },
-          keyword: { type: 'string', description: '标题/摘要关键词过滤' },
+          keyword: { type: 'string', description: '标题/摘要/来源关键词。不给 date 时跨日期搜' },
+          days: { type: 'number', description: '跨日期搜的时间窗(天), 默认 7, 上限 60' },
+          full: { type: 'boolean', description: '返回当天日报的正文（人读的那份），而不是条目清单' },
+          max_chars: { type: 'number', description: 'full 时正文上限, 默认 3000, 上限 6000' },
           limit: { type: 'number', description: '返回条数, 默认15' },
         },
       },
@@ -626,12 +742,16 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'function',
     function: {
       name: 'get_weread',
-      description: '查看用户微信读书数据: 书架(shelf)、笔记(notebooks)、搜索书(search)。适合「我在读什么书」「某本书的笔记」类问题。',
+      description: '查看用户微信读书数据。mode: shelf(书架) | notebooks(有笔记的书) | search(按书名搜) '
+        + '| stats(近期阅读时长) | book(某本书详情+我的进度) | review(某本书的热门书评) '
+        + '| discover(推荐/相似书) | profile(累计阅读画像)。适合「我在读什么书」「某本书讲什么」「读了多少」类问题。'
+        + 'book / review 需要先用 search 拿到 book_id。',
       parameters: {
         type: 'object',
         properties: {
-          mode: { type: 'string', description: 'shelf | notebooks | search, 默认 shelf' },
+          mode: { type: 'string', description: 'shelf | notebooks | search | stats | book | review | discover | profile, 默认 shelf' },
           keyword: { type: 'string', description: 'search 模式的书名关键词' },
+          book_id: { type: 'string', description: 'book / review 模式的书籍 id（search 或 shelf 的结果里有）' },
         },
       },
     },
@@ -640,11 +760,13 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'function',
     function: {
       name: 'get_todos',
-      description: '查看用户从聊天记录提取的待办任务清单(含优先级和截止时间)。适合「我最近有什么待办」「有什么紧急的事」类问题。',
+      description: '查看用户从聊天记录提取的待办任务清单(含优先级和截止时间)。适合「我最近有什么待办」「有什么紧急的事」类问题。'
+        + '每条后面方括号里的 id 用来改某一条的状态（set_todo_status 需要它）。按紧急度分组看用 group_by。',
       parameters: {
         type: 'object',
         properties: {
           status: { type: 'string', description: 'pending | done, 默认 pending' },
+          group_by: { type: 'string', description: '传 urgency 就按紧急度分组列出' },
         },
       },
     },
@@ -777,7 +899,8 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'function',
     function: {
       name: 'get_stats',
-      description: '获取用户本地微信数据统计(会话数/收藏总数等)。',
+      description: '本地数据总览：会话数、收藏总数、日报文章数与覆盖天数、主题分布、概念页数。'
+        + '适合「我一共有多少数据」这类总览问题；单看公众号推送用 get_reading_stats。',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -830,6 +953,172 @@ export const TOOL_DEFS: ToolDef[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'list_skills',
+      description: '列出本机装好的技能包(名字+一句话说明+版本)。技能是一份说明文档,'
+        + '用 read_skill 读它的正文再照着做；不要凭名字猜它怎么用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '可选：按关键词过滤（匹配 id、名称、说明和触发词）' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_skill',
+      description: '读取某个技能包的完整说明（SKILL.md 正文）。要用某个技能前先读它。'
+        + 'id 用 list_skills 查到的那个。',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '技能 id，如 wechat-article-extract' },
+        },
+        required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_contacts',
+      description: '列出通讯录里的联系人（显示名、备注、昵称）。**不含 wxid 等本机标识**，'
+        + '只有能叫得出名字的人。'
+        + '（要看最近跟谁聊过用 list_sessions；要按名字查某个会话的聊天用 get_messages）',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword: { type: 'string', description: '按名字过滤（可省略）' },
+          limit: { type: 'number', description: '最多几条, 默认 50, 上限 200' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_review',
+      description: '读某一天的学习回顾（对当天日报文章做的二次整理：要点、联系、值得回看的）。'
+        + '**与 get_daily_report 不是一回事**：那个是当天日报的原始条目清单，这个是复盘。',
+      parameters: {
+        type: 'object',
+        properties: {
+          date: { type: 'string', description: '日期 YYYY-MM-DD，省略则取最近一份' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_concepts',
+      description: '读知识库的两份总览索引（文章线、聊天线各一份）。这是**目录**，'
+        + '用来回答"我的知识库里都有什么"；要按名字找**某一页**的内容用 search_knowledge。',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: '每份索引最多返回多少行, 默认 40' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_article',
+      description: '抓取一篇公众号文章的正文（需要完整链接）。只接受 https 的 mp.weixin.qq.com 链接。'
+        + '与 read_favorite 的区别：那个从你自己的收藏里找，这个由用户给出链接。',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: '公众号文章完整链接' },
+          max_chars: { type: 'number', description: '正文上限, 默认 3000, 上限 6000' },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_public',
+      description: '在公开的公众号文章里按关键词搜标题与摘要（走第三方搜索页）。'
+        + '只搜公开文章，搜不到你自己的收藏、聊天记录或知识库。',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword: { type: 'string', description: '搜索词' },
+          limit: { type: 'number', description: '最多几条, 默认 8, 上限 20' },
+        },
+        required: ['keyword'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'format_article',
+      description: '把 Markdown 转成能直接粘进公众号编辑器的 HTML 片段（纯本地转换，不联网、不写文件）。'
+        + '主题名用 list_themes 查。',
+      parameters: {
+        type: 'object',
+        properties: {
+          // 参数名保持 `content` —— 这个名字在 MCP 那条路上已经被外部客户端用了，
+          // 改名的代价是别人的调用直接失效（工具名不变、参数变了，最难查的那种坏法）
+          content: { type: 'string', description: '要排版的 Markdown 正文' },
+          theme: { type: 'string', description: '主题名（省略用 default）' },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_themes',
+      description: '列出可用的公众号排版主题（配合 format_article 用）。',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'lint_wiki',
+      description: '知识库体检：断链、孤儿页、空页、同名页。**只读**，不改任何页。',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_skills',
+      description: '技能体检：报出读不出来的 SKILL.md、跨目录同名、id 不合规范、被禁用的技能。'
+        + '与 list_skills 的区别：那个是清单，这个是**问题清单**。',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_todo_status',
+      description: '把一条待办标记为已完成 / 取消完成。**不能删除待办、不能新增**。'
+        + '要精确指到那一条：优先用 get_todos 给出的 id；也可以给一段任务文字，'
+        + '但**匹配到零条或多条都会被拒绝**（猜错条目比拒绝更糟）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '待办 id（get_todos 输出里的那个）' },
+          task: { type: 'string', description: '或用任务文字精确匹配（必须唯一）' },
+          status: { type: 'string', description: 'done = 已完成, pending = 取消完成' },
+        },
+        required: ['status'],
+      },
+    },
+  },
 ]
 
 /**
@@ -851,6 +1140,10 @@ export const TOOL_DEFS: ToolDef[] = [
 export const MCP_EXCLUDED: Record<string, string> = {
   save_memory: 'MCP 没有微信用户身份，挂的记忆桶是单独一条，让它写没有意义',
   look_at_image: 'MCP 只把工具返回的文本交给客户端，它挂进侧信道的图没人接，回话会变成一句假话',
+  // 这条是**故意留在外面的**（docs/MCP.md 的天花板：「mutating todos ... stay out」）：
+  // 助手在微信/面板里可以替你翻转一条待办状态，但外部 MCP 客户端不行——
+  // 那条路上没有"你"，只有调用方；一条机器指令顺手改掉你的待办，不该是默认能力。
+  set_todo_status: '待办是本地状态，MCP 那条路上没有用户可确认；改状态请在微信/面板里说，或用 CLI 的两段式 todos done',
 }
 
 export const MCP_TOOL_DEFS = TOOL_DEFS.filter(tool => !(tool.function.name in MCP_EXCLUDED))
@@ -1145,34 +1438,11 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
           return txt ? `「${art.title || '无标题'}」内容:\n${txt.slice(0, maxChars)}` : `(「${art.title}」没有可读的链接和内容)`
         }
         if (!isSafeUrl(art.link)) return `(链接不安全, 拒绝抓取: ${art.link.slice(0, 60)})`
-        // 微信内置浏览器 UA + Referer 绕 WAF (与 biz_daily.py 同策略)
-        let html = ''
-        let status = 0
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try {
-            const res = await fetch(art.link, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.38(0x18002633) NetType/WIFI Language/zh_CN',
-                'Referer': 'https://mp.weixin.qq.com/',
-                'Accept': 'text/html,application/xhtml+xml',
-                'Accept-Language': 'zh-CN,zh;q=0.9',
-              },
-              signal: AbortSignal.timeout(20_000),
-            })
-            status = res.status
-            html = (await res.text()).slice(0, 500_000)
-            // 正文验证: 必须含 js_content (否则是验证页, 重试)
-            if (res.ok && html.includes('js_content')) break
-          } catch { /* 超时/网络错误 → 重试 */ }
-        }
+        // 微信内置浏览器 UA + Referer 绕 WAF（与 biz_daily.py 同策略）；
+        // 这段与 fetch_article 是同一份实现——两处各写一份必然会漂
+        const { status, html } = await fetchArticleHtml(art.link)
         if (!html) return `(抓取失败 HTTP ${status})`
-        // 路径1: 正常页面 js_content; 路径2: WAF 挑战页 content_noencode 兜底
-        let text = html.includes('js_content') ? extractText(html) : ''
-        if (!text || (text.match(/[\u4e00-\u9fff]/g) || []).length < 50) {
-          const decoded = extractFromChallengePage(html)
-          if (decoded) text = stripTags(decoded)
-        }
-        text = text.slice(0, maxChars)
+        let text = articleTextFromHtml(html, maxChars)
         if (html.includes('已被发布者删除')) return `(「${art.title}」已被发布者删除)`
         if (!text.trim() || (text.match(/[\u4e00-\u9fff]/g) || []).length < 20) {
           return `(「${art.title}」正文提取失败, 可能是纯图片文章或已被删除)`
@@ -1180,32 +1450,80 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         return `「${art.title || '无标题'}」(${art.source_name || '未知来源'}) 正文:\n${text}`
       }
       case 'get_daily_report': {
-        const dates = existsSync(BIZ_DAILY_DIR)
-          ? readdirSync(BIZ_DAILY_DIR).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()
+        const dates = existsSync(bizDailyDir())
+          ? readdirSync(bizDailyDir()).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()
           : []
         if (!dates.length) return '(还没有日报数据, 先运行 biz_daily 生成)'
-        const date = String(args.date || dates[0])
-        const articlesFile = join(BIZ_DAILY_DIR, date, '.articles.json')
-        if (!existsSync(articlesFile)) return `(${date} 没有日报。可用日期: ${dates.slice(0, 5).join(', ')})`
-        const raw = JSON.parse(readFileSync(articlesFile, 'utf8'))
-        const all = Array.isArray(raw) ? raw : (raw.articles || Object.values(raw))
-        let list = all as any[]
+        const readArticles = (date: string): any[] | null => {
+          const file = join(bizDailyDir(), date, '.articles.json')
+          if (!existsSync(file)) return null
+          try {
+            const raw = JSON.parse(readFileSync(file, 'utf8'))
+            return Array.isArray(raw) ? raw : (raw.articles || Object.values(raw))
+          } catch { return null }
+        }
+        const fmt = (a: any) => {
+          const summary = (a.summary || '').replace(/\s+/g, ' ').slice(0, 80)
+          const where = a.date ? `${a.date} ` : ''
+          return `· ${where}[${a.topic}] ${a.title} (${a.source})${summary ? `\n  ${summary}` : ''}`
+        }
+        const limit = boundedToolInteger(args.limit, 15, 30)
+
+        // 不给 date 但给了关键词 → 跨日期搜（MCP 那边原本叫 search_articles，两个工具搜的
+        // 是同一批文章、只是范围不同，模型无从判断该用哪个，所以合并成一个）。
+        const wantDate = args.date ? safeDate(args.date) : null
+        if (args.date && !wantDate) return `(日期格式不对: ${args.date}，要 YYYY-MM-DD)`
+        if (!wantDate && (args.keyword || args.topic)) {
+          const days = boundedToolInteger(args.days, 7, 60)
+          const window = dates.slice(0, days)
+          const hits: any[] = []
+          let scanned = 0
+          for (const d of window) {
+            const arts = readArticles(d)
+            if (!arts) continue
+            scanned += arts.length
+            for (const a of arts) {
+              if (args.topic && a.topic !== args.topic) continue
+              if (args.keyword) {
+                const kw = String(args.keyword).toLowerCase()
+                const hay = `${a.title || ''} ${a.summary || ''} ${a.source || ''}`.toLowerCase()
+                if (!hay.includes(kw)) continue
+              }
+              hits.push({ ...a, date: d })
+            }
+          }
+          if (!hits.length) {
+            return `(最近 ${window.length} 天的日报里（共 ${scanned} 篇）没有匹配`
+              + `${args.keyword ? `「${args.keyword}」` : `主题 ${args.topic}`} 的文章)`
+          }
+          return `最近 ${window.length} 天里匹配 ${hits.length} 篇（共扫 ${scanned} 篇）:\n`
+            + hits.slice(0, limit).map(fmt).join('\n')
+        }
+
+        const date = wantDate || dates[0]
+        const all = readArticles(date)
+        if (!all) return `(${date} 没有日报。可用日期: ${dates.slice(0, 5).join(', ')})`
+        // `full`：给的是当天那份人读的日报正文（README.md），不是条目清单。
+        // 不加这个参数，模型想"把那天的日报念一段"就只能拿到标题列表。
+        if (args.full) {
+          const readme = join(bizDailyDir(), date, 'README.md')
+          if (!existsSync(readme)) return `(${date} 没有日报正文文件，只有条目)`
+          const maxChars = boundedToolInteger(args.max_chars, 3000, 6000)
+          return `${date} 日报正文（${all.length} 篇）:\n${readFileSync(readme, 'utf8').slice(0, maxChars)}`
+        }
+        let list = all
         if (args.topic) list = list.filter(a => a.topic === args.topic)
         if (args.keyword) {
           const kw = String(args.keyword).toLowerCase()
           list = list.filter(a =>
             (a.title || '').toLowerCase().includes(kw) || (a.summary || '').toLowerCase().includes(kw))
         }
-        const limit = boundedToolInteger(args.limit, 15, 30)
         if (!list.length) return `(${date} 日报共 ${all.length} 篇, 过滤后无匹配)`
         const byTopic: Record<string, number> = {}
         for (const a of all) byTopic[a.topic] = (byTopic[a.topic] || 0) + 1
         const topicStat = Object.entries(byTopic).map(([t, n]) => `${t}${n}篇`).join(' ')
         return `${date} 日报共 ${all.length} 篇 (${topicStat}), 匹配 ${list.length} 篇:\n` +
-          list.slice(0, limit).map(a => {
-            const summary = (a.summary || '').replace(/\s+/g, ' ').slice(0, 80)
-            return `· [${a.topic}] ${a.title} (${a.source})${summary ? `\n  ${summary}` : ''}`
-          }).join('\n')
+          list.slice(0, limit).map(fmt).join('\n')
       }
       case 'get_sns': {
         await ensureDb()
@@ -1257,6 +1575,56 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
               r.data.books.slice(0, 15).map((b: any) =>
                 `· ${titleOf(b)} (${authorOf(b)}) — ${b.noteCount || 0} 条笔记`).join('\n')
           }
+          if (mode === 'profile') {
+            const r = await wereadService.profile()
+            if (!r.ok || !r.data) return `(读不到阅读画像: ${r.error || ''})`
+            const p = r.data
+            return `阅读画像: ${p.name || '(未给昵称)'}\n`
+              + `累计阅读 ${Math.round((p.totalReadTime || 0) / 60)} 分钟、${p.totalReadDays || 0} 天\n`
+              + `书架 ${p.totalBooks || 0} 本，读完 ${p.totalFinished || 0} 本`
+          }
+          if (mode === 'stats') {
+            const r = await wereadService.readData('monthly')
+            if (!r.ok || !r.data) return `(读不到阅读统计: ${r.error || ''})`
+            const d = r.data
+            const top = (d.readLongest || []).slice(0, 5).map((x: any) =>
+              `· ${x?.book?.title || x?.albumInfo?.title || '(未知)'} ${Math.round((x?.readTime || 0) / 60)} 分钟`)
+            return `近期阅读 ${Math.round((d.totalReadTime || 0) / 60)} 分钟、读了 ${d.readDays || 0} 天`
+              + `，日均 ${Math.round((d.dayAverageReadTime || 0) / 60)} 分钟`
+              + (top.length ? `\n读得最久的:\n${top.join('\n')}` : '')
+          }
+          if (mode === 'book') {
+            const bookId = String(args.book_id || '').trim()
+            if (!bookId) return '(book 模式需要 book_id —— 先用 search 模式按书名找到它)'
+            const info = await wereadService.bookInfo(bookId)
+            if (!info.ok || !info.data) return `(读不到这本书: ${info.error || ''})`
+            const b: any = info.data
+            const prog = await wereadService.getProgress(bookId)
+            const pct = prog.ok && prog.data
+              ? `\n我的进度: ${prog.data.progress}%${prog.data.chapterTitle ? `（${prog.data.chapterTitle}）` : ''}`
+              : ''
+            return `《${b.title}》${b.author || ''}\n评分 ${b.rating ?? '未知'}（${b.ratingCount || 0} 人）`
+              + `| ${b.category || '未分类'} | ${b.wordCount || '未知'}字${pct}`
+          }
+          if (mode === 'review') {
+            const bookId = String(args.book_id || '').trim()
+            if (!bookId) return '(review 模式需要 book_id —— 先用 search 模式按书名找到它)'
+            const r = await wereadService.reviews(bookId, 5)
+            if (!r.ok || !r.data?.reviews?.length) return `(这本书还没有热门书评: ${r.error || ''})`
+            return `热门书评 ${r.data.reviews.length} 条:\n`
+              + r.data.reviews.map((v: any) =>
+                `· ${String(v.content || '').replace(/\s+/g, ' ').slice(0, 120)}`
+                + `（${v.user?.name || '匿名'}，${v.rating ? `评 ${v.rating} 分` : '未评分'}，${v.likeCount || 0} 赞）`).join('\n')
+          }
+          if (mode === 'discover') {
+            const bookId = String(args.book_id || '').trim()
+            const r = bookId ? await wereadService.similar(bookId, 6) : await wereadService.recommend(8)
+            if (!r.ok || !r.data?.books?.length) return `(读不到推荐: ${r.error || ''})`
+            return (bookId ? '与这本书相似的' : '为你推荐的') + `书 ${r.data.books.length} 本:\n`
+              + r.data.books.map((b: any) =>
+                `· 《${b.title}》${b.author || ''}${b.rating ? ` 评分 ${b.rating}` : ''}`
+                + (b.intro ? `\n  ${String(b.intro).replace(/\s+/g, ' ').slice(0, 80)}` : '')).join('\n')
+          }
           if (mode === 'search') {
             const kw = String(args.keyword || '')
             if (!kw) return '(search 模式需要 keyword)'
@@ -1294,9 +1662,23 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
           }
           return `(没有${status === 'done' ? '已完成' : '待办'}任务)`
         }
+        // 分组：`todos remind` 其实就是同一个文件按紧急度重排，所以不另开一个工具，
+        // 加个参数就够（多一个近义工具只会让模型在两者之间瞎挑）
+        if (String(args.group_by || '') === 'urgency') {
+          const order: Record<string, number> = { 高: 0, 中: 1, 低: 2 }
+          const sorted = [...todos].sort((a: any, b: any) =>
+            (order[a.urgency] ?? 3) - (order[b.urgency] ?? 3))
+          const groups: Record<string, any[]> = {}
+          for (const t of sorted) (groups[t.urgency || '未标'] = groups[t.urgency || '未标'] || []).push(t)
+          return `${status === 'done' ? '已完成' : '待办'} ${todos.length} 项（按紧急度分组）:\n` +
+            Object.entries(groups).map(([u, list]) =>
+              `【${u}】${list.length} 项\n` + list.slice(0, 10).map((t: any) =>
+                `· ${t.task || t.content || t.text || t.title}${t.deadline && t.deadline !== '未提及' ? ` (截止 ${t.deadline})` : ''}${idTag(t)}`).join('\n')
+            ).join('\n')
+        }
         return `${status === 'done' ? '已完成' : '待办'} ${todos.length} 项:\n` +
           todos.slice(0, 15).map((t: any) =>
-            `· [${t.urgency || '中'}] ${t.task || t.content || t.text || t.title}${t.deadline && t.deadline !== '未提及' ? ` (截止 ${t.deadline})` : ''}`).join('\n')
+            `· [${t.urgency || '中'}] ${t.task || t.content || t.text || t.title}${t.deadline && t.deadline !== '未提及' ? ` (截止 ${t.deadline})` : ''}${idTag(t)}`).join('\n')
       }
       case 'search_chats': {
         // 跨会话检索：本机 message_fts 索引 + 判断模型挑查询词（**只发候选词与问题，不发聊天内容**）
@@ -1595,7 +1977,40 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         await ensureDb()
         const sessions = await chatService.listSessions(undefined, 1000)
         const fav = await chatService.getFavorites({ limit: 1 })
-        return `会话数: ${sessions.length}\n收藏总数: ${fav.success ? fav.total : '未知'}`
+        const lines = [`会话数: ${sessions.length}`, `收藏总数: ${fav.success ? fav.total : '未知'}`]
+        // 知识库那一半：MCP 的手写 get_stats 一直有、助手这边缺。同一个工具名在两个界面
+        // 报的东西不一样，是最容易让人误判成数据丢了的那种不一致。
+        const dates = existsSync(bizDailyDir())
+          ? readdirSync(bizDailyDir()).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort()
+          : []
+        let articleCount = 0
+        const topics: Record<string, number> = {}
+        for (const d of dates) {
+          const file = join(bizDailyDir(), d, '.articles.json')
+          if (!existsSync(file)) continue
+          try {
+            const raw = JSON.parse(readFileSync(file, 'utf8'))
+            const arts: any[] = Array.isArray(raw) ? raw : (raw.articles || [])
+            articleCount += arts.length
+            for (const a of arts) topics[a.topic || '未知'] = (topics[a.topic || '未知'] || 0) + 1
+          } catch { /* 某一天的文件坏了不该让整个统计失败 */ }
+        }
+        if (dates.length) {
+          lines.push(`日报文章: ${articleCount} 篇，覆盖 ${dates.length} 天（${dates[0]} ~ ${dates[dates.length - 1]}）`)
+          const top = Object.entries(topics).sort((a, b) => b[1] - a[1]).slice(0, 6)
+          if (top.length) lines.push(`主题分布: ${top.map(([t, n]) => `${t}${n}`).join('、')}`)
+        } else {
+          lines.push('日报文章: 还没有日报数据')
+        }
+        const conceptCounts: string[] = []
+        for (const dir of VAULT_WIKI_DIRS) {
+          const idx = wikiIndexPath(dir)
+          if (!existsSync(idx)) continue
+          const m = readFileSync(idx, 'utf8').match(/共\s*(\d+)\s*个概念/)
+          if (m) conceptCounts.push(`${dir.split(/[\\/]/).includes('Chat') ? '聊天线' : '文章线'} ${m[1]}`)
+        }
+        if (conceptCounts.length) lines.push(`概念页: ${conceptCounts.join('、')}`)
+        return lines.join('\n')
       }
       case 'get_reading_stats': {
         const days = boundedToolInteger(args.days, 7, 90, 'days')
@@ -1629,6 +2044,264 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         if (!content) return '(内容为空, 未保存)'
         const added = ctx.memory.addFact(ctx.userId, content)
         return added ? '(已存入长期记忆)' : '(与已有记忆重复, 未保存)'
+      }
+      case 'list_skills': {
+        const scan = scanSkills()
+        const q = String(args.query || '').trim().toLowerCase()
+        const hit = (s: { id: string; name: string; description: string; triggers: string[] }) =>
+          !q || [s.id, s.name, s.description, ...s.triggers].some(x => String(x).toLowerCase().includes(q))
+        const rows = scan.skills.filter(hit)
+        if (!rows.length) {
+          // 一个技能都没有时**说清是"没装"还是"目录配错了"**：后者会把用户引到错的地方找
+          if (!scan.skills.length) {
+            return `本机没有扫描到技能。技能根目录：${skillRoots().join('、')}`
+              + (scan.missingRoots.length ? `（其中这些目录不存在：${scan.missingRoots.join('、')}）` : '')
+          }
+          return `没有匹配「${args.query}」的技能（本机共有 ${scan.skills.length} 个）`
+        }
+        const disabled = disabledIds()
+        const lines = rows.map(s => {
+          const state = skillState(s, disabled)
+          const tag = state === 'disabled' ? '[已禁用] ' : ''
+          const ver = s.version ? ` v${s.version}` : ''
+          return `· ${tag}${s.id}${ver}：${s.name} —— ${s.description || '（无描述）'}`
+        })
+        lines.push(`（共 ${rows.length} 个，正文用 read_skill 读）`)
+        return lines.join('\n')
+      }
+      case 'read_skill': {
+        const id = String(args.id || '').trim()
+        if (!id) return '(参数错误: 缺少技能 id)'
+        const body = readSkillBody(id)
+        if (!body.ok) return body.text
+        // 技能正文是**磁盘上的内容**，可能含 `</weflow-local-data>` —— 必须包起来再进上下文
+        return frameLocalData(`skill.${id}`, body.text)
+      }
+      case 'list_contacts': {
+        await ensureDb()
+        const keyword = String(args.keyword || '').trim()
+        const limit = boundedToolInteger(args.limit, 50, 200)
+        const contacts = await chatService.listContacts(keyword || undefined, limit)
+        if (!contacts.length) {
+          return keyword
+            ? `(通讯录里没有匹配「${keyword}」的名字)`
+            : '(通讯录是空的或读不到——可以用 check 看本机数据源的状态)'
+        }
+        // **只给名字**：`username` 是 wxid，`avatarUrl` 里也可能带本机标识，
+        // 本仓的纪律是本机标识不进模型上下文（同 speakerLabel 那边的处理）
+        const names: string[] = []
+        for (const c of contacts) {
+          const n = String(c.remark || c.displayName || c.nickname || '').trim()
+          if (n && !names.includes(n)) names.push(n)
+        }
+        if (!names.length) return '(通讯录读到了, 但都没有可显示的名字)'
+        return `通讯录里 ${names.length} 个名字:\n` + names.slice(0, limit).map(n => `· ${n}`).join('\n')
+      }
+      case 'get_review': {
+        const dir = reviewsDir()
+        if (!existsSync(dir)) {
+          // 说清"这个目录本来就还没生成"，而不是让模型以为"今天没有回顾"
+          return '(还没有学习回顾——它不是日报自动产的，要单独跑 `weflow-cli review`)'
+        }
+        const files = readdirSync(dir).filter(f => /^Daily-\d{4}-\d{2}-\d{2}\.md$/.test(f)).sort().reverse()
+        if (!files.length) return '(学习回顾目录是空的)'
+        const want = args.date ? safeDate(args.date) : null
+        if (args.date && !want) return `(日期格式不对: ${args.date}，要 YYYY-MM-DD)`
+        const pick = want ? files.find(f => f.includes(want)) : files[0]
+        if (!pick) {
+          return `(${want} 没有学习回顾。最近几份: ${files.slice(0, 3).map(f => f.slice(6, 16)).join(', ')})`
+        }
+        const maxChars = boundedToolInteger(args.max_chars, 3000, 6000)
+        const body = readFileSync(join(dir, pick), 'utf8')
+        const date = pick.slice(6, 16)
+        return `${date} 学习回顾:\n${body.slice(0, maxChars)}`
+      }
+      case 'get_concepts': {
+        const limit = boundedToolInteger(args.limit, 40, 120)
+        const out: string[] = []
+        for (const dir of VAULT_WIKI_DIRS) {
+          const line = dir.split(/[\\/]/).includes('Chat') ? '聊天线' : '文章线'
+          const index = wikiIndexPath(dir)
+          if (!existsSync(index)) { out.push(`【${line}】还没有总览索引（还没编译过这一线的知识库）`); continue }
+          const text = readFileSync(index, 'utf8')
+          const rows = text.split(/\r?\n/).filter(l => l.trim()).slice(0, limit)
+          out.push(`【${line}】${rows.length} 行:\n${rows.join('\n')}`)
+        }
+        return out.join('\n\n')
+      }
+      case 'format_article': {
+        const content = String(args.content || '')
+        if (!content.trim()) return '(参数错误: content 不能为空)'
+        const { formatWeChatArticle } = await import('./wechat-formatter.js')
+        const theme = String(args.theme || 'default')
+        const html = formatWeChatArticle(content, { theme: theme as any })
+        const preview = html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').slice(0, 200)
+        return `主题: ${theme}\n总长度: ${html.length} 字符\n正文预览: ${preview}…\n---\n${html}`
+      }
+      case 'list_themes': {
+        const { listThemes } = await import('./wechat-formatter.js')
+        const themes = listThemes()
+        if (!themes.length) return '(没有可用主题)'
+        return `可用主题 ${themes.length} 个:\n`
+          + themes.map(t => `· ${t.id} — ${t.name}: ${t.description}`).join('\n')
+      }
+      case 'lint_wiki': {
+        // 两个知识库都要查（本仓的分线纪律：只查一个，另一半的断链永远看不见）
+        const parts: string[] = []
+        let totalBad = 0
+        for (const dir of VAULT_WIKI_DIRS) {
+          const line = dir.split(/[\\/]/).includes('Chat') ? '聊天线' : '文章线'
+          if (!existsSync(dir)) { parts.push(`【${line}】目录不存在，跳过`); continue }
+          // 超时给 60 秒：本机最大的一条线（3,623 页）实测 **3.4 秒**（脚本里的 O(n²) 修掉之后，
+          // 见 wiki_lint.py 那条注释），17 倍余量够用。默认的 30 秒曾经也超——那是因为脚本本身慢，
+          // 不是超时给得小。
+          const r = await runPythonJson<any>('wiki_lint.py', ['--dir', dir, '--json'], { timeoutMs: 60_000 })
+          if (!r.ok || !r.data) {
+            // 失败要说出来：静默跳过会让"体检通过"变成一句假话
+            parts.push(`【${line}】体检失败: ${r.error || '读不到结果'}`)
+            totalBad += 1
+            continue
+          }
+          const d = r.data
+          const broken = (d.broken || []).length
+          const orphans = (d.orphans || []).length
+          const empty = (d.empty || []).length
+          const dup = Object.keys(d.duplicateTitles || {}).length
+          totalBad += broken + orphans + empty + dup
+          parts.push(`【${line}】${d.pages || 0} 张页：断链 ${broken}、孤儿 ${orphans}、空页 ${empty}、同名 ${dup} 组`)
+        }
+        return (totalBad ? '' : '两个知识库都没有断链/孤儿/空页/同名。\n') + parts.join('\n')
+      }
+      case 'check_skills': {
+        const scan = scanSkills()
+        const disabled = disabledIds()
+        const lines: string[] = [`技能目录: ${skillRoots().join('、')}`, `扫描到 ${scan.skills.length} 个技能`]
+        for (const dir of scan.missingRoots) lines.push(`· 目录不存在: ${dir}`)
+        if (scan.unreadable.length) {
+          lines.push(`读不出来的 ${scan.unreadable.length} 个（frontmatter 缺失或不闭合）:`)
+          for (const u of scan.unreadable) lines.push(`· ${u.file} —— ${u.reason}`)
+        }
+        if (scan.conflicts.length) {
+          lines.push(`跨目录同名的 ${scan.conflicts.length} 个（靠前的目录胜出）: ${scan.conflicts.map(c => c.id).join('、')}`)
+        }
+        const warned = scan.skills.filter(s => s.notes.length)
+        if (warned.length) {
+          lines.push(`有提醒的 ${warned.length} 个:`)
+          for (const w of warned) for (const n of w.notes) lines.push(`· ${w.id}: ${n}`)
+        }
+        const off = scan.skills.filter(s => skillState(s, disabled) === 'disabled').map(s => s.id)
+        if (off.length) lines.push(`已禁用: ${off.join('、')}`)
+        if (!scan.unreadable.length && !scan.conflicts.length && !warned.length) {
+          lines.push('没有读不出来或撞名的技能。')
+        }
+        return lines.join('\n')
+      }
+      case 'fetch_article': {
+        const url = String(args.url || '').trim()
+        // **严格白名单，不是 denylist**：只认 https 的 mp.weixin.qq.com。
+        // 这条比 read_favorite 那条严，因为那里的链接是用户自己收藏的，这里的 URL 是别人给的。
+        if (!isAllowedWeChatArticleUrl(url)) {
+          return `(只接受 https 的 mp.weixin.qq.com 文章链接，拒绝抓取: ${url.slice(0, 60)})`
+        }
+        const maxChars = boundedToolInteger(args.max_chars, 3000, 6000)
+        // 逐跳复检：一次 302 就能把入口白名单绕过去
+        const { status, html } = await fetchArticleHtml(url,
+          { maxRedirects: 3, allowHop: isAllowedWeChatArticleUrl })
+        if (!html) return `(抓取失败 HTTP ${status} —— 链接可能不是公众号文章，或者跳转到了别处)`
+        if (html.includes('已被发布者删除')) return '(这篇文章已被发布者删除)'
+        const body = articleTextFromHtml(html, maxChars)
+        if (!body.trim() || (body.match(/[一-鿿]/g) || []).length < 20) {
+          return '(抓到了页面但取不出正文——可能是验证页，或者这篇文章要登录/已失效)'
+        }
+        const title = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i)?.[1]
+          || html.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim() || ''
+        const author = html.match(/var\s+nickname\s*=\s*"([^"]+)"/i)?.[1]
+          || html.match(/<meta[^>]*property="og:article:author"[^>]*content="([^"]+)"/i)?.[1] || ''
+        // 配图只报数量与前几个链接：正文是纯文本，但图往往就是这篇文章的要点
+        const imgs = [...html.matchAll(/data-src="(https?:\/\/[^"]+)"/g)].map(m => m[1]).slice(0, 5)
+        const head = [title && `标题: ${title}`, author && `公众号: ${author}`].filter(Boolean).join(' | ')
+        const tail = imgs.length ? `\n\n配图 ${imgs.length} 张(前几张):\n${imgs.map(u => `· ${u}`).join('\n')}` : ''
+        return (head ? `${head}\n---\n` : '') + body + tail
+      }
+      case 'search_public': {
+        const keyword = String(args.keyword || '').trim()
+        if (!keyword) return '(参数错误: 缺少 keyword)'
+        const limit = boundedToolInteger(args.limit, 8, 20)
+        let html = ''
+        try {
+          const resp = await fetch(
+            `https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(keyword)}`,
+            {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Referer': 'https://weixin.sogou.com/',
+                'Accept': 'text/html',
+                'Accept-Language': 'zh-CN,zh;q=0.9',
+              },
+              signal: AbortSignal.timeout(20_000),
+            },
+          )
+          html = await readTextLimited(resp, 2 * 1024 * 1024)
+        } catch {
+          return '(搜索失败——检查网络，或者稍后再试（第三方搜索页会限流）)'
+        }
+        const grab = (re: RegExp, clean: (s: string) => string): string[] => {
+          const out: string[] = []
+          for (const m of html.matchAll(re)) {
+            const v = clean(m[1])
+            if (v) out.push(v)
+          }
+          return out
+        }
+        const titles = grab(/<h3[^>]*>\s*<a[^>]*>(.*?)<\/a>\s*<\/h3>/gs,
+          s => s.replace(/<em[^>]*>/g, '').replace(/<\/em>/g, '').replace(/<!--[^>]*-->/g, '').trim())
+        const accounts = grab(/<span[^>]*class="[^"]*all-time-y2[^"]*"[^>]*>(.*?)<\/span>/gs,
+          s => s.replace(/<[^>]+>/g, '').trim())
+        const descs = grab(/<p[^>]*class="[^"]*txt-info[^"]*"[^>]*>(.*?)<\/p>/gs,
+          s => s.replace(/<[^>]+>/g, '').replace(/&hellip;/g, '…').replace(/&rarr;/g, '→').replace(/&mdash;/g, '—').trim())
+          .filter(d => d.length > 10)
+        const count = Math.max(titles.length, accounts.length, descs.length)
+        if (!count) {
+          return `(没搜到与「${keyword}」相关的公开文章。换个说法、或加上公众号名试试；`
+            + '找到链接后可以用 fetch_article 抓全文)'
+        }
+        const rows: string[] = []
+        for (let i = 0; i < Math.min(count, limit); i++) {
+          rows.push(`${i + 1}. ${titles[i] || '(未知标题)'}\n   公众号: ${accounts[i] || '(未知)'}`
+            + (descs[i] ? `\n   ${descs[i]}` : ''))
+        }
+        return `公开文章里搜「${keyword}」，命中 ${Math.min(count, limit)} 条:\n`
+          + rows.join('\n')
+          + '\n（这是第三方搜索页的标题与摘要，不是全文；要正文用 fetch_article 抓）'
+      }
+      case 'set_todo_status': {
+        const status = String(args.status || '')
+        if (status !== 'done' && status !== 'pending') return '(参数错误: status 只能是 done（已完成）或 pending（取消完成）)'
+        const id = String(args.id || '').trim()
+        const task = String(args.task || '').trim()
+        if (!id && !task) return '(参数错误: 要给 id 或 task 指到哪一条待办)'
+        let target = id
+        if (!target) {
+          // 按任务文字找：**只认唯一**。命中 0 条或 ≥2 条都拒绝——
+          // 猜错条目比拒绝更糟（用户会以为自己的待办被改了，而改的是另一条）
+          const listed = await runPythonJson<any>('extract_todos.py', ['list', '--json'])
+          if (!listed.ok) return fail('待办读取失败', listed)
+          const items: any[] = Array.isArray(listed.data) ? listed.data : (listed.data?.items || [])
+          const norm = (s: unknown) => String(s || '').replace(/\s+/g, '')
+          const hit = items.filter(t => norm(t.task).includes(norm(task)))
+          if (!hit.length) return `(没有任务文字包含「${task}」的待办)`
+          if (hit.length > 1) {
+            return `(「${task}」匹配到 ${hit.length} 条待办，不能确定是哪一条，请用 id 指定:\n`
+              + hit.slice(0, 5).map(t => `· ${t.task}`).join('\n') + ')'
+          }
+          if (!hit[0].id) return '(这条待办没有 id——本机的待办文件格式比预期旧，请在电脑上用 `todos done` 处理)'
+          target = String(hit[0].id)
+        }
+        const r = await runPythonJson<any>('extract_todos.py',
+          [status === 'done' ? 'done' : 'undone', target, '--json'])
+        if (!r.ok) return fail(status === 'done' ? '标记完成失败' : '取消完成失败', r)
+        // 括号开头 = "没有产出内容"（本仓的约定，见 producedContent）：这条只报告动作做成了
+        return status === 'done' ? `(已标记完成: ${target})` : `(已取消完成标记: ${target})`
       }
       default:
         return `(未知工具: ${name})`

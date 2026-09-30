@@ -22,6 +22,8 @@ import type { StopReason, TurnTrace } from './assistantTrace.js'
 import { appendLog } from './assistantDaemon.js'
 import type { Message, WechatInboundMessage } from '../types.js'
 import { buildEvidenceReviewInput } from './evidenceService.js'
+import { scanSkills, skillCatalogueLines } from './assistantSkills.js'
+import { assistantScenes, parseSceneCommand, renderScene, type Scene } from './assistantScenes.js'
 import { evaluateAssistantAccess } from './assistantRouting.js'
 import { nowLine } from '../utils/dateRange.js'
 import { resolvePanelUserId, PANEL_FALLBACK_BUCKET } from '../panel/userId.js'
@@ -317,14 +319,16 @@ export class AssistantService {
       + '占位符），可以直接引用，不必声称被屏蔽。'
   }
 
-  /** 组装系统提示: 基础人格 + 隐私状态 + L2 摘要 + L3 事实。
+  /** 组装系统提示: 基础人格 + 隐私状态 + 本机能力 + 本会话场景 + L2 摘要 + L3 事实。
    *
-   *  两个纪律：
+   *  三个纪律：
    *  1. **事实按相关度取一部分**，而不是 30 条全塞——无关的那些是噪声，不只是花钱；
-   *  2. 本地数据（摘要、事实）一律**加帧 + 转义框标签**：它们的内容里完全可能写着
-   *     `</weflow-local-data>` 再跟一段像系统指令的话，不转义就等于让数据自己把框关上。
+   *  2. 本地数据（摘要、事实、场景、技能正文）一律**加帧 + 转义框标签**：它们的内容里完全
+   *     可能写着 `</weflow-local-data>` 再跟一段像系统指令的话，不转义就等于让数据自己把框关上；
+   *  3. **本机装了什么技能要说出来**（同「没启用的能力」那条的理由）——不说，用户问到时
+   *     模型会答"我没有这个能力"，而它其实调 `read_skill` 就能拿到。
    */
-  private buildSystemPrompt(userId: string, question = ''): string {
+  private buildSystemPrompt(userId: string, question = '', scene: Scene | null = null): string {
     // 当前时间：**没有它，任何相对时间都是猜**。"上周三""昨天""这周"要变成工具能用的
     // 日期，模型得先知道今天是几号（`get_messages` 的 since/until 就是这么用的）。
     const parts = [BASE_PROMPT, `[当前时间] ${nowLine()}（本机时区）`, this.privacyStateLine()]
@@ -336,6 +340,19 @@ export class AssistantService {
       parts.push('[本机没启用的能力]' + SEP + missing.map(line => `· ${line}`).join(SEP)
         + SEP + '（这些工具**不在你的工具表里**，但你调不到的原因只是没配置，**不是这个功能不存在**。'
         + '用户问到时直说"这块还没配置"并给出上面那个配置项，**不要说"我没有这个工具"**。）')
+    }
+    // 本机装好的技能包。**只列名字/说明/版本，正文按需 read_skill 读** ——
+    // 27 个技能的正文全塞进每轮提示词，既贵又会把真正的问题挤掉。
+    const skillScan = scanSkills()
+    const skillLines = skillCatalogueLines(skillScan)
+    if (skillLines.length) {
+      parts.push('[本机已安装的技能]' + SEP + skillLines.join(SEP)
+        + SEP + '（技能是一份说明文档。要用某个技能，先用 `read_skill` 读它的正文再照着做；'
+        + '**不要凭名字猜它怎么用**。）')
+    }
+    const sceneLines = scene ? renderScene(scene) : ''
+    if (sceneLines) {
+      parts.push('[本会话的场景]' + SEP + `场景「${scene!.name}」已生效，按它的要求来做。` + SEP + sceneLines)
     }
     const summary = this.memory.summary(userId)
     if (summary) {
@@ -655,10 +672,52 @@ export class AssistantService {
       return lines.join('\n')
     }
 
+    // 场景：**命令要认，但只认真的存在的东西**。`parseSceneCommand` 只在后半段是已存在的
+    // 场景 id 时才当指令，所以「场景切换怎么用」这种问话不会被吃掉（见那边的注释）。
+    // 位置在内置指令之后、ReAct 之前：场景是这一轮的上下文，不是要模型去执行的任务。
+    const sceneCmd = parseSceneCommand(t, assistantScenes)
+    if (sceneCmd) {
+      if (sceneCmd.kind === 'list') {
+        const scenes = assistantScenes.list()
+        if (!scenes.length) {
+          return finish('还没有任何场景。用电脑加一个：\n'
+            + 'weflow-cli scene add --id 日报 --keywords 日报,今天推文 --instruction "按主题分组" --dry-run', 'builtin')
+        }
+        const active = assistantScenes.binding(userId)
+        const lines = scenes.map(s => `${s.id === active ? '▶ ' : '  '}${s.id}（${s.name}）${s.enabled ? '' : '[已停用]'}`
+          + (s.keywords.length ? ` 关键词：${s.keywords.join('、')}` : ''))
+        lines.push('', `本会话当前：${active ? `绑定「${active}」` : '未绑定（按关键词或上次用过的挑）'}`)
+        lines.push('绑定：场景 <id>　解绑：场景 无')
+        return finish(lines.join(String.fromCharCode(10)), 'builtin')
+      }
+      if (sceneCmd.kind === 'unbind') {
+        assistantScenes.bind(userId, null)
+        assistantScenes.save()
+        return finish('✓ 已解绑，这个会话回到按关键词自动挑', 'builtin')
+      }
+      const bound = assistantScenes.bind(userId, sceneCmd.id as string)
+      if (!bound.ok) return finish(`✗ ${bound.reason}`, 'builtin')
+      assistantScenes.save()
+      const scene = assistantScenes.get(sceneCmd.id as string)
+      return finish(`✓ 已给这个会话绑定场景「${scene?.name ?? sceneCmd.id}」。之后每轮都按它来做，发「场景 无」解绑。`, 'builtin')
+    }
+
     // === ReAct 主循环 ===
     this.memory.addTurn(userId, 'user', t)
+    // 挑场景：绑定 → 关键词 → 上次用过的（都不中就不加场景段，默认行为一字不变）
+    const picked = assistantScenes.resolve(userId, t)
+    const scene = picked.match?.scene ?? null
+    if (picked.match) {
+      trace.steps.push({ kind: 'note', detail: `场景「${picked.match.scene.name}」· 命中：`
+        + ({ binding: '绑定', keyword: '关键词', lastUsed: '上次用过的' }[picked.match.how]) })
+      // 命中了就记一笔"上次用它"（写盘失败不抛，见 AssistantScenes.save）
+      if (assistantScenes.lastUsedFor(userId) !== picked.match.scene.id) assistantScenes.save()
+    } else if (picked.why) {
+      // **多义要留痕**：不然用户只看到"这次没带场景"，不知道是因为撞车了
+      trace.steps.push({ kind: 'note', detail: picked.why })
+    }
     const messages: ApiMessage[] = [
-      { role: 'system', content: this.buildSystemPrompt(userId, t) },
+      { role: 'system', content: this.buildSystemPrompt(userId, t, scene) },
       ...this.memory.workingWindow(userId).map(turn => ({ role: turn.role, content: turn.content })),
     ]
 
@@ -810,6 +869,12 @@ export class AssistantService {
       appendLog(`[记忆] ${this.memory.problem}`)
       privacyGate.audit('MEMORY_LOAD_ISSUE', 0, this.memory.problem.slice(0, 80))
       onLog?.(`⚠ 记忆: ${this.memory.problem}`)
+    }
+    // 场景文件同理：读不出来时用户面对的是"我加过的场景全没了"，而原因在被留档的文件名里
+    if (assistantScenes.problem) {
+      appendLog(`[场景] ${assistantScenes.problem}`)
+      privacyGate.audit('SCENES_LOAD_ISSUE', 0, assistantScenes.problem.slice(0, 80))
+      onLog?.(`⚠ 场景: ${assistantScenes.problem}`)
     }
     const { local } = this.engineConfig()
     // bot 那一段只在真有通道时报：没有通道还报一个 bot 账号，是让人以为它在收消息

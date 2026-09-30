@@ -17,6 +17,11 @@ test('MCP assistant-tool subset contains no write operation', () => {
   assert.equal(names.includes('save_memory'), false)
   assert.equal(names.includes('send'), false)
   assert.equal(names.includes('publish_article'), false)
+  // 待办是本地状态：**助手可以改、MCP 不可以**（天花板原话「mutating todos ... stay out」）。
+  // 这条是 2026-09-29 加 set_todo_status 时补的——它当时会被派生到 MCP 表里，
+  // 而且没有任何自动检测会拦（那个测试只按名字查 save_memory/send/publish_article）。
+  assert.equal(names.includes('set_todo_status'), false,
+    'set_todo_status 不许出现在 MCP 表里：待办修改不在 MCP 的能力范围内')
   assert.doesNotMatch(mcpSource, /name:\s*['"]wechat\.publish_article['"]/)
   assert.doesNotMatch(mcpSource, /case\s+['"]wechat\.publish_article['"]/)
 })
@@ -117,7 +122,12 @@ test('live MCP tools/list excludes publishing / sending / memory writes', { time
       name: 'wechat.fetch_article',
       arguments: { url: 'https://mp.weixin.qq.com.evil.test/s/example' },
     })
-    assert.match(String((rejectedUrl.content[0] as { text?: string }).text), /仅支持 HTTPS/)
+    // 这条盯的是"伪装成微信域名的主机必须被拒"。2026-09-29 起 fetch_article 由助手那份实现
+    // 承担（工具名与参数不变），拒绝的措辞跟着换了——所以断言改成**同时要求**：说了拒绝、
+    // 且说清只允许哪个域。比原来只匹配一句话更强。
+    const refused = String((rejectedUrl.content[0] as { text?: string }).text)
+    assert.match(refused, /拒绝抓取/, '伪装域名必须被拒绝')
+    assert.match(refused, /mp\.weixin\.qq\.com/, '拒绝时要说清只接受哪个域')
 
     const rejectedLimit = await client.callTool({
       name: 'wechat.search_public',

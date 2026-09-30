@@ -6,7 +6,75 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+### Added
+
+- **Skills: the assistant can read the skill packages you already have.** A skill is a directory with a `SKILL.md`
+  (`name`/`description`), scanned from `skillDirs` - by default `~/.claude/skills` and `~/.weflow-cli/skills` - so the
+  skills already on this machine are usable immediately. The system prompt carries the catalogue and two read-only
+  tools (`list_skills`, `read_skill`) return it and one body; a scene can reference a skill inline with
+  `{{skill:<id>}}`. **A skill grants no new powers**: nothing is installed, nothing is executed, no tool is added to
+  the model's table, and `read_skill` can only return a file named `SKILL.md` that the scan already found. Referencing
+  a skill that is missing, disabled or unreadable renders exactly that state and asks the model to continue and say
+  what it could not do rather than dropping the reference. Disable one with
+  `config set skillDisabled <id, ...>` or with `enabled: false` inside the skill itself.
+  `weflow-cli skill list|show|check|--json`; `skill check` reports unreadable frontmatter, cross-root collisions,
+  non-conforming ids and disabled skills. On this machine `skill check` finds **28 skills, 0 unreadable, 0 collisions**,
+  and warns about 5 ids that are usable here but would not conform to the Anthropic Agent Skills naming rule
+  (`clz_docx_to_mp` and friends). Rationale and the two rules taken from real data (read only the leading `---` block;
+  support block scalars) are in D-056.
+
+- **Scenes: per-conversation prompt presets.** A scene is keywords + an extra instruction + an output spec + required
+  skills, stored in `~/.weflow-cli/assistant_scenes.json` (`weflow-scenes/v1`, unknown version quarantined rather than
+  migrated). Each turn picks at most one through three tiers - **explicit binding → keyword hit → last used in that
+  conversation** - and no match means no scene section at all, leaving the default behaviour byte-identical. Two
+  equally long keyword matches produce **no** scene plus a trace note saying why, instead of picking one. Manage them
+  with `weflow-cli scene list|show|add|remove|enable|disable|bind|unbind` (every mutation is `--dry-run` then `--yes`),
+  or from a conversation with the built-in `场景 <id>` / `场景 无` / `场景`, which accepts only an argument that names an
+  existing scene so an ordinary sentence starting with 场景 is left to the model. **Scenes cannot be read or written by
+  the model** - there is no such tool - and a scene's content enters the prompt through `frameLocalData`. Which scene
+  applied, and which tier matched, is recorded in the turn trace you already see under 「思考过程」 in the panel.
+  Scene ids are validated against quotes and angle brackets before they reach the prompt label. Rationale, the MCP
+  collapse cost and the deliberately skipped fourth tier are in D-057.
+
+- **The assistant can reach everything it already could over MCP, and only what the project allows.** Three
+  surfaces had drifted: the CLI, the 21-tool assistant table, and 11 tools hand-written in the MCP server that the
+  chat path could not call at all. Ten tools are now shared - `list_contacts` (names only: never `wxid`, never the
+  avatar URL), `get_review`, `get_concepts`, `fetch_article`, `search_public`, `format_article`, `list_themes`,
+  `lint_wiki`, `check_skills`, and `set_todo_status` - seven MCP-only tools were **moved** into the shared table
+  (same tool names and arguments, single implementation; the hand-written table went from 11 entries to 4), and four
+  tools were **widened instead of duplicated**: `get_daily_report` now returns the human-readable daily with
+  `full: true` and searches across dates when given a keyword without a date (that was the MCP-only
+  `search_articles`), `get_todos` shows each item's id and groups by urgency (that was `todos remind`), `get_weread`
+  gained `stats` / `book` / `review` / `discover` / `profile` modes, and `get_stats` now reports the knowledge-base
+  half it had been missing while the MCP copy had it. Almost all of this is **alignment rather than new access**:
+  every capability added was already reachable by an MCP client.
+  Two things are genuinely new and both are **recorded with their residual risk** (D-058) rather than left to be
+  found: `search_public` sends a **model-authored query** to a third-party search page with no allowlist and no
+  preview (chosen deliberately - `fetch_article`, by contrast, accepts only `https://mp.weixin.qq.com` and
+  re-validates that allowlist on **every redirect hop**), and `set_todo_status` can flip one existing todo between
+  done/pending - it **cannot create, delete or edit anything else**, it refuses an ambiguous task-text match instead
+  of guessing, and it is deliberately **excluded from the MCP surface** ("mutating todos stays out").
+  What stays out of reach from a model-driven path is unchanged and named in D-058: sending, publishing,
+  configuration, access-list writes, `evidence-review`, `vault promote`, scenes, interactive login, and `decide`.
+  Side effect worth noting: `WEFLOW_ASSISTANT_BIZ_DAILY_DIR` and `WEFLOW_ASSISTANT_REVIEWS_DIR` were added as
+  per-call injection points, which closed the **last uncovered tool branch** - `get_daily_report` had never been
+  executed because its directory was a frozen module constant, so the only possible assertion was a shape check that
+  asserted nothing. All 31 tool branches are now executed against fixtures.
+
 ### Fixed
+- **`wiki lint` was O(links x pages) and took 9.5 minutes on the article line.** The link-existence
+  predicate passed `resolvable_names(pages)` *inside a lambda*, so the set of all page names plus aliases was
+  rebuilt once per link instead of once per run - measured on this machine: 3,623 pages took **9m29s**, while the
+  1,527-page chat line took 3.2s. The set is now computed once, outside the lambda: the same page count now takes
+  **3.4s**. Behaviour is unchanged, and that was checked rather than assumed - the old and new versions produce
+  **byte-identical JSON** (sha256 match, 366,638 bytes) on the chat line, and hoisting a pure function out of a
+  per-call position is a no-op by construction. This also unblocked the new `lint_wiki` assistant tool, whose
+  first real-machine run is what surfaced the timeout. Side note for whoever touches that code: two other places in
+  `assistantTools.ts` split a path with `/[\/]/` for the same reason (telling the two knowledge-base lines
+  apart) and one of them had lost a backslash to a shell heredoc, so on Windows both lines were labelled
+  文章线 - silently, because the output still looked plausible. The helper `wikiIndexPath` and the line label are
+  now covered by a mutation-checked test.
+
 
 - **The ball is never backed by anything now - the glow layer is gone entirely.** The user reported
   it a second time: "the background is not transparent while it is thinking". That is the *same*

@@ -1,8 +1,11 @@
 /**
  * 助手工具的**分支**执行。
  *
- * 覆盖到哪：19 个工具里 18 个被执行过——17 个在本文件，`save_memory` 在
- * `assistant-service.test.ts`（它只碰记忆，和整条消息链路一起测更贴近实际）。
+ * 覆盖到哪：**31 个工具全都被执行过**——17 个在本文件，`save_memory` 在
+ * `assistant-service.test.ts`（它只碰记忆，和整条消息链路一起测更贴近实际），
+ * `list_skills` / `read_skill` 在 `assistant-skills.test.ts`（要和技能目录的夹具一起测），
+ * 2026-09-29 新加的 10 个（联网/只读/待办状态）与 `get_daily_report` 在
+ * `assistant-tools-surface.test.ts`。
  *
  * 此前只有 3 个纯函数被测过，**没有任何测试真正执行过一个工具分支**——也就是说"用户问
  * 「我和某某聊了什么」，助手会读到什么、会不会把内容原样发出去"从来没被验证过。这些分支
@@ -12,11 +15,13 @@
  * 拿的是同一个模块对象，所以不需要模块级 mock。`fetch` 也换掉，于是 `read_favorite` 这条
  * 唯一会出网的工具能整条跑完而不联网。脚本类工具走 `pythonBridge.setScriptRunner`。
  *
- * 只有 `get_daily_report` 一个工具分支没被执行过：它读的目录是模块级常量
- * （`join(PKG_ROOT, 'output', 'biz-daily')`，路径由 `resolvePackageRoot` 定死），没有注入点。
- * 于是它走"还没数据"还是"有日报"取决于跑在哪台机器上（本机 `output/` 有数据，CI 干净检出没有），
- * 断言只能写成"两者皆可"的形状检查——那种测试看着像覆盖、其实什么也没钉住，所以没写。
- * 别把它和 `search_knowledge` 一起算：后者**有**两条（缺关键词、找不到）。
+ * `get_daily_report` 曾经是**唯一**没被执行过的分支，理由写在当时这里：它读的目录是模块级常量
+ * （`join(PKG_ROOT, 'output', 'biz-daily')`，由 `resolvePackageRoot` 定死），没有注入点，
+ * 于是断言只能写成"没数据/有数据皆可"的形状检查——那种测试看着像覆盖、其实什么也没钉住。
+ * 2026-09-29 给它加了 `WEFLOW_ASSISTANT_BIZ_DAILY_DIR`（同 `export_chat` 那条先例），
+ * 并且做成**每次调用读一次**的惰性读取，所以同一个进程里换夹具也生效。现在它在
+ * `assistant-tools-surface.test.ts` 里按真夹具断言，覆盖是完整的。
+ * 别再把它和 `search_knowledge` 一起算：后者**有**两条（缺关键词、找不到）。
  *
  * 曾经这里写着「`get_todos` 没有便宜的桩点」，那是错的：`setScriptRunner` 一直是公开的
  * （这个文件里早就在用，见上面的 `stubScript`）。更糟的是——PROJECT_STATE 和那一轮的
@@ -26,13 +31,32 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 
 const HOME = mkdtempSync(join(tmpdir(), 'weflow-assistant-tools-'))
 process.env.HOME = HOME
 process.env.USERPROFILE = HOME
+
+// 日报目录也要指到夹具：不注入的话 `get_daily_report` / `get_stats` 会去读开发机上真实的
+// output/biz-daily，断言就变成「看跑在哪台机器上」。注入点是**每次调用读一次**的，
+// 所以放在这里只是为了整齐——同一进程里随时可以换。
+const BIZ_DAILY = join(HOME, 'biz-daily')
+const DAY = '2026-01-01'
+mkdirSync(join(BIZ_DAILY, DAY), { recursive: true })
+writeFileSync(join(BIZ_DAILY, DAY, '.articles.json'), JSON.stringify([
+  { title: '扩散模型综述', source: '某号', topic: 'AI', summary: '一篇综述' },
+  { title: '城市更新观察', source: '另一个号', topic: '新闻', summary: '城市' },
+]), 'utf8')
+writeFileSync(join(BIZ_DAILY, DAY, 'README.md'), '# 2026-01-01 日报\n\n今天两篇。\n', 'utf8')
+// 另一天：用来测跨日期搜
+const DAY2 = '2026-01-02'
+mkdirSync(join(BIZ_DAILY, DAY2), { recursive: true })
+writeFileSync(join(BIZ_DAILY, DAY2, '.articles.json'), JSON.stringify([
+  { title: '扩散模型的训练技巧', source: '某号', topic: 'AI', summary: '训练' },
+]), 'utf8')
+process.env.WEFLOW_ASSISTANT_BIZ_DAILY_DIR = BIZ_DAILY
 
 const { chatService } = await import('../src/services/chatService.js')
 const { wereadService } = await import('../src/services/wereadService.js')
@@ -422,10 +446,15 @@ test('search_knowledge 找不到时给出概念页总数（与环境无关的那
   assert.ok(/知识库未收录「绝不存在的概念xyzzy」/.test(out) || /知识库尚未生成/.test(out), out)
 })
 
-test('get_stats 汇总会话数与收藏总数', async () => {
+test('get_stats 汇总本地数据，并同时报出知识库那一半', async () => {
   svc.listSessions = async () => ([{ username: 'a' }, { username: 'b' }])
   svc.getFavorites = async () => ({ success: true, total: 9 })
-  assert.equal(await run('get_stats', {}), '会话数: 2\n收藏总数: 9')
+  // 前四行由夹具决定，所以逐字断言（旧版只断言两行——日报那半读的是真实机器）
+  assert.match(await run('get_stats', {}),
+    /^会话数: 2\n收藏总数: 9\n日报文章: 3 篇，覆盖 2 天（2026-01-01 ~ 2026-01-02）\n主题分布: AI2、新闻1/m)
+  // 概念页那半读 VAULT_WIKI_DIRS（跨语言共用的常量，没有注入点）：只断言形状
+  assert.match(await run('get_stats', {}), /(概念页: .+|没有日报数据)/,
+    '知识库那一半要么给出数，要么说明为什么没有')
 
   svc.getFavorites = async () => ({ success: false })
   assert.match(await run('get_stats', {}), /收藏总数: 未知/)
@@ -1131,8 +1160,10 @@ test('get_todos 列出条目：带紧急度与截止；"未提及"的截止不�
   try {
     const out = await run('get_todos', {})
     assert.match(out, /^待办 2 项:/)
-    assert.match(out, /· \[高\] 交季度报表 \(截止 本周五\)/)
-    assert.match(out, /· \[中\] 回老王的邮件$/, '没有截止就别补一个"未提及"')
+    // 2026-09-29 起每行尾部带 ` [id: N]`：模型要改某一条的状态就得能指到它。
+    // 原来的断言只匹配行尾，加了 id 就会失败——这里改成要求 id 在，比原来更强。
+    assert.match(out, /· \[高\] 交季度报表 \(截止 本周五\) \[id: 1\]$/m)
+    assert.match(out, /· \[中\] 回老王的邮件 \[id: 2\]$/m, '没有截止就别补一个"未提及"')
     assert.doesNotMatch(out, /未提及/)
   } finally { bridge.setScriptRunner(null) }
 })

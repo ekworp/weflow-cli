@@ -89,7 +89,9 @@ test('`docs/MCP.md` 的工具表 = 真正服务的那一批，一行一个、不
 })
 
 test('MCP 服务端的手写工具与文档里那批一致（派生那部分由上一条件保证）', () => {
-  assert.equal(handWritten.length, 11, '手写工具数变了就要同步文档表格')
+  // 2026-09-29：7 个手写工具交给助手实现（工具名不变、由 TOOL_DEFS 派生），
+  // 所以手写只剩 4 个：get_daily / get_concept / search_articles / export_messages
+  assert.equal(handWritten.length, 4, '手写工具数变了就要同步文档表格')
   for (const name of handWritten) {
     assert.ok(mcpDoc.includes(`| \`${name}\` |`), `${name} 服务着却没写进 docs/MCP.md`)
   }
