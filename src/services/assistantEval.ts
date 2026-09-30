@@ -42,6 +42,15 @@ export interface EvalCase {
   sessions?: Array<Record<string, unknown>>
   messages?: Array<Record<string, unknown>>
   favorites?: Array<Record<string, unknown>>
+  /**
+   * 通讯录（`list_contacts` 读的那份）。**不写就从 `sessions` 派生**——评测里的"人"就是那些人。
+   *
+   * 2026-09-30 之前这里没有字段，`listContacts` 也**没有打桩**：于是 `list_contacts` 在评测里
+   * 打的是真服务，而临时家目录里没有通讯录、恒为空。两个用例（`unknown-contact`、
+   * `ambiguous-contact`）因此跑在「真服务恰好查不到」上，而不是本文件声称的合成数据上——
+   * 那个服务哪天改成读别的东西，评测行为会**静默**跟着变。
+   */
+  contacts?: Array<Record<string, unknown>>
   expect: {
     /** 至少要调用这些工具 */
     mustCall?: string[]
@@ -603,7 +612,7 @@ export async function installStubs(spec: EvalCase): Promise<() => void> {
   const saved = {
     connect: svc.connect, listSessions: svc.listSessions, getMessages: svc.getMessages,
     getFavorites: svc.getFavorites, getSnsTimeline: svc.getSnsTimeline,
-    getSnsExportStats: svc.getSnsExportStats,
+    getSnsExportStats: svc.getSnsExportStats, listContacts: svc.listContacts,
     shelf: weread.shelf, notebooks: weread.notebooks, search: weread.search,
     fetch: globalThis.fetch,
   }
@@ -621,6 +630,21 @@ export async function installStubs(spec: EvalCase): Promise<() => void> {
     return { success: true, total: favorites.length, favorites }
   }
   svc.getSnsTimeline = async () => ({ success: true, timeline: [] })
+  // 通讯录：以前**没打桩**（见 `EvalCase.contacts` 那段）。现在按用例给的联系人回，
+  // 关键词在桩里过滤（真服务也是这么做的）。只给工具真正会读的字段。
+  svc.listContacts = async (keyword?: string, limit = 200) => {
+    const all = (spec.contacts ?? spec.sessions ?? SESSIONS) as Array<Record<string, string>>
+    const kw = String(keyword ?? '').trim()
+    const hits = kw
+      ? all.filter((c) => [c.remark, c.displayName, c.nickname].some(v => String(v ?? '').includes(kw)))
+      : all
+    return hits.slice(0, limit).map((c) => ({
+      username: String(c.username ?? ''),
+      displayName: String(c.displayName ?? ''),
+      remark: c.remark,
+      nickname: c.nickname,
+    }))
+  }
   svc.getSnsExportStats = async () => ({ success: true, data: { totalPosts: 0, totalFriends: 0 } })
   weread.shelf = async () => ({ ok: true, data: { books: [] } })
   weread.notebooks = async () => ({ ok: true, data: { books: [] } })
@@ -651,6 +675,7 @@ export async function installStubs(spec: EvalCase): Promise<() => void> {
     svc.getFavorites = saved.getFavorites
     svc.getSnsTimeline = saved.getSnsTimeline
     svc.getSnsExportStats = saved.getSnsExportStats
+    svc.listContacts = saved.listContacts
     weread.shelf = saved.shelf
     weread.notebooks = saved.notebooks
     weread.search = saved.search
