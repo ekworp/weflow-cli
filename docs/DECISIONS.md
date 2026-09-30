@@ -1513,6 +1513,14 @@ where each group lives. Locally-held identifiers were the other thing to get rig
 only (remark / display name / nickname - never `username`, never the avatar URL), because keeping wxids out of the
 model's context is a standing rule of this repository.
 
+**Added 2026-09-30.** A third injection point, `WEFLOW_ASSISTANT_VAULT_DIR`, was added the same way and for the
+same reason: `get_concepts` read a module-level constant, so in the behaviour eval's temporary home it could only
+ever report "the knowledge base has not been compiled yet" - there was no fixture that could change that. With the
+root injectable it has a real case, as does `get_review` (its variable already existed, but the eval harness had no
+way to set environment variables at all, so it too had no case). **"That closed the last uncovered tool branch"
+above was true of the deterministic test suite, not of the behaviour eval** - the eval still had ten tools with no
+case at all, and those are what the two 2026-09-30 passes went after.
+
 ## D-057: A scene is bound to a conversation by the one id that already exists, it is picked by three tiers that refuse to guess, and the model cannot write one
 
 **Status:** Active
