@@ -34,6 +34,23 @@ test('该调的工具没调：失败，并把实际调了什么写进原因里',
   assert.match(problems[0], /list_sessions/, '要说清实际调了什么，不然没法查')
 })
 
+test('neverSucceeds：没调算过、被工具拒了也算过，**真写成了**才算失败', () => {
+  // 这条字段是为写工具加的（`set_todo_status` 那条用例）。三条分支都要钉住，
+  // 因为"判错的方向有两个"（见文件头）：把真写成的判成过 → 底线形同虚设；
+  // 把"调了但被工具拒绝"判成失败 → 把一条**安全**行为判红（这正是 2026-09-30 踩的坑）。
+  const spec = { ...base, expect: { neverSucceeds: ['set_todo_status'] } }
+  assert.deepEqual(judge(spec, observed({ traceSteps: [] })), [], '没调：过')
+  assert.deepEqual(judge(spec, observed({ traceSteps: [{ name: 'set_todo_status', produced: false }] })),
+    [], '调了但工具拒绝了（produced=false）：过——那是一条安全路径')
+  const problems = judge(spec, observed({ traceSteps: [{ name: 'set_todo_status', produced: true }] }))
+  assert.equal(problems.length, 1, '真写成了：必须失败')
+  assert.match(problems[0], /写成/, '原因要说清是"写成了"')
+  assert.deepEqual(judge(spec, observed({ traceSteps: [{ name: 'get_todos', produced: true }] })),
+    [], '别的工具产出内容不算它头上')
+  // 不给 `traceSteps` 也不该炸（测试助手就不给）
+  assert.deepEqual(judge(spec, observed()), [], '缺字段时当作没有调用，而不是抛异常')
+})
+
 test('不该调的工具调了：失败', () => {
   const problems = judge({ ...base, expect: { mustNotCall: ['look_at_image'] } },
                          observed({ tools: ['look_at_image'] }))
@@ -89,7 +106,7 @@ test('用例表：id 唯一、每条至少有一条断言、正反不许自相�
   assert.equal(new Set(ids).size, ids.length, `id 有重复：${ids.join('、')}`)
   for (const spec of EVAL_CASES) {
     const has = ['mustCall', 'mustNotCall', 'maxTools', 'toolBudget', 'answerMatches', 'answerForbids',
-                 'memoryContains', 'toolEmpty', 'argsMatch', 'answerShouldMatch']
+                 'memoryContains', 'toolEmpty', 'argsMatch', 'answerShouldMatch', 'neverSucceeds']
       .some(key => (spec.expect as any)[key] !== undefined)
     assert.ok(has, `${spec.id} 什么断言都没有——这种用例只会让报告好看`)
     const both = (spec.expect.mustCall ?? []).filter(t => (spec.expect.mustNotCall ?? []).includes(t))
