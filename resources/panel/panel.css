@@ -245,6 +245,29 @@ body.ball-happy #ball .face {
   background-image: url('/panel/mascot-happy.png');
 }
 
+/* ---- 被拎起来那一下（6 帧硬切） ----
+
+   按下球时它像被拎住后颈提起、松手落回。**硬切，不做淡入** —— 同上面 ball-happy 那条的理由：
+   换帧本来就是一帧的事，淡入反而像"图片正在加载"。
+
+   四条规矩，每条都对应一处会静默出错的地方：
+
+   1. **必须写在 `body.ball-happy` 之后**：同特异性时后写的赢，而"正在被拎"比"被捏了一下"
+      更该被看见（按下那一下这两个类同时挂着）。
+   2. **动画期间把虹膜层藏掉**：这五帧的眼睛是画死的，叠上会动的虹膜就是两个瞳仁 ——
+      与忙 / 连不上 / 额度用完那几张同理。
+   3. **动画期间连悬停放大与按下压扁一起停**：帧本身已在逐帧收小（最小那帧比静止帧小 8%），
+      再叠 `scale(1.02)` 与 `:active` 的 `scale(.92)` 就成了缩两回，看起来是"躲开"而不是
+      "被提起来"。这条的选择器特异性高于那两条，所以能压住它们。
+   4. **切帧只换 `background-image`**：不动尺寸、不动位置，所以不会跳。 */
+body.ball-lift #ball { transform: none; }
+body.ball-lift #ball .iris { display: none; }
+body.ball-lift-start #ball .face { background-image: url('/panel/mascot-lift-start.png'); }
+body.ball-lift-rise #ball .face { background-image: url('/panel/mascot-lift-rise.png'); }
+body.ball-lift-held #ball .face { background-image: url('/panel/mascot-lift-held.png'); }
+body.ball-lift-down #ball .face { background-image: url('/panel/mascot-lift-down.png'); }
+body.ball-lift-settle #ball .face { background-image: url('/panel/mascot-lift-settle.png'); }
+
 /* ---------------------------------------------------------------- 状态 */
 
 /* 状态的表达**全在那四张脸上**（见上面 `.face` 那几条）：忙=思考、连不上=委屈、

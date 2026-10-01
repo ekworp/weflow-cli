@@ -1403,6 +1403,43 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-064: The ball's lift animation is generated art, and the contract that keeps its frames registered is now executable
+
+**Status:** Active
+
+Pressing the floating ball plays a six-frame sequence - three frames up while it is held, three back down on release -
+and the five new frames are produced by the project's image-generation model rather than drawn by hand. Four things are
+decided here.
+
+**The frames may only express the lift through pose.** The ball is `border-radius: 50%` and the art is normalized to the
+inscribed circle, with the remaining 2% of the radius reserved for the hover `scale(1.02)`. A frame that simply drew the
+cat higher would have its ears clipped by that circle, so the lift is carried by the pose (paws hanging, ears pressed
+back, eyes wide) plus a per-frame shrink to 0.975 / 0.945 / 0.920 of the resting cat width. Relaxing the clip, growing
+the window during the gesture, and adding a shadow or a halo were each rejected: the shadow and the halo were removed at
+the user's request on 2026-09-29 and may not come back.
+
+**The normalization contract is executable now, not folklore.** Its parameters previously lived only in a comment in
+`panel.css`, which is why the same quantity was measured two different ways in one afternoon: from the canvas centre the
+existing art reads 125.88 ("4 pixels outside the circle"), from the content centre 124.47, and only **canvas centre with
+solid = alpha >= 128** reproduces the documented 125.25. `scripts/panel_frames.py` applies the contract and
+`test/panel-lift-frames.test.ts` asserts it; `--check-raw` gates a raw generation's silhouette before it is accepted.
+
+**Two invariants are pinned because their absence is silent.** The suite asserts that **no two frames are the same
+image** - comparing **all pairs, not just adjacent ones**: the first version compared neighbours only, and a mutation that
+copied one frame over another passed green, which is how the hole was found. It also asserts that the **largest connected
+component** keeps its width and aspect ratio, because a regenerated frame can stop being the same character while every
+geometry assertion still passes. The first generation did exactly that: the hood became a pointed cone and the cat's
+aspect ratio moved from 0.794 to 0.650 (-18%).
+
+**No new IPC, and the squint face keeps a job.** The action is entirely renderer-side; a new IPC method would have to touch
+the pinned method list in `preload.cjs` and three test doubles for no benefit. `mascot-happy.png` is not retired - it is
+the **reduced-motion press face**, which is what it is for once an animation exists.
+
+**Consequences:** the frames are generated art, so they are re-rollable but not hand-editable, and the resting frame stays
+`mascot-base.png` (it is pixel-pinned to the iris layer, so regenerating it would break the eye-follow). **Not yet verified
+live** - the wiring, the geometry and the frame sequence are covered by tests, but the animation has not been watched on a
+real window.
+
 ## D-063: Sending stays unreachable from the model, and becomes reachable from a human who names the candidate
 
 **Status:** Active

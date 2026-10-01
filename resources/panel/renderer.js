@@ -447,7 +447,92 @@ const PEEK_CLASSES = ['ball-peek', 'ball-peek-right']
  *
  * 页面自己算不出这些：它不知道自己在屏幕上的位置，也不知道工作区多大。
  */
+
+// ---------------------------------------------- 被拎起来那一下（2026-10-02）
+//
+// 按下球时它像被拎住后颈提起来，松手落回。**六帧硬切，不做淡入** —— 理由同上面那张笑脸：
+// 换帧本来就是一帧的事，淡入反而像"图片正在加载"。
+//
+// 为什么整套动作都待在渲染进程里：它不需要主进程知道任何事。加一条 IPC 就得动
+// preload 的方法表（那份表被测试逐行钉死）与三处测试替身，代价远大于收益。
+//
+// 帧图**必须在页面加载时就全部预取**：从守护进程取一张脸实测约 15ms（≈60Hz 一帧），
+// 按下那一刻才开始取，第一帧就是空的 —— 那正是当初"点一下会闪一下"的成因。
+const LIFT_STEP_MS = 70
+const LIFT_CLASSES = ['ball-lift-start', 'ball-lift-rise', 'ball-lift-held',
+                      'ball-lift-down', 'ball-lift-settle']
+const LIFT_RISE = LIFT_CLASSES.slice(0, 3)     // 起势 → 上升 → 悬空（按住期间停在这帧）
+const LIFT_FALL = LIFT_CLASSES.slice(3)        // 落下 → 触地 → 归位
+let liftTimer = null
+let liftAtPeak = false
+
+/** 换帧的**唯一入口**：五个类先清干净再加一个。散着写迟早有一条分支忘了摘，
+ *  球就一直停在半空那张脸上（同 setBallState / setBallFace 的理由）。 */
+function showLift(name) {
+  for (const cls of LIFT_CLASSES) document.body.classList.remove(cls)
+  document.body.classList.toggle('ball-lift', !!name)
+  if (name) document.body.classList.add(name)
+}
+
+function stopLift() {
+  if (liftTimer !== null) {
+    clearTimeout(liftTimer)
+    liftTimer = null
+  }
+}
+
+/** 按下：第一帧同步出（不留空档），其后逐帧走到悬空停住。 */
+function startLift() {
+  stopLift()
+  liftAtPeak = false
+  showLift(LIFT_RISE[0])
+  let i = 1
+  const step = () => {
+    if (i >= LIFT_RISE.length) {
+      liftAtPeak = true
+      liftTimer = null
+      return
+    }
+    showLift(LIFT_RISE[i])
+    i += 1
+    liftTimer = setTimeout(step, LIFT_STEP_MS)
+  }
+  liftTimer = setTimeout(step, LIFT_STEP_MS)
+}
+
+/** 松手：接着往下走完落地那几帧。**不留尾巴** —— 用户试过 900ms 的保留期，说像卡住了。
+ *  还没升到顶就松手（一次普通点击）直接回原样：那时它本来也没离开地面多远。 */
+function endLift() {
+  stopLift()
+  if (!liftAtPeak) {
+    showLift(null)
+    return
+  }
+  let i = 0
+  const step = () => {
+    if (i >= LIFT_FALL.length) {
+      showLift(null)
+      liftTimer = null
+      return
+    }
+    showLift(LIFT_FALL[i])
+    i += 1
+    liftTimer = setTimeout(step, LIFT_STEP_MS)
+  }
+  step()
+}
+
+/** 什么时候**不**播：系统要求减少动态效果时只留那张被捏的脸；球半隐在屏幕边时，
+ *  第一次点击的含义是"回来"（主进程那条 reveal 是异步的，此刻窗口还贴着边）。 */
+function canPlayLift() {
+  return !prefersReducedMotion() && !document.body.classList.contains('ball-peek')
+}
+
 function applyMode(payload) {
+  // 形态一变就把动作清干净：托盘与全局快捷键都能直接改形态，停在第 3 帧上等它回来
+  // 就是一张"永远悬在半空"的脸。这里只清类与定时器，形态本身仍由下面那段决定。
+  stopLift()
+  showLift(null)
   const mode = payload && payload.mode === 'ball' ? 'ball' : 'chat'
   const side = payload && payload.side === 'right' ? 'right' : 'left'
   // **只摆锚、不切形态**（`anchorOnly`）：展开分两步走，见 `main.cjs` 里"先摆锚、等页面
@@ -505,8 +590,11 @@ if (hasShell) {
   // 那时没人盯着球看。
   //
   // 放在 `hasShell` 里面：浏览器降级那条路根本不显示球，没必要替它取。
+  // **动作帧也要在这里预取。** 按下才开始取的话，第一帧就是空的（见下面那段的说明）。
   for (const face of ['mascot.png', 'mascot-happy.png', 'mascot-thinking.png',
-                      'mascot-sorry.png', 'mascot-tired.png']) {
+                      'mascot-sorry.png', 'mascot-tired.png',
+                      'mascot-lift-start.png', 'mascot-lift-rise.png', 'mascot-lift-held.png',
+                      'mascot-lift-down.png', 'mascot-lift-settle.png']) {
     const img = new Image()
     img.src = '/panel/' + face
   }
@@ -535,6 +623,7 @@ if (hasShell) {
   ball.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return
     setBallFace(true)
+    if (canPlayLift()) startLift()
     const startX = event.screenX
     const startY = event.screenY
     let dragging = false
@@ -551,11 +640,15 @@ if (hasShell) {
       window.removeEventListener('pointercancel', onCancel)
       void window.weflowPanel.dragEnd()
       setBallFace(false)
+      endLift()
       if (dragging) return                 // 拖过了就不算点击
       toggleMode()
     }
     // 指针被系统抢走（触摸、原生菜单弹出）时不走 onUp，必须自己把脸收回来，否则球一直笑着
-    const onCancel = () => setBallFace(false)
+    const onCancel = () => {
+      setBallFace(false)
+      endLift()
+    }
     void window.weflowPanel.dragStart(startX, startY)
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -564,7 +657,7 @@ if (hasShell) {
   // 右键：快速回复。**只在有外壳时接管**——浏览器降级那条路的原生菜单里有"复制"，
   // 那是用户要用的，不该被我们抢掉。
   //
-  // 有外壳时用**主进程弹的原生菜单**：它画在窗口外面，所以球形态那 76x76 的窗口
+  // 有外壳时用**主进程弹的原生菜单**：它画在窗口外面，所以球形态那 96x96 的窗口
   // **不用先展开**（页内菜单会被窗口裁掉）。上一版就是"先展开再弹"，用户看到的是
   // "点右键把第二大脑窗口弹出来了"——那不是快速功能该有的样子。
   document.addEventListener('contextmenu', (event) => {
@@ -572,7 +665,7 @@ if (hasShell) {
     void (async () => {
       const picked = await window.weflowPanel.openQuickMenu(quickReplies)
       if (!picked || typeof picked !== 'object') return
-      // 选中任何一项都要展开：球那个 76x76 里看不到任何回答，而这几项全都要出文字。
+      // 选中任何一项都要展开：球那个 96x96 里看不到任何回答，而这几项全都要出文字。
       // 但**右键本身不动窗口**（那是用户嫌的那一下）——展开只发生在真的选了东西之后。
       if (document.body.classList.contains('mode-ball')) requestMode('chat')
       if (picked.kind === 'contact' && typeof picked.name === 'string' && picked.name.trim()) {
@@ -598,7 +691,7 @@ if (hasShell) {
   // 形态由主进程说了算（球、收起、托盘菜单、快捷键都是这条路），收起分两步：
   //   `fadeMs > 0` → 先把气泡淡掉（窗口这会儿还是大的，淡出真看得见），**不换形态**；
   //   `done` → 主进程已经把窗口缩回球那么大，这时才把气泡摘掉。
-  // 顺序不能反：提前换，76x76 的窗口里会露出一条气泡的边；不换，气泡会一直在。
+  // 顺序不能反：提前换，96x96 的窗口里会露出一条气泡的边；不换，气泡会一直在。
   window.weflowPanel.onMode((payload) => {
     if (payload && payload.mode === 'ball' && !payload.done) {
       if (payload.fadeMs > 0 && document.body.classList.contains('mode-chat')) {

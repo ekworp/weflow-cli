@@ -148,6 +148,31 @@ The guard to copy: `test/chat_notes_test.py` writes a card and then runs the **r
 (`compile_wiki.scan_articles`) over it, asserting the links and descriptions come back. That is the shape of every
 producer/consumer pair in this project - do not assert on the markdown text, assert that the other side reads it.
 
+## Recipe G: a new panel face or frame asset
+
+The floating ball's artwork lives in `resources/panel/` and is served from there at runtime (the daemon's static
+whitelist, not `dist/`). Adding one is four wiring points plus a contract, and **three of the four fail silently**:
+
+1. `resources/panel/<file>.png` - 256x256, 8-bit RGBA, non-interlaced. The repo's only PNG decoder lives in
+   `test/panel-tray-pixels.test.ts` and rejects anything else; a frame returned as RGB means the generation is bad, not
+   that a background needs removing.
+2. `PANEL_FILES` in `test/panel-packaging.test.ts` - the directory is reconciled against that hand-written list, so a new
+   file fails the suite until it is registered.
+3. `STATIC_FILES` in `src/panel/server.ts` - this is not packaging: the page fetches through this whitelist, and a missing
+   name 404s at runtime. The symptom is the ball flashing empty for one frame, with `PANEL_ASSET_MISSING` visible only in
+   the HTTP response body, where the page cannot show it.
+4. `panel.css` - a `body.<class> #ball .face { background-image: url('/panel/<file>.png') }` rule, plus the prefetch list
+   in `renderer.js` if the face can appear on press. A face fetched on demand costs about 15 ms - one 60 Hz frame - so the
+   first press after opening would show an empty ball.
+
+**If the asset is a frame of an animation, the contract applies:** everything inside the inscribed circle (0 solid pixels
+past r=128, farthest solid distance under 0.98 x 128 measured **from the canvas centre** with solid = alpha >= 128), the
+apex anchored to the resting frame, and the scale taken from **the character's own bounding box** rather than the canvas,
+which also carries the speech bubble and any markings. `scripts/panel_frames.py --check` enforces it, `--normalize` applies
+it, and `--check-raw` compares a raw generation's silhouette against the resting frame before you accept it. Re-run all
+three after any regeneration: a frame that is no longer the same character passes every other assertion in the suite, which
+is exactly what happened with the first attempt.
+
 ## What will catch you
 
 | Invariant | Test |
@@ -159,6 +184,7 @@ producer/consumer pair in this project - do not assert on the markdown text, ass
 | A config key exists in all five places | `test/config-keys.test.ts` |
 | The MCP subset contains no write/send/publish tool | `test/assistant-tools.test.ts` |
 | Panel IPC surface is exactly the declared method list | `test/panel-packaging.test.ts` |
+| A panel asset is registered, whitelisted, served, and still the same character | `test/panel-packaging.test.ts`, `test/panel-lift-frames.test.ts` |
 | Interactive-menu entries match `switch` cases, and the commands they call exist | `test/cli-menu.test.ts` |
 | A knowledge source's output is readable by the wiki aggregator, links and descriptions intact | `test/chat_notes_test.py`, `test/compile_wiki_test.py` |
 | Every declaration of the concept directories agrees, and nothing that imports the constant stops iterating it | `test/concept-dirs-agreement.test.ts` |
