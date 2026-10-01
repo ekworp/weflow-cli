@@ -1403,6 +1403,41 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-062: Relationship temperature stays on the command line, and its "who counts as a person" rule flags rather than drops
+
+**Status:** Active
+
+**Decision.** `scripts/bonds.py` reports three things from the local message database: relationships that are cooling
+(substantial history, then silence), relationships heating up (the last 7 days well above the long-run rate), and
+contacts whose history never mentions another channel (phone, email, meeting up) - i.e. the ones reachable *only*
+here. It is **read-only, local, and calls no model**. Two rules are pinned:
+
+1. **It is not in the tool table.** It is not exposed to the assistant, to MCP, or to any cloud model - not as a tool
+   and not as context. Everything else this project computes about the user is either explicitly shareable or has a
+   confirmation gate; this one is neither. Its output is an **inference about third parties** (which relationships the
+   user is neglecting, who they would lose), derived from private messages, and the person it could most embarrass is
+   not the person running it.
+2. **"Who counts as a person" flags, it does not drop.** The rule is the **shape of the id** - anything containing
+   `@` (`@chatroom` groups, `@openim` service accounts, `@weclaw` bots), `filehelper`, or a `gh_` official account, is
+   not a person; everyone else is. Accounts that are structurally indistinguishable from a person but whose *name*
+   looks like a shop or a hotline (普华口腔门诊部 is one on this machine, with `local_type = 1` and its own alias) are
+   listed under "flagged, you decide", with a skip file (`output/bonds-skip.txt`) and `--skip` to act on it. And every
+   account the run excluded is printed with the reason, so a filter can never quietly remove two friends.
+
+**Reason.** Three measurements killed three simpler designs. (a) Ranking by message volume produced a leaderboard
+with no information - the people you message most are not news to you. (b) "Never mentions another channel" was
+**inverted**: it is trivially true of bots, so the first version of the irreplaceability ranking had 星巴克小助手,
+天天神券福利君, 串掌门（南村店）and 文件传输助手 at the top. (c) `flag` looked like the clean human/bot marker - real
+friends mostly carry `flag = 3` - until the distribution was read: of 38 people, three differ, and only one of those
+(`微信ClawBot`, 2049) is a bot; 彪弟 (2051) and 平凡的世界 (2563) are people whose bit was set by however they were
+added. Shipping `flag == 3` would have silently deleted two friends, which is the failure this project keeps meeting:
+a filter that is 95% right and reports nothing.
+
+**Consequences.** The thresholds are constants with tests and mutation checks (`COOL_DAYS`, `HOT_RATIO`, the minimum
+history required for "cooling"), because they are the whole judgement. The skip file lives under `output/` (gitignored,
+never committed). Adding it as a command in `bin/weflow-cli.ts` is fine and expected; adding it to the assistant or MCP
+tool tables is not, and that is the part of this decision worth keeping written down.
+
 ## D-061: The MCP server can speak HTTP - so the boundary had to be written down, not just implemented
 
 **Status:** Active

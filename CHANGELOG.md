@@ -7,6 +7,20 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **`bonds` - relationship temperature: who is going quiet, who is heating up, who is reachable only here.** Not a
+  leaderboard of who you message most (that tells you nothing you did not know); the useful signal is the *shape*. It
+  reports relationships with substantial history that have gone silent (ranked by messages x silent days, so it
+  surfaces "294 messages last year, nothing for 282 days"), relationships whose last 7 days run at least twice the
+  long-run rate, and contacts whose entire history never mentions another channel - phone, email, meeting up - which
+  is the data-derived version of "if this account disappeared tomorrow". Read-only, local, no model, no network.
+  Three measurements shaped it, and all three overturned a simpler design: ranking by volume produced no information;
+  the first irreplaceability rule was **inverted** (it is trivially true of bots, so the top of the list was a coffee
+  shop's bot); and `flag` - the field that looked like a clean human/bot marker - would have silently deleted two
+  real friends, since two of the 38 people on this machine carry extra bits from however they were added. What
+  remains is the **shape of the id** (`@` anything, `filehelper`, `gh_` are out), plus accounts that look structurally
+  like a person but whose name reads as a shop are **flagged for you to decide** rather than dropped, with a skip file
+  and `--skip`. Every exclusion is printed with its reason. Deliberately **not** in the assistant or MCP tool tables:
+  its output is an inference about other people (D-062).
 - **Voice messages reach the conversation cards as text, not as `[语音]`.** The chat line fed the model a bare
   `[语音]` placeholder for every voice message - no length, no words - while the transcripts were already on disk:
   the local faster-whisper pass writes a content-addressed cache, and measured over the last 30 days **1,780 of
