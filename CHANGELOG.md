@@ -18,8 +18,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   were untestable was rewritten too, because two of its claims were no longer true (`get_concepts`/`get_review` had
   been covered since 2026-09-30, and the harness does set environment variables). What is genuinely uncovered is
   **two** tools: `search_semantic` (needs a `dashscopeApiKey` and a built index) and `get_weread` (refuses before it
-  reads anything when `wereadApiKey` is unset, and that config key cannot be injected reliably). The five cases have
-  **not** been run against the real model yet - the offline tests only check that they are well-formed.
+  reads anything when `wereadApiKey` is unset, and that config key cannot be injected reliably). Run against the real
+  model the same day: **36 passed, 0 failed**. The strict-draft case is worth one note for what it did *not* do - it
+  called `get_messages` and then refused, never reaching for `draft_reply`, so an expectation of
+  `mustCall: ['draft_reply']` (that case's first version) would have failed on its first run and sent someone chasing
+  a defect that does not exist. Asserting the outcome rather than the call is what the memory cases already argued
+  for, and here it is what kept the case honest.
 - **`backfill_articles.py --topic` fetches one topic instead of a whole day - and a day fetched that way knows it is
   partial.** The filter is the classifier the script already had: `_guess_topic` reads only the article's title and its
   account name, never the body, so `--topic AI` selects exactly the articles a full run would have filed under `AI`.
