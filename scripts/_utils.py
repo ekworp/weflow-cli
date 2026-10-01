@@ -601,6 +601,38 @@ def get_db_config(config=None):
     }
 
 
+def biz_message_db(config=None):
+    """订阅号（公众号）消息库 `biz_message_0.db` 的路径与钥匙，返回 `(db, key_hex, salt_hex)`。
+
+    **微信 4.x：钥匙由全库 passphrase 派生**（PBKDF2-HMAC-SHA512，256000 轮，32 字节），
+    盐取**库文件头 16 字节**。`favPassphrase` 优先，退而用 `decryptKey`；
+    更早的 `bizKey`/`bizSalt`（配了就直用）只作兼容保留——那两个键在本机早就不存在了。
+
+    抽成一个函数，是因为这把钥匙原来有**三份实现**：`biz_daily` 那份是 passphrase 派生（可用），
+    `chat_stats` 与 `mcp_bridge` 那两份只认 `bizKey`（在本机必然报『缺少密钥』，而照它们的提示去
+    `config set bizKey` 还会撞上『该键不在 CLI 可写白名单里』——越修越远）。
+    """
+    import hashlib
+    if config is None:
+        config = load_config()
+    nt_db = str(config.get('ntDbPath', ''))
+    msg_dir = os.path.dirname(nt_db.replace('\\', '/'))
+    db = os.path.join(msg_dir, 'biz_message_0.db')
+    key_enc = config.get('bizKey', '')
+    salt = config.get('bizSalt', '')
+    if key_enc and salt:
+        return db, decrypt_lock(key_enc), salt
+    pass_enc = config.get('favPassphrase', '') or config.get('decryptKey', '')
+    if not pass_enc or not os.path.exists(db):
+        raise RuntimeError(
+            '缺少订阅号数据库密钥: 请运行 weflow-cli fav set-key --passphrase <64位hex> '
+            '配置全库 passphrase (自动派生各库密钥)')
+    with open(db, 'rb') as fh:
+        salt = fh.read(16).hex()
+    key = hashlib.pbkdf2_hmac('sha512', bytes.fromhex(decrypt_lock(pass_enc)),
+                              bytes.fromhex(salt), 256000, dklen=32).hex()
+    return db, key, salt
+
 def get_api_key(config=None) -> str:
     """读取 AI API key (自动解密 lock: 前缀)。"""
     if config is None:

@@ -69,13 +69,12 @@ def get_biz_keys(config):
     contact_key_enc = config.get('contactKey', '')
     contact_salt = config.get('contactSalt', '')
     contact_key = decrypt_lock(contact_key_enc) if contact_key_enc else ''
-    biz_db = os.path.join(msg_dir, 'biz_message_0.db')
-    biz_key_enc = config.get('bizKey', '')
-    biz_salt = config.get('bizSalt', '')
-    if biz_key_enc and biz_salt:
-        biz_key = decrypt_lock(biz_key_enc)
-    else:
-        return {'error': '缺少 biz_message_0.db 密钥，请运行 python scripts/nt_decrypt.py scan --json'}
+    # 钥匙派生统一到 `_utils.biz_message_db()`（原来只认 bizKey/bizSalt，见那个函数的注释）
+    from _utils import biz_message_db
+    try:
+        biz_db, biz_key, biz_salt = biz_message_db(config)
+    except RuntimeError as exc:
+        return {'error': str(exc)}
     return {
         'biz_db': biz_db, 'biz_key': biz_key, 'biz_salt': biz_salt,
         'contact_db': contact_db, 'contact_key': contact_key, 'contact_salt': contact_salt,

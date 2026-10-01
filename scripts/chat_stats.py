@@ -83,13 +83,14 @@ def get_biz_keys(config):
     contact_salt = config.get('contactSalt', '')
     contact_key = decrypt_lock(contact_key_enc) if contact_key_enc else ''
 
-    biz_db = os.path.join(msg_dir, 'biz_message_0.db')
-    biz_key_enc = config.get('bizKey', '')
-    biz_salt = config.get('bizSalt', '')
-    if biz_key_enc and biz_salt:
-        biz_key = decrypt_lock(biz_key_enc)
-    else:
-        print('[ERROR] 缺少 biz_message_0.db 密钥，请运行: python scripts/nt_decrypt.py scan --json')
+    # 钥匙派生统一到 `_utils.biz_message_db()`：原来这里只认配置里的 bizKey/bizSalt，
+    # 而那两个键在本机根本不存在（微信 4.x 的钥匙由全库 passphrase 派生）——
+    # 照这条提示去 `config set bizKey` 还会撞上"该键不在 CLI 可写白名单里"。
+    from _utils import biz_message_db
+    try:
+        biz_db, biz_key, biz_salt = biz_message_db(config)
+    except RuntimeError as exc:
+        print('[ERROR] %s' % exc)
         sys.exit(1)
 
     return {

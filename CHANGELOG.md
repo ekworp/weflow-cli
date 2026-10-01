@@ -105,6 +105,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   to equal the old ball image exactly. If your system asks for reduced motion, the eyes stay still.
 
 ### Fixed
+- **The subscription-account database key was derived in three places, and two of them could never
+  have worked.** `chat_stats.py` and `mcp_bridge.py` read `bizKey` / `bizSalt` from the configuration -
+  two keys that do not exist on this machine, because WeChat 4.x derives each database's key from the
+  account-wide passphrase (PBKDF2 over the file's own 16-byte header salt). Both paths therefore reported
+  "missing key", and the hint they printed (`config set bizKey`) leads somewhere worse: that key is not in
+  the CLI's writable allowlist, so following the advice hits `INVALID_CONFIG_KEY`. `biz_daily.py` held the
+  working derivation - and computed it **twice in a row**, the first result immediately overwritten by the
+  second, which is what a fork in the logic leaves behind. All three now call one shared
+  `_utils.biz_message_db()`, and a source-level test asserts that no other script reads `bizKey` at all -
+  so a script added later is covered too, rather than only today's three. Verified by running the path
+  that used to fail: `daily-stats` now returns per-account counts, and a daily dry run opens the database.
 - **`wiki lint` was O(links x pages) and took 9.5 minutes on the article line.** The link-existence
   predicate passed `resolvable_names(pages)` *inside a lambda*, so the set of all page names plus aliases was
   rebuilt once per link instead of once per run - measured on this machine: 3,623 pages took **9m29s**, while the
