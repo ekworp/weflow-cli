@@ -28,7 +28,7 @@ WeFlow CLI is a local-first command-line tool and MCP server for user-authorized
 pre-2026-03-03 backlog, not only its AI part: **8,754** articles over 157 days (1,702 AI + 7,052 others, of which
 2,709 needed fetching), **8,670** reading notes (free and local - 94 fewer than the index because a note file is named
 `<date>-<title>` and one title republished by two accounts the same day makes a single file; measured per day, that
-accounts for all 94), **17,041** cards at ¥0.0018 each (**~¥16**; the first pass at 6 workers drew **HTTP 429** on
+accounts for all 94), **8,670 new cards** at ¥0.0018 each (**~¥16** - the base now holds 17,041 in all; the first pass at 6 workers drew **HTTP 429** on
 4,884 of 6,968 articles, and the same command at **2 workers** then carded all 4,883 with none - concurrency, not
 quota), and **24,525** concept pages at ¥0, taking the base to **49,953 pages** across both lines with **0 broken
 links**. That build exposed a limit of `--pages-from-cards`: the file name is the concept name sanitised and cut to 60
