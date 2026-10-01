@@ -17,9 +17,10 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.9.0
 
 ### Added
+
 - **`draft --pick N --send`: a candidate can now be sent, by a human who names which one.** The hard half already
   existed - judge the intent, draft three deliberately different candidates, rank them with the decision model - and it
   ended by saying the candidates are only text and that sending is your call. That call can now be carried out from the
@@ -210,7 +211,25 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   is otherwise pixel-for-pixel what it was: the new base image plus the iris layer, composited at rest, are asserted
   to equal the old ball image exactly. If your system asks for reduced motion, the eyes stay still.
 
+
+- **The panel shows what the assistant did, collapsed under each reply.** The user asked for the
+  thinking process to be visible but not in the way - so each answer now carries a `<details>` block
+  ("思考过程") that is **closed by default**: routing decision, any guard that pushed the turn back,
+  each tool call with its argument summary and byte count, the round count and the stop reason. The
+  lines come from the **same** `describeForChat` that the WeChat side's 「轨迹」 command prints, so the
+  two surfaces cannot drift into disagreeing about what happened - and that also means the panel
+  inherits the guarantee that `userId` never appears. When the model actually returns
+  `reasoning_content` it is appended (clipped, marked when cut); the current default model returns
+  none, and the trace says so rather than pretending.
+
+  One thing had to be defended: **the trace is an accessory, the reply is the result.** The first
+  version called the lookup unguarded, and the panel test went red immediately - its stub service
+  had no such method, so every ask became a 500. A throw there would have cost the user their answer
+  to gain nothing, so it is caught, and the test pins both halves (the trace comes through, and a
+  failing trace still returns the reply).
+
 ### Fixed
+
 - **A concept name containing a double quote lost a character on every read.** `parse_frontmatter` split
   list values with `item.strip().strip('"\'')`, and `strip` removes *every* leading and trailing quote character - not a matched
   pair - so `AI 长出"手脚"` came back as `AI 长出"手脚`; `wiki_lint` then repeated the mistake, stripping
@@ -313,25 +332,6 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   unhandled error jsdom kept reporting while the panel tests passed. Deleted, with the reason left
   in place.
 
-### Added
-
-- **The panel shows what the assistant did, collapsed under each reply.** The user asked for the
-  thinking process to be visible but not in the way - so each answer now carries a `<details>` block
-  ("思考过程") that is **closed by default**: routing decision, any guard that pushed the turn back,
-  each tool call with its argument summary and byte count, the round count and the stop reason. The
-  lines come from the **same** `describeForChat` that the WeChat side's 「轨迹」 command prints, so the
-  two surfaces cannot drift into disagreeing about what happened - and that also means the panel
-  inherits the guarantee that `userId` never appears. When the model actually returns
-  `reasoning_content` it is appended (clipped, marked when cut); the current default model returns
-  none, and the trace says so rather than pretending.
-
-  One thing had to be defended: **the trace is an accessory, the reply is the result.** The first
-  version called the lookup unguarded, and the panel test went red immediately - its stub service
-  had no such method, so every ask became a 500. A throw there would have cost the user their answer
-  to gain nothing, so it is caught, and the test pins both halves (the trace comes through, and a
-  failing trace still returns the reply).
-
-### Fixed
 
 - **Every subprocess now runs without a console window.** The user reported a black command-line
   window popping up while the assistant was thinking and using tools. The cause was not one bad
