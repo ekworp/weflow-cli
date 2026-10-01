@@ -431,6 +431,23 @@ class TopicFilterTests(unittest.TestCase):
             self.assertTrue(bf.day_done(tmp, '2026-03-05', ['AI']))
             self.assertEqual(len(self.read_json(tmp)['articles']), len(bf.TOPICS), '每一篇都还在')
 
+    def test_旧代码写的_六个主题全在的标记_也算完整(self):
+        """**盘上真有这样一天**（2025-09-06），是在"收敛规则"加进去之前写的。
+
+        `write_day` 现在不会再写出这种标记，但已经写下的那几天得能读得回来 —— 否则它们永远
+        "没做完"，每次全量都把整个窗口重抓一遍。判据与写的那一头保持同一个：六个主题都在 = 完整。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            dirs = Path(tmp, '2026-03-05')
+            dirs.mkdir(parents=True)
+            (dirs / '.articles.json').write_text(json.dumps({
+                'date': '2026-03-05', 'backfilled': True,
+                'topicFilter': list(bf.TOPICS),      # 旧代码留下的形态：六个主题，键还在
+                'articles': [{'title': '甲', 'source': '某号', 'topic': 'AI'}],
+            }, ensure_ascii=False), encoding='utf-8')
+            self.assertTrue(bf.day_done(tmp, '2026-03-05'), '六个主题都做过了')
+            self.assertTrue(bf.day_done(tmp, '2026-03-05', ['AI']))
+
     def test_同一主题重复回填不会在索引里翻倍(self):
         with tempfile.TemporaryDirectory() as tmp:
             for _ in range(2):

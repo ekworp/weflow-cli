@@ -117,6 +117,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   to equal the old ball image exactly. If your system asks for reduced motion, the eyes stay still.
 
 ### Fixed
+- **Backfilling a day in two passes dropped the first pass from the index.** `--topic` was written for the
+  one-topic-at-a-time case, and `write_day` rewrote `.articles.json` from that run's results - so fetching `AI` on
+  Monday and `学术` on Tuesday left Tuesday's file listing only the 学术 articles while Monday's `AI` files sat on
+  disk, an index shorter than the directory and nothing reported. The index now describes **the day**, not the run:
+  entries for other topics are carried over and merged (de-duplicated on the name the file actually has), the
+  `topicFilter` mark becomes the union, and it is **removed** once the union covers all six topics - otherwise such a
+  day could never converge and every later full run would refetch the whole window. `truncated` is now sticky, and an
+  unreadable index is preserved as `.articles.json.bad` instead of being silently replaced. `--topic` also takes
+  repeated flags now, not only commas: the same flag in `article_notes.py` is repeatable, so `--topic AI --topic 学术`
+  was silently acting on only the last one. Verified on a real day (8 `AI` entries became 42, none lost, directory and
+  index equal) and across the window (8,754 entries over 157 days, 0 days with a mismatch, 0 entries lost).
 - **A day backfilled with `--limit-per-day` reported itself as complete.** The day was sliced, written, and then
   `day_done` saw a non-empty article list and skipped it from then on, so everything past the limit was silently out
   of scope - and had been since the flag was added. Such a day now carries a `truncated` marker and is redone on the

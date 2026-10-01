@@ -432,6 +432,10 @@ def day_done(out_root, day, topics=None) -> bool:
     stored = payload.get('topicFilter')
     if stored is None:
         return True            # 完整的一天，所有主题都在
+    if set(stored) >= set(TOPICS):
+        # 六个主题在标记里都在 = 这天完整（`write_day` 现在会直接把标记撤掉，但**旧代码写的**
+        # 天数带着这个形态留在盘上 —— 读的判据也认它，免得那几天永远"没做完"）。
+        return True
     if topics is None:
         return False           # 只要过一部分，全量的活还没干
     return set(stored) >= set(topics)

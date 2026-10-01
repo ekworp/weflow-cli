@@ -207,7 +207,17 @@ is **permanent for that day**, because the day is marked done by whether it hold
 rewrites `.articles.json` from that run's results, so an article failing a *second* time drops out of the index while
 its md stays on disk - 4 of the 35 re-run days did exactly that, and their entries were put back by hand from the
 run's snapshot (add-only, and only for md files that exist). All 156 days now have exactly as many index entries as
-article files.
+article files. **The other five topics were then fetched the same way**, which is what exposed the last defect of
+`--topic`: `write_day` rewrote `.articles.json` from that run's results, so the second pass dropped the first pass's
+entries while its files stayed on disk. The index now describes the **day**, not the run - other topics' entries are
+carried over and merged (de-duplicated on the name the file actually has), `topicFilter` becomes the union, and it is
+**removed** once that union covers all six topics, since otherwise the day could never converge and every later full
+run would refetch the window. `truncated` is sticky, an unreadable index is kept as `.articles.json.bad`, and
+`--topic` takes repeated flags as well as commas (the same flag in `article_notes.py` is repeatable, so
+`--topic AI --topic 学术` had been silently acting on the last one only). Verified over the window: **8,754** entries
+across 157 days, **0** days where the index and the directory disagree, **0** entries lost across the two passes, and
+155 of the 157 days now count as complete - the two that do not are days that hold no articles of the topic they are
+missing (one is AI-only, one has no AI at all), so nothing is pending on them.
 
 **Concept extraction is the one step that costs money per article, and its cost is now measured rather than
 modelled.** `article-notes --topic` filters the corpus, because measured over the 3,498 backfilled articles news is
