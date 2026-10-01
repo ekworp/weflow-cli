@@ -473,37 +473,14 @@ def get_db_keys(config):
     contact_salt = config.get('contactSalt', '')
     contact_key = decrypt_lock(contact_key_enc) if contact_key_enc else ''
 
-    # biz_message_0.db (每库独立密钥)
-    biz_db = os.path.join(msg_dir, 'biz_message_0.db')
-    biz_key_enc = config.get('bizKey', '')
-    biz_salt = config.get('bizSalt', '')
-    pass_enc = config.get('favPassphrase', '')
-    passphrase = decrypt_lock(pass_enc) if pass_enc else ''
-    if passphrase and os.path.exists(biz_db):
-        with open(biz_db, 'rb') as fh:
-            biz_salt = fh.read(16).hex()
-        biz_key_enc = ''
-    if biz_key_enc and biz_salt:
-        biz_key = decrypt_lock(biz_key_enc)
-    else:
-        # 从全库共用 passphrase 派生 (微信 4.x: PBKDF2-HMAC-SHA512, 256000 轮, 32 字节)
-        pass_enc = config.get('favPassphrase', '')
-        passphrase = decrypt_lock(pass_enc) if pass_enc else ''
-        biz_key = ''
-        if passphrase and os.path.exists(biz_db):
-            with open(biz_db, 'rb') as fh:
-                biz_salt = fh.read(16).hex()
-            biz_key = hashlib.pbkdf2_hmac(
-                'sha512', bytes.fromhex(passphrase),
-                bytes.fromhex(biz_salt), 256000, dklen=32
-            ).hex()
-        if not biz_key:
-            # 只指向 passphrase 一条路: 早先还建议 `config set bizKey`, 但该键不在
-            # CLI 的可写白名单里, 照做必然报 INVALID_CONFIG_KEY。
-            raise SystemExit(
-                '缺少公众号数据库密钥: 请运行 weflow-cli fav set-key --passphrase <64位hex> '
-                '配置全库 passphrase (自动派生各库密钥)'
-            )
+    # biz_message_0.db（订阅号库）：钥匙派生统一在 `_utils.biz_message_db()`。
+    # 这块原来自己算了两遍（先按 bizKey/bizSalt，又被下面按 passphrase 派生的一遍覆盖），
+    # 两遍并存就是分叉留下的痕迹 —— 见那个函数的注释。
+    from _utils import biz_message_db
+    try:
+        biz_db, biz_key, biz_salt = biz_message_db(config)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
 
     return {
         'biz_db': biz_db, 'biz_key': biz_key, 'biz_salt': biz_salt,
