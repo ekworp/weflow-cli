@@ -127,7 +127,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   reached by the link that pointed at them - the builder now records the original name in `aliases:`, and
   `wiki_lint` counts an alias as an inbound edge (it already accepted one as "exists", which is why no broken link
   was ever reported). Measured on the live knowledge base: **28 orphan pages → 1** (`DESIGN`, which no card mentions
-  at all), with 0 broken links across 26 pages that had been silently unlinked.
+  at all), with 0 broken links across 26 pages that had been silently unlinked. The case-only half of the same
+  transform is fixed with it: two names differing only in case are one file, and the builder wrote both, so the second
+  overwrote the first - **53 pages were lost this way** in the two builds of 2026-10-01 alone (44 AI, 9 non-AI).
+  Names are now grouped by file name: one page, the other spellings as `aliases` (which is what
+  `wiki compile --merge-duplicates` already did for one concept written two ways), and the **233 pages** that were
+  missing a spelling got it back - `[[AI agent]]` and `[[AI Agent]]` now reach the same page.
 - **Backfilling a day in two passes dropped the first pass from the index.** `--topic` was written for the
   one-topic-at-a-time case, and `write_day` rewrote `.articles.json` from that run's results - so fetching `AI` on
   Monday and `学术` on Tuesday left Tuesday's file listing only the 学术 articles while Monday's `AI` files sat on

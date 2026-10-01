@@ -37,7 +37,12 @@ characters, while `existing` is snapshotted **once before the loop**, so two con
 case-insensitive filesystem, and **both are counted** - it reported 4,934 built and wrote 4,890, and the same
 arithmetic explains `--dry-run`'s "already have 28,934" against 28,791 files on disk. Measured over the whole card
 corpus: **211 case-insensitive collisions, 243 names sharing a page**; a case-sensitive comparison sees **0**, which
-is why nothing catches it. The same lossy transform had a second symptom, **fixed on 2026-10-01**: when a concept name
+is why nothing catches it. **Fixed on 2026-10-01** by grouping names on the file name they produce - one page per
+group, the other spellings written as `aliases`, which is what `--merge-duplicates` already did for one concept
+written two ways. **53 pages had been lost this way** in that day's two builds (44 AI, 9 non-AI); the 233 existing
+pages that were missing a spelling were given it back (264 aliases), so `[[AI agent]]` and `[[AI Agent]]` now reach
+the same page. Only spellings that actually occur are aliased - a name nobody wrote is not invented. The same lossy
+transform had a second symptom, **fixed on 2026-10-01**: when a concept name
 contains `:` (or `/`, `?`, `*`, `"`, `<`, `>`, `|`) the file name got `_` instead, so the card's `[[Qwen3.5:9B]]`
 matched no stem - and because card-side links are **counted but never checked for brokenness** (only a page's own
 outgoing links are), that link was neither an inbound edge nor a broken link, leaving the page silently unlinked;

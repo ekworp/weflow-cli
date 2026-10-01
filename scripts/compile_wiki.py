@@ -681,11 +681,20 @@ def build_pages_from_cards(pages_dir: str, card_dirs=None, dry_run: bool = False
     existing = {p.stem.casefold() for p in Path(pages_dir).glob('*.md')}
     out_dir = Path(pages_dir)
     today = time.strftime('%Y-%m-%d')
-    built, skipped, unwritable, no_material, bad_source = [], 0, 0, 0, 0
+    # **只差大小写的两个概念名，在 Windows 上是同一个文件。** 原来的实现让后一个覆盖前一个：
+    # 一页**没了**，而 `built` 把两个都算了（实测 49,953 页里丢 53：AI 那批 44、这批 9）。
+    # 按"文件名（大小写折叠后）"分组 —— 一个文件一张页，其余写法进 `aliases`。这不是新规矩：
+    # `--merge-duplicates` 对"同一个概念的不同写法"做的就是这件事，`wiki_lint` 也一直认别名。
+    groups: dict = {}
     for name, refs in merged.items():
+        groups.setdefault(re.sub(r'[\/:*?"<>|]', '_', name)[:60].casefold(), []).append((name, refs))
+
+    built, skipped, unwritable, no_material, bad_source = [], 0, 0, 0, 0
+    for members in groups.values():
+        name, refs = members[0]                     # 组里第一个当正式名，其余进 aliases
         safe = re.sub(r'[\/:*?"<>|]', '_', name)[:60]
         if safe.casefold() in existing:
-            skipped += 1
+            skipped += len(members)
             continue
         if '[' in name or ']' in name or name.endswith('.md'):
             # 同 `--refresh-sources`：这两类名字体检会报断链（`wiki_lint.resolve` 见到 `.md`
@@ -723,13 +732,19 @@ def build_pages_from_cards(pages_dir: str, card_dirs=None, dry_run: bool = False
             'sources': [ref['file']],
             'summary_by': 'card',
         }
-        if safe != name:
-            # **文件名是概念名的有损变换，指向它的链接用的是原名**（`:` `/ ? * " < > |` 换成 `_`，
-            # 再截到 60 字符）。不写这个别名，两件事同时坏掉：Obsidian 里 `[[Qwen3.5:9B]]` 点不开
-            # `Qwen3.5_9B.md`，而 `wiki_lint` 的入链计数只认页码、会把这页报成孤儿
-            # （它早就认别名做"存在"判断，缺的只是入链那一步 —— 2026-10-01 实测 28 张）。
-            # 与 `--merge-duplicates` 用的是同一个机制：把并掉/改名的旧名字写进 aliases，链接就不断。
-            fm['aliases'] = [name]
+        # 别名有两类来源，都是**指向这一页的名字**：
+        #   1. 需要净化/截断时保留的原名 —— 否则 Obsidian 里 `[[Qwen3.5:9B]]` 点不开
+        #      `Qwen3.5_9B.md`，`wiki_lint` 也会把这页报成孤儿（2026-10-01 实测 28 张）；
+        #   2. 同一批里只差大小写的另一种写法 —— 它们本来指向同一张页。
+        # 组里的写法也要过"写不得"那关：带方括号或以 `.md` 结尾的名字进了 aliases
+        # 只会给体检添一批假断链（与上面概念名那条同一个理由）。
+        aliases = [name] if safe != name else []
+        for other, _ in members[1:]:
+            if other in aliases or '[' in other or ']' in other or other.endswith('.md'):
+                continue
+            aliases.append(other)
+        if aliases:
+            fm['aliases'] = aliases
         if not dry_run:
             out_dir.mkdir(parents=True, exist_ok=True)
             write_with_frontmatter(str(out_dir / ('%s.md' % safe)), fm, body)

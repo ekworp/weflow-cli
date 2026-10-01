@@ -1028,6 +1028,32 @@ class BuildPagesFromCardsTests(unittest.TestCase):
         self.assertEqual(fm.get('aliases'), ['Qwen3.5:9B'], '原名要作为别名留下')
         self.assertEqual(fm.get('title'), 'Qwen3.5:9B')
 
+    def test_只差大小写的两个名字合成一张页_另一个进别名(self):
+        """两个名字在大小写不敏感的文件系统上是**同一个文件**。
+
+        原来的实现逐个名字建页：后一个覆盖前一个 —— 一页**没了**，而 `built` 把两个都算了
+        （实测 49,953 页里这样丢 53：AI 那批 44、非 AI 那批 9）。按文件名分组之后，一个文件
+        一张页、另一种写法进 `aliases` —— 这与 `--merge-duplicates` 处理"同一概念的不同写法"
+        是同一件事，不是新规矩。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cards = Path(tmp) / 'cards'
+            cards.mkdir()
+            (cards / '2026-03-04-某篇.md').write_text(
+                '---\ntitle: "某篇"\n---\n\n'
+                '- [[DeepSeek]] — 一个模型，定义写得够长，免得撞上"空页"那条阈值。\n'
+                '- [[Deepseek]] — 同一个模型的另一种写法，定义同样写得够长一些。\n\n',
+                encoding='utf-8')
+            pages = Path(tmp) / 'pages'
+            pages.mkdir()
+            r = cw.build_pages_from_cards(str(pages), [str(cards)])
+            files = sorted(p.name for p in pages.glob('*.md'))
+            fm, _ = cw.parse_frontmatter((pages / files[0]).read_text(encoding='utf-8'))
+        self.assertEqual(len(files), 1, '只差大小写 → 只能有一个文件')
+        self.assertEqual(r['built'], 1, '`built` 数的是**页**，不是名字（原来这里会算成 2）')
+        self.assertEqual({files[0][:-3]} | set(fm.get('aliases') or []), {'DeepSeek', 'Deepseek'},
+                         '一个名字当文件名、另一个当别名，两个都不能丢')
+
     def test_名字本来就干净时不写别名(self):
         """反向：不需要净化的名字不该多出这个键（否则每张页都带一个多余字段）。"""
         with tempfile.TemporaryDirectory() as tmp:
