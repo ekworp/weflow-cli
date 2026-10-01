@@ -7,6 +7,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **Tool coverage is now a test-watched table instead of a paragraph.** The list of "which tools have no eval
+  case" used to be prose inside the case file, and prose does not fail when it goes stale - two of its claims had.
+  It is now `EVAL_UNCOVERED`, a map from tool name to reason, with `test/assistant-eval.test.ts` asserting both
+  directions: every tool is either claimed by some case's assertions or registered here, and no registered name has
+  stopped existing. Adding a tool now means writing a case or writing a reason; skipping both fails. That walk also
+  caught two cases whose comments promised a distinction they never asserted - `daily-review` says it is testing
+  "get_review, not get_daily_report" and `skills-health` says the same about `check_skills` vs `list_skills`, and
+  neither had the `mustNotCall` half. Both have it now, verified against the real model.
 - **Five more behaviour-eval cases, and a limitation list that had gone stale.** Walking the 31 tools one by one
   against `assistantEval.ts` turned up five with no assertions at all - and one stub that made its own case
   untestable: `getSnsTimeline` returned a hard-coded empty timeline, so `get_sns` could only ever be asserted as "no

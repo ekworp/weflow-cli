@@ -404,16 +404,11 @@ export const EVAL_CASES: EvalCase[] = [
   //
   // 这段原先还写着"`get_concepts` 也暂时没测……`get_review` 同理（评测器目前不会设环境变量）"。
   // **两句都过期了**：两条用例已经补上（`daily-review` / `knowledge-overview`），环境变量也早就会设。
-  // 过期局限清单不会报错、只会越看越可信，所以按实际重列 —— 2026-10-01 盘过一遍 31 个工具之后，
-  // 真正还没覆盖的只剩一个：
-  //   · `search_semantic`：要 dashscopeApiKey **且**要建过语义索引，这台机器两样都没有（索引从没建过）。
-  //     评测里造不出来。它的代码路径有离线测试兜着（`assistant-tools-branches.test.ts` 里 12 处，
-  //     含一条行为评测根本测不了的：**查询词走环境变量、不进 argv**；`assistant-service.test.ts`
-  //     还钉了"没配 key 时它不出现在工具表里"）—— 所以这里缺的是**端到端**，不是没测。
-  // （`get_weread` 本来也在这一档，理由是"配置项注入不可靠"—— 那是把**机制缺失**当成了**不可测**：
-  //   `privacy` 早就在按用例盖配置键了，只是没泛化。加了通用的 `config` 覆盖之后它就通了。）
-  // 另外 `get_sns` 那个桩原先是**写死的空列表**，只能断言"暂无缓存数据"（与 `contacts` 当初同一类
-  // 毛病：数据是假的，用例就碰不到真分支），2026-10-01 改成按用例给了。
+  //
+  // 过期局限清单不会报错、只会越看越可信 —— 所以 2026-10-01 之后它不再是一段散文，而是
+  // **一张被测试盯着的表**：`EVAL_UNCOVERED`（见下方），每个没覆盖的工具都在那里写明原因，
+  // 而 `test/assistant-eval.test.ts` 断言"要么被断言提到、要么在例外表里"。原因只写那一处，
+  // 这里不再复述 —— 两份写同一件事迟早分叉。
 
   {
     id: 'format-for-wechat',
@@ -431,7 +426,9 @@ export const EVAL_CASES: EvalCase[] = [
     id: 'skills-health',
     // 与 `list_skills` 的区分：问"有没有问题"该走体检，不是列清单
     question: '我的技能包有没有问题？',
-    expect: { mustCall: ['check_skills'], maxTools: 6, toolBudget: 3 },
+    // 同上：注释写着「与 `list_skills` 的区分 —— 问『有没有问题』该走体检，不是列清单」，
+    // 而那一半此前也没被断言过。
+    expect: { mustCall: ['check_skills'], mustNotCall: ['list_skills'], maxTools: 6, toolBudget: 3 },
   },
   {
     id: 'wiki-health',
@@ -470,7 +467,9 @@ export const EVAL_CASES: EvalCase[] = [
     env: { WEFLOW_ASSISTANT_REVIEWS_DIR: '.eval-fixtures/reviews' },
     files: { '.eval-fixtures/reviews/Daily-2026-09-29.md':
              '# 学习回顾\n\n今天读了《青花瓷里的化学》，要点是釉料里的金属氧化物决定呈色。\n' },
-    expect: { mustCall: ['get_review'], maxTools: 6, toolBudget: 3,
+    // `mustNotCall` 这一半是**把注释里那句承诺变成断言**：这条用例的注释一直写着「该走 get_review、
+    // 不是 get_daily_report」，而此前只断言了前半句。注释不算证据。
+    expect: { mustCall: ['get_review'], mustNotCall: ['get_daily_report'], maxTools: 6, toolBudget: 3,
               answerShouldMatch: /青花瓷|釉|金属氧化物/ },
   },
   {
@@ -563,6 +562,28 @@ export const EVAL_CASES: EvalCase[] = [
               answerMatches: /(strict|隐私|不出境|拒绝|不能|不做)/ },
   },
 ]
+
+/**
+ * 没有用例断言的工具，**每条都要写明原因**。`test/assistant-eval.test.ts` 会盯着它：
+ * 工具表里任何一个既没被断言、又不在这张表里的名字，都会让那条测试变红。
+ *
+ * 为什么要有这个机制：这张清单原来是一段注释，而注释**不会过期地报错**。2026-10-01 逐个
+ * 工具对过一遍才发现，31 个里有 5 个一条断言都没有，而且注释里那句"哪些没测"已经过期了两处。
+ * 现在它是一张被测试盯着表：新增工具时要么给用例，要么登记原因 —— 两条路都得走一条。
+ */
+export const EVAL_UNCOVERED: Record<string, string> = {
+  fetch_article: '出网工具，评测器的 fetch 包装会让它抛错（"评测里出现第二个出口就说明有地方漏了"）。',
+  search_public: '同上：搜狗搜索也是出网，评测里跑不了。',
+  search_semantic: '要 dashscopeApiKey **且**要建过语义索引，这台机器两样都没有。代码路径由 '
+    + '`assistant-tools-branches.test.ts`（12 处，含"查询词走环境变量、不进 argv"）与 '
+    + '`assistant-service.test.ts`（没配 key 时不出现在工具表里）覆盖。',
+  save_memory: '**故意不按工具判**：记忆是按**结果**判的（`memoryContains`），'
+    + '写死 `mustCall` 会把"用别的方式记住"判成失败。见 `memory-recall` 那条的说明。',
+  draft_reply: 'strict 下判的是**结果**（那句话没被发出去），而模型可能压根不伸手、也可能伸手被拒 —— '
+    + '两条都对，所以任何 `mustCall`/`mustNotCall` 都会误杀一条。balanced 下它要调脚本出境，评测里做不到。',
+  list_contacts: '联系人的**解析**路径由 contact 类用例覆盖（`unknown-contact`、`ambiguous-contact`），'
+    + '而那几条判的是结果（对话到底拿到没有）；强行 `mustCall` 会把"用别的方式解析出来"判成失败。',
+}
 
 export interface Observation {
   /** 这一轮按顺序调用过的工具名 */

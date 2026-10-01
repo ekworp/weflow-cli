@@ -11,7 +11,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-const { judge, summarize, budgetWarnings, softWarnings, EVAL_CASES } =
+const { judge, summarize, budgetWarnings, softWarnings, EVAL_CASES, EVAL_UNCOVERED } =
   await import('../src/services/assistantEval.js')
 
 function observed(patch: Record<string, unknown> = {}) {
@@ -162,4 +162,33 @@ test('软通道：质量类期待超了只提示，绝不判失败', () => {
   assert.equal(warned.length, 1)
   assert.match(warned[0], /质量类期待，不算失败/)
   assert.deepEqual(judge(spec, observed({ answer: '随便点吧' })), [], '软期待不许变成判定失败')
+})
+
+// ---------------------------------------------------------------------------
+// 工具覆盖：此前这是一段**注释**，而注释不会过期地报错 —— 2026-10-01 逐个工具对过一遍才发现
+// 31 个里有 5 个一条断言都没有。现在它是两张互相盯着的表：工具有没有用例、例外有没有理由。
+test('工具覆盖：每个工具要么被断言提到，要么在例外表里登记了原因', async () => {
+  const { TOOL_DEFS } = await import('../src/services/assistantTools.js')
+  const claimed = new Set<string>()
+  for (const spec of EVAL_CASES as any[]) {
+    for (const field of ['mustCall', 'mustNotCall', 'neverSucceeds']) {
+      for (const name of (spec.expect?.[field] ?? [])) claimed.add(name)
+    }
+  }
+  const gap = TOOL_DEFS.map((t: any) => t.function.name)
+    .filter((n: string) => !claimed.has(n) && !(n in EVAL_UNCOVERED))
+  assert.deepEqual(gap, [],
+    '这些工具既没有用例断言、也没在 EVAL_UNCOVERED 里登记原因：' + gap.join('、'))
+})
+
+test('例外表里不许有已经不在的工具（改名之后那条原因会变成谎言）', async () => {
+  const { TOOL_DEFS } = await import('../src/services/assistantTools.js')
+  const live = new Set(TOOL_DEFS.map((t: any) => t.function.name))
+  const stale = Object.keys(EVAL_UNCOVERED).filter((n) => !live.has(n))
+  assert.deepEqual(stale, [], 'EVAL_UNCOVERED 里有已经不存在的工具：' + stale.join('、'))
+})
+
+test('例外表里每条都要有原因（空字符串不算）', () => {
+  const empty = Object.entries(EVAL_UNCOVERED).filter(([, why]) => String(why).trim().length < 5)
+  assert.deepEqual(empty.map(([n]) => n), [], '这些例外没写原因：')
 })
