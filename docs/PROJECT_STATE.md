@@ -187,7 +187,19 @@ were symptoms of the same mismatch, that this path was built for one day at a ti
 reads a title and an account name, never the body, which is what makes pre-filtering possible at all and also what
 bounds the claim: the AI set is the keyword's, not the daily line's model's, and these articles have never been
 through a model. Partially backfilled days are marked (`topicFilter`, plus `truncated` for a `--limit-per-day`
-slice) so `day_done` will not mistake one for a finished day - D-060.
+slice) so `day_done` will not mistake one for a finished day - D-060. **Run the same day**: the AI subset is
+fetched and on disk - **1,702 of the 1,758** in-scope articles across 156 days (96.8%), needing 1,208 network fetches;
+`output/biz-daily/<day>/AI/` holds them, no other topic directory was created, every one of those days carries
+`topicFilter`, and a full run would skip **0** of them. The 56 not pulled are not a fetch defect: re-probing all 84
+failures individually shows **28 were transient** (the retry produced the body, and they are inside the 1,702),
+**44 are gone for good** (37 "deleted by the publisher", 7 "removed for violation"), 9 serve a page with neither
+content nor a deletion notice (8 of the 9 from one account, so it reads as that account's back catalogue having been
+withdrawn), and 3 are image-only. Two things that surfaced here and matter before trusting `day_done`: a failed fetch
+is **permanent for that day**, because the day is marked done by whether it holds any article at all; and `--refresh`
+rewrites `.articles.json` from that run's results, so an article failing a *second* time drops out of the index while
+its md stays on disk - 4 of the 35 re-run days did exactly that, and their entries were put back by hand from the
+run's snapshot (add-only, and only for md files that exist). All 156 days now have exactly as many index entries as
+article files.
 
 **Concept extraction is the one step that costs money per article, and its cost is now measured rather than
 modelled.** `article-notes --topic` filters the corpus, because measured over the 3,498 backfilled articles news is
