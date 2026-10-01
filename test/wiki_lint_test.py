@@ -7,6 +7,7 @@
 """
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,8 +19,9 @@ wl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wl)
 
 
-def page(stem, body, title=''):
-    return {'stem': stem, 'title': title or stem, 'links': wl.extract_links(body), 'body': body}
+def page(stem, body, title='', aliases=()):
+    return {'stem': stem, 'title': title or stem, 'links': wl.extract_links(body), 'body': body,
+            'aliases': list(aliases)}
 
 
 # 正文要够长（体检把"少于 80 字的页"当空页），所以这两条 fixture 写成正常概念的篇幅
@@ -60,8 +62,43 @@ class ResolveTests(unittest.TestCase):
 class InspectTests(unittest.TestCase):
     def classify(self, pages, cards=(), existing=()):
         stems = {p['stem'] for p in pages}
-        allowed = set(existing) | stems | {'2026-09-05-某篇.md'}
+        # 与 `resolvable_names` 一致：**别名也算"存在"**（真代码里它就是这么算的，
+        # 所以那 28 张的断链是 0 —— 缺的只是入链计数那一步）
+        aliases = {a for p in pages for a in (p.get('aliases') or [])}
+        allowed = set(existing) | stems | aliases | {'2026-09-05-某篇.md'}
         return wl.inspect(pages, lambda name: name in allowed, cards)
+
+    def test_别名要在入链计数里归位到它那一页(self):
+        """文件名是概念名的**有损变换**（`:` `/ ? * " < > |` 换成 `_`、再截到 60 字符），
+        而卡片里那条链接用的是**原名**。
+
+        `resolvable_names` 早就把别名算进"存在"了（所以断链报的是 0），入链计数原来却只认页码
+        —— 一张明明被卡片链着的页，因为名字对不上而报成孤儿。2026-10-01 实测：卡片写
+        `[[Qwen3.5:9B]]`、文件名是 `Qwen3.5_9B.md`，49,953 页里有 28 张是这样。
+        """
+        report = self.classify([page('Qwen3.5_9B', PAGE_B, aliases=['Qwen3.5:9B'])],
+                               cards=['Qwen3.5:9B'])
+        self.assertEqual(report['orphans'], [], '别名归位之后不该再是孤儿')
+        # 反向钉住"别名确实起了作用"：同样的页、同样的卡片链接，**没有别名时它就该是孤儿**。
+        # （少了这一条，一个把孤儿恒判为空的实现也能让上面那句通过。）
+        self.assertEqual(
+            self.classify([page('Qwen3.5_9B', PAGE_B)], cards=['Qwen3.5:9B'])['orphans'],
+            ['Qwen3.5_9B'])
+
+    def test_标题与别名里自己的引号不许被剥掉(self):
+        """`parse_frontmatter` 已经把外层引号拆掉了，加载时**不能再剥一次**。
+
+        `strip('"')` 剥的是"首尾所有引号字符"，于是名字**自己**末尾那个引号也被吃掉：
+        `AI 长出"手脚"` → `AI 长出"手脚`，与卡片里那条链接差一个字符，永远匹配不上 ——
+        那页就被报成孤儿，而且看不出为什么。（2026-10-01 实测：49,953 页里 1 张。）
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'x.md').write_text(
+                '---\ntitle: "AI 长出"手脚""\naliases: [AI 长出"手脚"]\n---\n\n正文\n',
+                encoding='utf-8')
+            pages = wl.collect(tmp, ())
+        self.assertEqual(pages[0]['title'], 'AI 长出"手脚"')
+        self.assertEqual(pages[0]['aliases'], ['AI 长出"手脚"'])
 
     def test_相关概念里没建页的算扩张候选_不算断链(self):
         report = self.classify([page('甲', PAGE_A), page('乙', PAGE_B)])

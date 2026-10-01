@@ -144,15 +144,28 @@ def inspect(pages: list, exists, card_links=()) -> dict:
     """
     stems = {page['stem'] for page in pages}
     inbound = {stem: 0 for stem in stems}
+    # **别名要归位到它那一页，否则那张页永远被报成孤儿。** 文件名是概念名的一个有损变换
+    # （`:` `/ ? * " < > |` 换成 `_`，再截到 60 字符），而指向它的链接用的是**原名**：
+    # `resolvable_names` 早就把别名算进"存在"了（所以断链是 0），但**入链计数**这里原来只认页码
+    # —— 名字对不上，卡片那条链接既不计入链也不报断链，那一页于是在图里是孤岛。
+    # （2026-10-01 实测：`[[Qwen3.5:9B]]` → `Qwen3.5_9B.md`，49,953 页里有 28 张。）
+    alias_to_stem = {str(alias): page['stem']
+                     for page in pages
+                     for alias in (page.get('aliases') or [])
+                     if str(alias) not in stems}
+
+    def stem_of(name: str) -> str:
+        return alias_to_stem.get(name, name)
+
     for name in card_links:                       # 卡片 → 概念，这是主要入链
-        if not (name.endswith('.md') or '/' in name) and name in inbound:
-            inbound[name] += 1
+        if not (name.endswith('.md') or '/' in name) and stem_of(name) in inbound:
+            inbound[stem_of(name)] += 1
     broken, aspirational, empty = [], [], []
     for page in pages:
         for section, name in links_by_section(page['body']):
             if exists(name):
-                if not (name.endswith('.md') or '/' in name) and name in inbound:
-                    inbound[name] += 1
+                if not (name.endswith('.md') or '/' in name) and stem_of(name) in inbound:
+                    inbound[stem_of(name)] += 1
                 continue
             entry = {'page': page['stem'], 'target': name, 'section': section}
             if any(section.startswith(prefix) for prefix in RELATED_SECTIONS):
@@ -326,12 +339,16 @@ def collect(pages_dir: str, card_dirs) -> list:
                       # 判重按目录分开比（两个目录是两个知识库），所以要记住这张页住哪儿
                       'dir': str(pages_dir),
                       'topic': compile_frontmatter_topic(frontmatter),
-                      'title': str(frontmatter.get('title') or '').strip('"'),
+                      # `parse_frontmatter` 已经把外层引号拆掉了，**这里不能再剥一次**：
+                      # `strip('"')` 会连名字**自己末尾**的引号一起吃掉，`AI 长出"手脚"` 变成
+                      # `AI 长出"手脚` —— 然后它与卡片里那条链接差一个字符，永远匹配不上，
+                      # 那页就被报成孤儿（2026-10-01 实测，49,953 页里 1 张）。
+                      'title': str(frontmatter.get('title') or ''),
                       # **别名也算"指向这一页的名字"**：`--merge-duplicates` 把
                       # `GPT-5.6` 并进 `GPT 5.6` 时就是靠 aliases 让旧链接不断的，
                       # Obsidian 认它。体检不认的话，会把这些名字报成"还没建页、
                       # 建议再跑 compile" —— 而它们已经有页了。
-                      'aliases': [str(a).strip().strip('"').strip("'") for a in raw_aliases],
+                      'aliases': [str(a).strip() for a in raw_aliases],
                       'links': extract_links(body),
                       'body': body})
     return pages

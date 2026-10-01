@@ -708,6 +708,20 @@ def write_with_frontmatter(filepath: str, frontmatter: dict, body: str):
         raise
 
 
+def _unquote(item: str) -> str:
+    """拆掉**成对的**外层引号；不成对就一个字都不动。
+
+    原来这里写的是 `item.strip().strip('"\\'')` —— `.strip()` 的语义是"剥掉首尾**所有**这些
+    字符"，于是项**内部**末尾的引号也被吃掉：`AI 长出"手脚"` 读回来变成 `AI 长出"手脚`。
+    一个字符之差、不报错，下游只表现为"这个名字对不上"（2026-10-01：一张概念页的别名因此
+    永远匹配不上卡片里的链接，那页被报成孤儿）。成对判断把它修好，同时保住"外层引号是语法"。
+    """
+    item = item.strip()
+    if len(item) >= 2 and item[0] == item[-1] and item[0] in '"\'':
+        return item[1:-1]
+    return item
+
+
 def parse_frontmatter(content: str) -> tuple[dict, str]:
     """解析 Markdown 文件中的 YAML frontmatter。"""
     if not content.startswith('---'):
@@ -727,7 +741,7 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
         val = val.strip()
         if val.startswith('[') and val.endswith(']'):
             inner = val[1:-1]
-            items = [v.strip().strip('"\'') for v in inner.split(',')] if inner.strip() else []
+            items = [_unquote(v) for v in inner.split(',')] if inner.strip() else []
             result[key] = items
         elif val.startswith('"') and val.endswith('"'):
             result[key] = val[1:-1]

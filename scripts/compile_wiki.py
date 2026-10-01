@@ -723,6 +723,13 @@ def build_pages_from_cards(pages_dir: str, card_dirs=None, dry_run: bool = False
             'sources': [ref['file']],
             'summary_by': 'card',
         }
+        if safe != name:
+            # **文件名是概念名的有损变换，指向它的链接用的是原名**（`:` `/ ? * " < > |` 换成 `_`，
+            # 再截到 60 字符）。不写这个别名，两件事同时坏掉：Obsidian 里 `[[Qwen3.5:9B]]` 点不开
+            # `Qwen3.5_9B.md`，而 `wiki_lint` 的入链计数只认页码、会把这页报成孤儿
+            # （它早就认别名做"存在"判断，缺的只是入链那一步 —— 2026-10-01 实测 28 张）。
+            # 与 `--merge-duplicates` 用的是同一个机制：把并掉/改名的旧名字写进 aliases，链接就不断。
+            fm['aliases'] = [name]
         if not dry_run:
             out_dir.mkdir(parents=True, exist_ok=True)
             write_with_frontmatter(str(out_dir / ('%s.md' % safe)), fm, body)

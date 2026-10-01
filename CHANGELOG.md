@@ -117,6 +117,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   to equal the old ball image exactly. If your system asks for reduced motion, the eyes stay still.
 
 ### Fixed
+- **A concept name containing a double quote lost a character on every read.** `parse_frontmatter` split
+  list values with `item.strip().strip('"\'')`, and `strip` removes *every* leading and trailing quote character - not a matched
+  pair - so `AI 长出"手脚"` came back as `AI 长出"手脚`; `wiki_lint` then repeated the mistake, stripping
+  quotes a second time off values the parser had already unwrapped. One character, no error, and the visible
+  effect was a page nobody could explain: the card's `[[AI 长出"手脚"]]` matched no page name, so the page was
+  reported as an orphan. Both now unwrap a **matched pair** only. Related and fixed with it: the file name of a
+  concept page is the name sanitised (`:` `/ ? * " < > |` → `_`) and cut to 60 characters, so pages could not be
+  reached by the link that pointed at them - the builder now records the original name in `aliases:`, and
+  `wiki_lint` counts an alias as an inbound edge (it already accepted one as "exists", which is why no broken link
+  was ever reported). Measured on the live knowledge base: **28 orphan pages → 1** (`DESIGN`, which no card mentions
+  at all), with 0 broken links across 26 pages that had been silently unlinked.
 - **Backfilling a day in two passes dropped the first pass from the index.** `--topic` was written for the
   one-topic-at-a-time case, and `write_day` rewrote `.articles.json` from that run's results - so fetching `AI` on
   Monday and `学术` on Tuesday left Tuesday's file listing only the 学术 articles while Monday's `AI` files sat on

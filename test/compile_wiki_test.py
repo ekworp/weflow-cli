@@ -1005,6 +1005,37 @@ class BuildPagesFromCardsTests(unittest.TestCase):
         # "这里本来就有的说法"，正是这类页最该防的事
         self.assertIn('summary_by: card', fm)
 
+    def test_名字里带冒号的页要写别名_否则链接点不开(self):
+        """文件名是概念名的**有损变换**（`:` `/ ? * " < > |` 换成 `_`、再截到 60 字符），
+        而卡片里那条链接用的是**原名**。
+
+        不写别名，两件事同时坏掉：Obsidian 里 `[[Qwen3.5:9B]]` 打不开 `Qwen3.5_9B.md`，
+        `wiki_lint` 的入链计数把这页报成孤儿（它认别名做"存在"判断，缺的只是入链那一步）。
+        别名是仓库**已有**的机制 —— `--merge-duplicates` 就是靠它让指向旧名字的链接不断的。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cards = Path(tmp) / 'cards'
+            cards.mkdir()
+            (cards / '2026-03-04-某篇.md').write_text(
+                '---\ntitle: "某篇"\n---\n\n'
+                '- [[Qwen3.5:9B]] — 一个本地模型，作者用它配合工具时回复比较丝滑。\n\n',
+                encoding='utf-8')
+            pages = Path(tmp) / 'pages'
+            pages.mkdir()
+            cw.build_pages_from_cards(str(pages), [str(cards)])
+            # 断言走**自己那套解析器**回读，而不是比对字符串形状：形状对不对由它说了算
+            fm, _ = cw.parse_frontmatter((pages / 'Qwen3.5_9B.md').read_text(encoding='utf-8'))
+        self.assertEqual(fm.get('aliases'), ['Qwen3.5:9B'], '原名要作为别名留下')
+        self.assertEqual(fm.get('title'), 'Qwen3.5:9B')
+
+    def test_名字本来就干净时不写别名(self):
+        """反向：不需要净化的名字不该多出这个键（否则每张页都带一个多余字段）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            pages, cards = self.build(tmp)
+            cw.build_pages_from_cards(str(pages), [str(cards)])
+            fm, _ = cw.parse_frontmatter((pages / '矢量风速预测.md').read_text(encoding='utf-8'))
+        self.assertNotIn('aliases', fm)
+
     def test_已有的页一个字都不动(self):
         with tempfile.TemporaryDirectory() as tmp:
             pages, cards = self.build(tmp)
