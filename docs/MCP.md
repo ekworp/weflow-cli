@@ -78,6 +78,24 @@ Port defaults to 8790 (`--http=9100`, `--port=`, or `WEFLOW_MCP_HTTP_PORT`); `--
 is what the tests do. Requests are stateless - one server per request, no session state to leak between clients -
 and **the token is never written to a log**.
 
+An HTTP-capable client points at the URL instead of a command. The server is one you start (and stop) yourself, so
+the client never manages the process:
+
+```json
+{
+  "mcpServers": {
+    "weflow": {
+      "type": "http",
+      "url": "http://127.0.0.1:8790/mcp",
+      "headers": { "Authorization": "Bearer <the token you started it with>" }
+    }
+  }
+}
+```
+
+Keep the token out of a file you commit: put it in an environment variable your client expands, or in a
+client-local config that is not in version control.
+
 ## Available tools
 
 | Tool | Purpose | Local data required |
