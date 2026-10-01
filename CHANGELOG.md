@@ -7,6 +7,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **The MCP server can speak Streamable HTTP, so clients that cannot spawn a process can use it too.** stdio stays
+  the default and is unchanged; `--http` (or `WEFLOW_MCP_HTTP=1`) serves the **same tools** over HTTP, because the
+  table is derived from one place (`TOOL_DEFS` -> `MCP_TOOL_DEFS`). Serving private messages on a listening socket is
+  a different risk from writing to stdout, so four rules are enforced in code and each is mutation-checked: it is
+  **off unless asked for**; a **token is mandatory with no default** (missing or under 24 characters, the process
+  refuses to start and prints how to generate one); the bind is **loopback only** (`0.0.0.0` is rejected with the
+  tunnel command in the message, because widening the bind is what would put chat data on the network); and
+  **DNS-rebinding protection is on**, which the SDK leaves off by default - the realistic attack on a loopback server
+  is a web page you happen to visit reaching `127.0.0.1`, so the `Host` header must match and any `Origin` must be
+  allowlisted. Requests are stateless and the token is never logged. Default port 8790 (5030 is chatlog's, and two
+  servers fighting over a port is not a useful failure). The decisions live in `mcp-server/httpConfig.ts` as pure
+  functions with 13 offline tests, five of which were shown to go red by mutation.
 - **Tool coverage is now a test-watched table instead of a paragraph.** The list of "which tools have no eval
   case" used to be prose inside the case file, and prose does not fail when it goes stale - two of its claims had.
   It is now `EVAL_UNCOVERED`, a map from tool name to reason, with `test/assistant-eval.test.ts` asserting both

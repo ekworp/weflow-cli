@@ -1403,6 +1403,43 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-061: The MCP server can speak HTTP - so the boundary had to be written down, not just implemented
+
+**Status:** Active
+
+**Decision.** The MCP server serves its tools over **Streamable HTTP** as well as stdio, and the second transport is
+**off unless asked for** (`--http`, or `WEFLOW_MCP_HTTP`). The tool table is the same one (`MCP_TOOL_DEFS` derived from
+`TOOL_DEFS`), so the two transports cannot drift; only the carrying changes. Four rules are enforced in
+`mcp-server/httpConfig.ts` - pure functions with offline tests - rather than left to the caller:
+
+1. **Off by default.** No flag means stdio, byte for byte as before.
+2. **A token is mandatory, with no default.** Missing or under 24 characters, the process refuses to start.
+3. **Loopback only.** `0.0.0.0` and every other non-loopback address are rejected with the tunnel command in the
+   error message.
+4. **DNS-rebinding protection on.** The SDK's default is `false`; the realistic attack on a loopback server is a web
+   page the user happens to visit reaching `127.0.0.1`, so the `Host` header must match and any `Origin` must be
+   allowlisted.
+
+**Why HTTP at all.** stdio can only be spoken by a client that is able to spawn a process. Serving HTTP is the norm
+in this ecosystem - `chatlog` is the de-facto standard and does exactly this - and it is what lets a resident
+service, a browser-side client, or several clients at once use the same query surface.
+
+**Why the boundary is written down rather than only coded.** This is the first time this project opens a **listening
+socket that serves the user's private messages to whoever can reach it**. The failure mode is not a crash: it is a
+port that stays open, bound wider than the author intended, or opened with a token that looks configured and is not.
+So each rule is (a) in a pure function with its own test, (b) mutation-checked - disabling the rebinding protection,
+removing the token check, widening the loopback list, lowering the token floor, or making the check return `true`
+each turn the suite red - and (c) stated in `docs/MCP.md` where a user meets it.
+
+**Why no remote bind.** The tempting convenience - `--host 0.0.0.0` so a laptop can reach the desktop - is exactly
+the change that moves private chat data onto the network. A tunnel is one command and keeps the exposure local; if
+someone later wants a real remote surface, that is a separate decision with its own threat model, not a flag here.
+
+**Consequences.** `mcp-server/index.ts` now exports `buildServer()` and starts only when run as a script (importing
+it must not open a listener - the tests import it). The token is never logged. Requests are stateless (one server per
+request, no session id), so there is no cross-client state to leak. Nothing about the stdio path changed: an existing
+client configuration keeps working untouched.
+
 ## D-060: A backfilled day records which topics it holds, because "the file exists" is not "the day is done"
 
 **Status:** Active

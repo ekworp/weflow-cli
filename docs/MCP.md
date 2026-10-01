@@ -50,6 +50,34 @@ The generated server starts with Node.js and `tsx`:
 
 Copy this entry into your MCP client's configuration and ensure `cwd` points to the cloned WeFlow CLI directory. Restart the client after saving the configuration.
 
+## HTTP transport (opt-in)
+
+The server speaks **stdio by default** and stays that way unless you ask for the other transport. Adding `--http`
+(or `WEFLOW_MCP_HTTP=1`) serves the **same tools** over Streamable HTTP - the tool table is derived from one place
+(`TOOL_DEFS`), so the two transports cannot drift apart:
+
+```
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # make a token
+npx tsx mcp-server/index.ts --http --token=<that token>
+# WeFlow MCP 已监听 http://127.0.0.1:8790/mcp
+```
+
+Point an HTTP-capable client at `http://127.0.0.1:8790/mcp` with `Authorization: Bearer <token>`.
+
+Four boundaries, enforced in `mcp-server/httpConfig.ts` and `mcp-server/http.ts` (pure decisions, offline tests in
+`test/mcp-http.test.ts`, each one mutation-checked):
+
+| Boundary | Why |
+| --- | --- |
+| **Off unless asked** | No `--http` means stdio, byte for byte what it did before. |
+| **A token is required, and there is no default** | A silently generated token looks configured. Without one the server refuses to start (exit 1) and tells you how to make one. |
+| **Loopback only** (`127.0.0.1` / `localhost` / `::1`) | `0.0.0.0` is rejected on purpose. For another machine use a tunnel (`ssh -L 8790:127.0.0.1:8790 <host>`) or your own reverse proxy in front of it - widening the bind is not something this command should do for you. |
+| **DNS-rebinding protection on** | The SDK defaults it to `false`. The realistic attack on a loopback server is a web page you happen to visit reaching `127.0.0.1`, so the `Host` header must match and any `Origin` must be allowlisted. |
+
+Port defaults to 8790 (`--http=9100`, `--port=`, or `WEFLOW_MCP_HTTP_PORT`); `--http=0` lets the OS pick one, which
+is what the tests do. Requests are stateless - one server per request, no session state to leak between clients -
+and **the token is never written to a log**.
+
 ## Available tools
 
 | Tool | Purpose | Local data required |
@@ -115,5 +143,8 @@ offered on it (the same rule `unavailableToolReason` applies elsewhere). The cha
 | Symptom | Check |
 | --- | --- |
 | Server fails to start | Run `npm install` in the configured `cwd`, then run `npx tsx mcp-server/index.ts`. |
+| HTTP mode refuses to start | The message says why: no token (`--token=` / `WEFLOW_MCP_TOKEN`), a token under 24 characters, or a bind address that is not loopback. |
+| HTTP client gets 401 | The `Authorization: Bearer <token>` header is missing or wrong - it must be the token the server was started with. |
+| HTTP client cannot connect from another machine | Working as intended: the bind is loopback. Tunnel to it (`ssh -L 8790:127.0.0.1:8790 <host>`) rather than opening the port. |
 | No articles found | Generate a daily collection first, then confirm `output/biz-daily/` exists under `cwd`. |
 | Client cannot find `npx` | Configure an absolute Node.js command path or install Node.js 22.13+. |

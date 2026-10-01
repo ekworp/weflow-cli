@@ -2,8 +2,12 @@
 /**
  * WeFlow MCP Server — 让 Claude Code 等 AI Agent 直接查询知识库。
  *
- * 启动: npx tsx mcp-server/index.ts
- * 在 CLAUDE.md 中注册后，AI 可直接搜索文章、概念、日报。
+ * 启动: npx tsx mcp-server/index.ts                          （stdio，默认）
+ *      npx tsx mcp-server/index.ts --http --token=<随机串>    （HTTP，只绑回环）
+ *
+ * 两条传输的工具集**完全一样**（同一张 `TOOL_DEFS` 派生表），变的只是搬运动作的方式。
+ * HTTP 那条的边界（必须带令牌、只绑回环、DNS 重绑定防护）在 `httpConfig.ts` / `http.ts`，
+ * 理由与用法写在 docs/MCP.md 的「HTTP 传输」一节。
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -13,10 +17,13 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
+import { pathToFileURL } from 'node:url'
 import { safeChildPath, safeDate } from '../src/utils/mcpSecurity.js'
 import { resolvePackageRoot } from '../src/utils/packageRoot.js'
 import { chatService } from '../src/services/chatService.js'
 import { createWeFlowEnvelope } from '../src/services/messageContract.js'
+import { resolveHttpOptions } from './httpConfig.js'
+import { startHttpServer } from './http.js'
 
 // ---- 微信公众号文章抓取 ----
 
@@ -175,7 +182,8 @@ function searchArticles(args: Record<string, any>): string {
   ).join('\n\n')
 }
 
-async function main() {
+/** 建一个 MCP Server（工具表与处理器）。stdio 与 HTTP 两条传输都用它，**每次都新建**无状态。 */
+export function buildServer(): Server {
   const server = new Server(
     { name: 'weflow-mcp', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -304,8 +312,33 @@ async function main() {
     }
   })
 
-  const transport = new StdioServerTransport()
-  await server.connect(transport)
+  return server
 }
 
-main().catch(console.error)
+/**
+ * 传输在这里选。**默认 stdio**（与以前逐字相同）；给 `--http` 或 `WEFLOW_MCP_HTTP` 才走 HTTP。
+ * 判定的规则在 `httpConfig.ts`（纯函数、有测试）：必须带令牌、只绑回环、默认不开。
+ */
+async function main() {
+  const opts = resolveHttpOptions(process.env, process.argv.slice(2))
+  if (!opts) {
+    await buildServer().connect(new StdioServerTransport())
+    return
+  }
+  const { url } = await startHttpServer(opts, buildServer, (line) => process.stderr.write(line + '\n'))
+  // **令牌一个字符都不打印**：日志会被翻、会被贴进 issue。只报地址与"用什么连"。
+  process.stderr.write(
+    `WeFlow MCP 已监听 ${url}\n`
+    + `  只绑 ${opts.host}（回环），需要 Authorization: Bearer <令牌>\n`
+    + '  客户端配置见 docs/MCP.md 的「HTTP 传输」一节\n',
+  )
+}
+
+// 只在**被当脚本跑**时启动。被 `import`（测试要 `buildServer`）就只拿工厂，别顺手起一个服务 ——
+// 否则 `npm test` 会挂在一个等 stdin 的 stdio 服务上。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    process.stderr.write(`启动失败: ${error?.message ?? error}\n`)
+    process.exit(1)
+  })
+}
