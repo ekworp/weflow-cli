@@ -7,7 +7,7 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
-- **`bonds` - relationship temperature: who is going quiet, who is heating up, who is reachable only here.** Not a
+- **`weflow-cli bonds` - relationship temperature: who is going quiet, who is heating up, who is reachable only here.** Not a
   leaderboard of who you message most (that tells you nothing you did not know); the useful signal is the *shape*. It
   reports relationships with substantial history that have gone silent (ranked by messages x silent days, so it
   surfaces "294 messages last year, nothing for 282 days"), relationships whose last 7 days run at least twice the

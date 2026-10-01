@@ -318,6 +318,9 @@ program
         },
         dailyReader: { cli: 'daily-server --status --json' },
         dailyStats: { cli: 'daily-stats --json' },
+        // 只读、纯本地、不调模型。**故意没有 mcp 那一栏**（D-062）：它给的是关于第三方的推断
+        // ——谁在被冷落、你会失去谁 —— 所以不进助手、不进 MCP、不喂模型。
+        bonds: { cli: 'bonds --json', mcp: null, leavesTheMachine: false },
         diagnostics: { cli: 'check --json' },
         todos: { cli: 'todos list --json' },
         // 2026-09-29 三个界面对齐时新开的读取能力（D-058）。逐个写清它会不会出境，
@@ -6788,6 +6791,51 @@ program
           success: false,
           code: 'DAILY_STATS_FAILED',
           error: '公众号统计不可用，请运行 check --json 检查配置和依赖',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '统计失败')}`))
+      process.exit(1)
+    }
+  })
+
+// ==================== bonds ====================
+program
+  .command('bonds')
+  .description('关系温度：谁在冷却、谁在变热、谁只有微信这一条线（只读本地库，不联网、不调模型）')
+  .option('--days <number>', '看最近多少天', '365')
+  .option('--limit <number>', '最多扫几个会话', '400')
+  .option('--top <number>', '每组列几条', '12')
+  .option('--skip <name>', '排除某个名字或 id（可重复）', (value: string, acc: string[]) => {
+    acc.push(value)
+    return acc
+  }, [] as string[])
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'bonds.py')
+    const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
+    const limit = parseCliInteger(opts.limit, 'limit', 1, 5000, opts.json)
+    const top = parseCliInteger(opts.top, 'top', 1, 200, opts.json)
+
+    try {
+      const args = [script, '--days', String(days), '--limit', String(limit), '--top', String(top)]
+      for (const name of (opts.skip as string[]) || []) args.push('--skip', name)
+      if (opts.json) args.push('--json')
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'BONDS_FAILED',
+          error: '关系温度不可用，请运行 check --json 检查配置和依赖',
         }))
         process.exit(1)
       }
