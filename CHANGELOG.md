@@ -2,6 +2,19 @@
 
 The npm package is published separately from GitHub. It may lag behind the `master` branch until a release is published.
 
+**The GitHub Releases page is cut by hand and can therefore lag npm by several versions.** That decoupling is
+deliberate (`docs/RELEASING.md`: "GitHub Release 与本清单解耦：源码、编译包、npm 三者版本差异要对用户可见"), and it comes
+with a requirement: the difference has to stay **visible**. So if a version you expect is missing from the Releases
+page, check the two sources rather than assuming it was withdrawn:
+
+```
+npm view weflow-cli version     # 权威的最新已发布版本
+gh release list                 # GitHub 上手工建过哪些
+```
+
+Everything published to npm has a section in this file. **No version numbers are written into this paragraph on
+purpose** - a hand-written "latest is X" is exactly the claim that goes stale here; those two commands never do.
+
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
