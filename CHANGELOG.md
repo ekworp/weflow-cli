@@ -7,6 +7,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **`draft --pick N --send`: a candidate can now be sent, by a human who names which one.** The hard half already
+  existed - judge the intent, draft three deliberately different candidates, rank them with the decision model - and it
+  ended by saying the candidates are only text and that sending is your call. That call can now be carried out from the
+  same command. Three rules keep it honest: `--send` **requires** `--pick` (no "draft three, let it choose, let it
+  send" path exists); without `--yes` it only returns `CONFIRMATION_REQUIRED` (with the text in the payload) or asks
+  interactively; and the blacklist -> whitelist -> rate limit -> audit chain is now **one shared implementation**
+  (`src/services/outboundSend.ts`) used by both `send` and `draft --send`, because a second copy of that chain is how a
+  send path ends up quietly skipping the whitelist. Sending stays **absent from the assistant and MCP tool tables** (a
+  test asserts it), so nothing model-driven can send; `draft_reply` stays present because drafting is not sending.
+  `--dry-run` means zero egress, and since candidates can only come from a model it cannot preview one - it reports the
+  character count and says so. Usage errors (`--send` without `--pick`, `--pick 9` when there are 3) are reported
+  **before any model call**, which is also what the tests assert (D-063).
 - **`weflow-cli bonds` - relationship temperature: who is going quiet, who is heating up, who is reachable only here.** Not a
   leaderboard of who you message most (that tells you nothing you did not know); the useful signal is the *shape*. It
   reports relationships with substantial history that have gone silent (ranked by messages x silent days, so it

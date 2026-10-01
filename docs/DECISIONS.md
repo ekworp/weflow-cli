@@ -1403,6 +1403,43 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-063: Sending stays unreachable from the model, and becomes reachable from a human who names the candidate
+
+**Status:** Active
+
+**Decision.** `weflow-cli draft <talker>` already did the hard half - judge the intent, draft three deliberately
+different candidates, rank them with the decision model - and ended by saying the candidates are **only text** and that
+sending is the user's call. It now also carries that decision out, under three rules:
+
+1. **`--send` requires `--pick N`.** There is no "draft three, let it choose, let it send" path. The human names the
+   candidate; the model never selects what goes out.
+2. **Two-phase.** Without `--yes` there is no send: JSON mode returns `CONFIRMATION_REQUIRED` **with the text in the
+   payload**, interactive mode asks "确定把第 N 条发给 X？". Both non-`--yes` paths are covered by tests that also assert
+   **no send attempt reached the audit log**.
+3. **One send policy, not two.** Blacklist → whitelist → rate limit → audit now lives in `src/services/outboundSend.ts`
+   and is called by both `send` and `draft --send`. Before this, that chain existed only inside the `send` command's
+   action; a second copy is how a "send" path ends up quietly skipping the whitelist.
+
+**Why the model stays out of it.** `docs/EXTENDING.md` states that sending is *structurally unreachable from a
+model-driven path*, and that is not a mood: the assistant and the MCP surface have no send tool, and
+`test/draft-send-cli.test.ts` now asserts that `send`, `draft`, `send_message` and `publish_article` are absent from
+`TOOL_DEFS` (while `draft_reply` stays present - drafting is not sending). What changes here is only the **human's**
+side: after reading the candidates, the user no longer has to copy one into another terminal.
+
+**Constraints that fell out of the measurements.** (a) `--pick` out of range and `--send` without `--pick` are
+**usage errors, so they are reported before any model call** - the first version validated them after the confirmation
+gate, which meant the model ran, and was paid for, before the command said "there is no candidate 9". (b) `--dry-run`
+means **zero egress**, and candidates can only come from a model, so `--dry-run` cannot preview "what candidate 2 would
+send"; it reports the character count the script would send and says why, rather than pretending. (c) Sending still
+requires the other side's `context_token` - the channel needs a message from them first - so "send to anyone" was never
+available, and the whitelist remains the real boundary.
+
+**Consequences.** The tests do not call a model and do not need one: refusing early is exactly what they assert. The
+audit file (`~/.weflow-cli/audit-send.log`) is what they read, and the positive control that proves that read is not
+vacuous does **not** come from a real send - with a temporary home the channel is not logged in, so `send --yes` exits
+at `MESSAGE_CHANNEL_NOT_LOGGED_IN` before the audit line. It uses the **blacklist** branch instead, which audits before
+that check. That detail cost one debugging round and is written here because the next person will hit it too.
+
 ## D-062: Relationship temperature stays on the command line, and its "who counts as a person" rule flags rather than drops
 
 **Status:** Active

@@ -21,6 +21,7 @@ import { DateRangeError, parseLocalDateOrIso, resolveExportDateRange } from '../
 import { resolvePackageRoot as resolvePackageRootFrom } from '../src/utils/packageRoot.js'
 import { WechatMessageService } from '../src/services/wechatMessageService.js'
 import { whitelistService, MAX_TEXT_LENGTH } from '../src/services/whitelistService.js'
+import { authorizeOutbound, parseOutboundPolicy, performOutbound } from '../src/services/outboundSend.js'
 import { applyDerivedNtKeys, enableFavorites, detectFavDbPath } from '../src/services/initKeyService.js'
 import type { ChatSession } from '../src/types.js'
 import { disabledIds, describeSkill, readSkillBody, scanSkills, skillRoots, skillState } from '../src/services/assistantSkills.js'
@@ -3295,54 +3296,45 @@ program
       process.exit(1)
     }
 
-    // 黑名单优先拦截
-    if (whitelistService.isBlocked(wxid)) {
-      if (opts.json) console.log(JSON.stringify({ success: false, code: 'TARGET_BLOCKED', error: '目标在黑名单中', target: { wxid, displayName } }))
-      else {
-        console.log(chalk.red('\n❌ 目标在黑名单中，绝对禁止发送'))
-        console.log(chalk.gray(`  wxid: ${wxid}`))
-        console.log(chalk.gray(`  解除: weflow-cli blacklist rm ${wxid}\n`))
-      }
-      whitelistService.auditSend({
-        timestamp: Date.now(), action: 'send', targetWxid: wxid, targetName: displayName,
-        kind, success: false, preview, error: 'blocked by blacklist',
-      })
-      process.exit(1)
-    }
-
-    // Whitelist check
-    if (!whitelistService.isAllowed(wxid)) {
-      if (opts.json) console.log(JSON.stringify({ success: false, code: 'TARGET_NOT_ALLOWED', error: '目标不在白名单中', target: { wxid, displayName } }))
-      else {
-        console.log(chalk.red('\n❌ 目标不在白名单中，拒绝发送'))
-        console.log(chalk.gray(`  先运行: weflow-cli whitelist add ${target}`))
-        console.log(chalk.gray(`  查看名单: weflow-cli whitelist\n`))
-      }
-      process.exit(1)
-    }
-
-    // 速率限制 (dry-run 不计入, 不检查也行, 但保持一致检查)
-    const windowMs = Number(opts.rateWindow)
-    const max = Number(opts.rateMax)
-    if (!Number.isInteger(windowMs) || windowMs < 1000 || windowMs > 3_600_000 ||
-        !Number.isInteger(max) || max < 1 || max > 100) {
-      if (opts.json) console.log(JSON.stringify({ success: false, code: 'INVALID_RATE_LIMIT', error: 'rate-window 必须为 1000-3600000，rate-max 必须为 1-100' }))
+    // 三道闸（黑名单 → 白名单 → 限速）与"每次尝试都写审计"在 `src/services/outboundSend.ts`
+    // 里**只有一份**，因为 2026-10-01 起有了第二条发送路（`draft --pick N --send`，见 D-063）。
+    // 两份写同一件事，分叉的后果具体是"某一条路绕过了白名单"。
+    const policy = parseOutboundPolicy(Number(opts.rateWindow), Number(opts.rateMax))
+    if ('code' in policy) {
+      if (opts.json) console.log(JSON.stringify({ success: false, code: policy.code, error: policy.error }))
       else console.log(chalk.red('速率参数无效：rate-window 必须为 1000-3600000，rate-max 必须为 1-100'))
       process.exit(1)
     }
-    const rate = whitelistService.checkRateLimit(windowMs, max)
-    if (!rate.allowed) {
-      if (opts.json) console.log(JSON.stringify({ success: false, code: 'RATE_LIMITED', error: '触发发送速率限制', rateLimit: rate }))
-      else {
+    const attempt = {
+      wxid, displayName, kind, preview, text: message,
+      mediaPath: kind === 'text' ? undefined : String(opts.image || opts.file),
+    }
+    const decision = authorizeOutbound(attempt, policy)
+    if (!decision.ok) {
+      const { refusal } = decision
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false, code: refusal.code, error: refusal.error,
+          ...(refusal.code === 'TARGET_BLOCKED' || refusal.code === 'TARGET_NOT_ALLOWED'
+            ? { target: { wxid, displayName } } : {}),
+          ...(refusal.rateLimit ? { rateLimit: refusal.rateLimit } : {}),
+        }))
+      } else if (refusal.code === 'TARGET_BLOCKED') {
+        console.log(chalk.red('\n❌ 目标在黑名单中，绝对禁止发送'))
+        console.log(chalk.gray(`  wxid: ${wxid}`))
+        console.log(chalk.gray(`  解除: weflow-cli blacklist rm ${wxid}\n`))
+      } else if (refusal.code === 'TARGET_NOT_ALLOWED') {
+        console.log(chalk.red('\n❌ 目标不在白名单中，拒绝发送'))
+        console.log(chalk.gray(`  先运行: weflow-cli whitelist add ${target}`))
+        console.log(chalk.gray(`  查看名单: weflow-cli whitelist\n`))
+      } else {
+        const rate = refusal.rateLimit!
         console.log(chalk.red(`\n❌ 触发速率限制: 最近 ${rate.windowMs / 1000}s 内已发送 ${rate.count} 条 (上限 ${rate.max})`))
         console.log(chalk.gray('  请稍后再试, 或调整 --rate-window / --rate-max\n'))
       }
-      whitelistService.auditSend({
-        timestamp: Date.now(), action: 'send', targetWxid: wxid, targetName: displayName,
-        kind, success: false, preview, error: `rate limited (${rate.count}/${rate.max})`,
-      })
       process.exit(1)
     }
+    const rate = decision.rate
 
     // 二次确认 — 同时显示 wxid + displayName + 消息预览
     const actionPreview = {
@@ -3396,41 +3388,8 @@ program
       process.exit(1)
     }
 
-    const service = new WechatMessageService({ token })
-
-    let success = false
-    let errorMsg: string | undefined
-    try {
-      if (opts.image) {
-        success = await service.sendImage(wxid, opts.image)
-      } else if (opts.file) {
-        success = await service.sendFile(wxid, opts.file)
-      } else {
-        success = await service.sendText(wxid, message)
-      }
-    } catch {
-      errorMsg = '消息通道调用失败'
-    }
-
-    if (!success && !errorMsg) {
-      // 检查是否因缺少 context_token
-      const hasToken = !!(configService.getContextTokens()[wxid])
-      errorMsg = hasToken
-        ? '发送失败 (接口返回错误, 可能 token 过期)'
-        : '缺少 context_token — 需先收到对方一条消息 (或运行 weflow-cli listen 等待对方消息)'
-    }
-
-    // 审计日志
-    whitelistService.auditSend({
-      timestamp: Date.now(),
-      action: 'send',
-      targetWxid: wxid,
-      targetName: displayName,
-      kind,
-      success,
-      preview,
-      error: success ? undefined : errorMsg,
-    })
+    // 真的发 + 按结果写审计，都在共享模块里（与 `draft --send` 同一份）
+    const { success, error: errorMsg } = await performOutbound(attempt)
 
     if (success) {
       if (opts.json) console.log(JSON.stringify({ success: true, ...actionPreview }))
@@ -5331,6 +5290,10 @@ program
     .command('draft <talker>')
     .description('帮我起草回复：先判断（意图/风险/该不该给实质），再起草候选 —— **只产出文本，不发送**')
     .option('--count <n>', '要几条候选', '3')
+    .option('--pick <n>', '选第几条（从 1 数）；不带 --send 时只把那条的完整原文打出来')
+    .option('--send', '把选中的那条发出去 —— **必须同时给 --pick**（不允许"自己挑一条发"），仍需 --yes/--dry-run')
+    .option('--rate-window <ms>', '发送速率窗口毫秒（与 send 同一份策略）', '60000')
+    .option('--rate-max <n>', '窗口内最大发送条数', '10')
     .option('--gate-commitment', '承诺未兑现时也拒绝起草（默认只在提示词里约束）')
     .option('--dry-run', '仅预览会发多少字符给哪两个模型，不调用')
     .option('--yes', '确认把这段对话发送到判断模型与生成模型')
@@ -5339,9 +5302,20 @@ program
       const { execFile } = await import('child_process')
       const { promisify } = await import('util')
       const execFileAsync = promisify(execFile)
+      // **用法错误先报**，而且都在调模型之前报：`--send` 少了 `--pick` 是"你没说发哪条"，
+      // `--pick 9` 而只有 3 条是"那条根本不存在" —— 两者都不该先问一遍"要不要把对话发给云端模型"、
+      // 更不该先花掉模型调用再拒绝。
+      const count = parseCliInteger(opts.count, 'count', 1, 5, opts.json)
+      if (opts.send && opts.pick === undefined) {
+        const message = '--send 必须同时给 --pick <序号>：先看候选，再点名要发哪一条'
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'PICK_REQUIRED', error: message }))
+        else console.log(chalk.red(`
+❌ ${message}`))
+        process.exit(1)
+      }
+      const pick = opts.pick === undefined ? 0 : parseCliInteger(opts.pick, 'pick', 1, count, opts.json)
       const pkgRoot = resolvePackageRoot()
       const script = join(pkgRoot, 'scripts', 'draft_reply.py')
-      const count = parseCliInteger(opts.count, 'count', 1, 5, opts.json)
       // **"确认过了"只用一个变量表示**（`--yes` 或交互回答"是"），参数在确认之后才拼。
       // 原来的写法是先拼参数、再问，于是**交互确认那条路是坏的**：答了"是"，`args` 里
       // 却从没补上 `--yes`，脚本照样拒绝（用户看到的是"我确认了它却说没确认"）。
@@ -5369,6 +5343,149 @@ program
           return
         }
       }
+      // ---------------- 选中并（可选）发送 ----------------
+      //
+      // **只有给了 `--pick` 或 `--send` 才走这条分支**；不带它们的调用与以前逐字相同（原样透传脚本输出）。
+      //
+      // 这条分支存在的理由：起草那一半早就有了（判断 → 候选 → 排序），缺的是"人选定之后能真的发出去"。
+      // 而它的**要点是这个 `--pick`**：发送必须由人点名"第几条"。少了它，就成了"模型起草三条、
+      // 模型挑一条、模型发出去" —— 那正是本仓库划掉的那件事
+      // （docs/EXTENDING.md：sending is structurally unreachable from a model-driven path）。
+      if (opts.pick !== undefined || opts.send) {
+        // **`--dry-run` 的语义是"零出境"**，而候选必须由模型产出来 —— 两者不可兼得：不起草就没有
+        // 候选，"预览某一条会发什么"这件事本身不成立。所以这里只报"会发多少字符给哪两个模型"
+        // （脚本的 dry-run 本来就报这个），并把话说清楚，而不是假装预览了一条。
+        if (opts.dryRun) {
+          try {
+            const { stdout } = await execFileAsync(getPythonCommand(),
+              [script, '--talker', String(talker), '--count', String(count), '--dry-run',
+               ...(opts.json ? ['--json'] : [])],
+              { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env: pythonProcessEnv() })
+            process.stdout.write(stdout)
+          } catch (error) {
+            console.error(chalk.red(`\n✗ ${safeSubprocessError(error, '预览失败')}`))
+            process.exit(1)
+          }
+          if (!opts.json) {
+            console.log(chalk.gray('\n候选要由模型产出来，所以 --dry-run 下没有候选可挑。'
+              + '要预览"发第几条"：先起草一次（会调用模型），再用 --pick N --send。\n'))
+          }
+          return
+        }
+        // `--pick`/`--send` 的用法错误在 action 开头就报过了（那一段全在调模型之前）
+        // 内部一律用 `--json` 拿结构化结果（用户那侧的 `--json` 管的是最终输出，两回事）
+        const pickArgs = [script, '--talker', String(talker), '--count', String(count), '--json',
+                          ...(confirmed ? ['--yes'] : []),
+                          ...(opts.gateCommitment ? ['--gate-commitment'] : [])]
+        let drafts: Array<{ text: string }> = []
+        try {
+          const { stdout } = await execFileAsync(getPythonCommand(), pickArgs, {
+            timeout: 300_000, maxBuffer: 50 * 1024 * 1024, env: pythonProcessEnv(),
+          })
+          const parsed = JSON.parse(stdout)
+          if (parsed.gate === 'refused') {
+            // **不起草就不发**：那道闸（涉钱/风险高）拒绝时压根没有候选，这里也不能凭空发点什么
+            const message = `这次不起草：${parsed.reason || '判断层拒绝了'}`
+            if (opts.json) console.log(JSON.stringify({ success: false, code: 'DRAFT_REFUSED', error: message, advice: parsed.advice || [] }))
+            else {
+              console.log(chalk.yellow(`\n${message}`))
+              for (const item of parsed.advice || []) console.log(chalk.gray(`  · ${item}`))
+            }
+            process.exit(1)
+          }
+          drafts = parsed.drafts || []
+        } catch (error) {
+          const message = safeSubprocessError(error, '起草失败')
+          if (opts.json) console.log(JSON.stringify({ success: false, code: 'DRAFT_FAILED', error: message }))
+          else console.error(chalk.red(`\n✗ ${message}`))
+          process.exit(1)
+        }
+        const chosen = drafts[pick - 1]
+        if (!chosen) {
+          const message = `没有第 ${pick} 条候选（这次只有 ${drafts.length} 条）`
+          if (opts.json) console.log(JSON.stringify({ success: false, code: 'PICK_OUT_OF_RANGE', error: message }))
+          else console.log(chalk.red(`\n❌ ${message}`))
+          process.exit(1)
+        }
+        if (!opts.send) {
+          if (opts.json) console.log(JSON.stringify({ success: true, action: 'draft', sent: false, pick, text: chosen.text }))
+          else console.log(`第 ${pick} 条：\n${chosen.text}\n\n${chalk.gray('（没有发送任何东西；要发加 --send）')}`)
+          return
+        }
+
+        // 发送这一半走**与 `send` 命令完全相同的那份策略**（黑名单 → 白名单 → 限速 → 审计）
+        let wxid: string
+        try {
+          wxid = await resolveTalker(String(talker), !!opts.json, !!opts.json)
+        } catch (error: any) {
+          if (opts.json) console.log(JSON.stringify({ success: false, code: 'TALKER_RESOLUTION_FAILED', error: error.message }))
+          else console.log(chalk.red(`\n❌ ${error.message}`))
+          process.exit(1)
+        }
+        let displayName = whitelistService.lookupName(wxid)
+        if (displayName === wxid) {
+          try {
+            const sessions = await chatService.listSessions(undefined, 200)
+            const match = sessions.find(s => s.username === wxid)
+            if (match?.displayName) displayName = match.displayName
+          } catch { /* 拿不到名字就退回 wxid */ }
+        }
+        const policy = parseOutboundPolicy(Number(opts.rateWindow), Number(opts.rateMax))
+        if ('code' in policy) {
+          if (opts.json) console.log(JSON.stringify({ success: false, code: policy.code, error: policy.error }))
+          else console.log(chalk.red(`\n❌ ${policy.error}`))
+          process.exit(1)
+        }
+        const attempt = {
+          wxid, displayName, kind: 'text' as const,
+          preview: chosen.text.slice(0, 80) + (chosen.text.length > 80 ? '...' : ''),
+          text: chosen.text,
+        }
+        const decision = authorizeOutbound(attempt, policy)
+        if (!decision.ok) {
+          const { refusal } = decision
+          if (opts.json) {
+            // 这里**还没有** sendPreview（它在闸门通过之后才建），所以逐字段写
+            console.log(JSON.stringify({ success: false, code: refusal.code, error: refusal.error,
+              ...(refusal.rateLimit ? { rateLimit: refusal.rateLimit } : {}) }))
+          } else {
+            console.log(chalk.red(`\n❌ ${refusal.error}`))
+            if (refusal.code === 'TARGET_NOT_ALLOWED') console.log(chalk.gray(`  先运行: weflow-cli whitelist add ${talker}\n`))
+            if (refusal.code === 'TARGET_BLOCKED') console.log(chalk.gray('  这个人在黑名单里，任何一条命令行都不会发给他\n'))
+            if (refusal.rateLimit) console.log(chalk.gray(`  最近 ${refusal.rateLimit.windowMs / 1000}s 内已发 ${refusal.rateLimit.count} 条\n`))
+          }
+          process.exit(1)
+        }
+        const sendPreview = { success: true, action: 'draft-send', target: { wxid, displayName },
+                              pick, text: chosen.text, rateLimit: decision.rate }
+        // 两段式在这里：不给 `--yes` 时，JSON 模式回 `CONFIRMATION_REQUIRED`（**带着要发的原文**），
+        // 交互模式则问一句"确定把第 N 条发给 X？"。`--dry-run` 那条路在上面的分支入口就返回了
+        // （它意味着零出境，与"必须由模型产出候选"不可兼得），所以这里没有第三个预览分支。
+        if (opts.json && !opts.yes) {
+          console.log(JSON.stringify({ ...sendPreview, success: false, code: 'CONFIRMATION_REQUIRED', error: '使用 --yes 确认发送' }))
+          process.exit(1)
+        }
+        if (!opts.yes) {
+          const answer = await inquirer.prompt([{
+            type: 'confirm', name: 'send', default: false,
+            message: `确定把第 ${pick} 条发给 ${displayName}？`,
+          }])
+          if (!answer.send) {
+            console.log(chalk.gray('已取消，没有发送'))
+            return
+          }
+        }
+        const sent = await performOutbound(attempt)
+        if (sent.success) {
+          if (opts.json) console.log(JSON.stringify(sendPreview))
+          else console.log(chalk.green('✓ 发送成功'))
+          return
+        }
+        if (opts.json) console.log(JSON.stringify({ ...sendPreview, success: false, code: 'SEND_FAILED', error: sent.error }))
+        else console.log(chalk.red(`✗ 发送失败 — ${sent.error}`))
+        process.exit(1)
+      }
+
       const args = [script, '--talker', String(talker), '--count', String(count),
                     // 脚本自己有第二道闸门（`--yes` 才真的把对话发出去），所以要透传
                     ...(confirmed ? ['--yes'] : []),
