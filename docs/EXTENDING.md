@@ -6,7 +6,7 @@ one of two things, and they are not equivalent:
 
 1. **In-repo** - add the capability to this source tree (fork + PR). Every recipe below is about this path, and each
    one lists the places you must touch **and the test that will catch you if you miss one**.
-2. **Out-of-process** - call the project from a program you keep elsewhere, through **MCP** (`mcp-server/`, 27 tools)
+2. **Out-of-process** - call the project from a program you keep elsewhere, through **MCP** (`mcp-server/`, **32 tools**: the 28 the assistant exposes minus the three it withholds from this path, plus four hand-written `wechat.*` ones - the table in `docs/MCP.md` is the list, and `test/tool-registry.test.ts` fails if it drifts)
    or the CLI's `--json` surface. This is the only boundary that exists for code that does not live in this repository.
 
 ## Why there is no plugin loader

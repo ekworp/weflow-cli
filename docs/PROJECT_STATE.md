@@ -81,8 +81,9 @@ mistook a **missing mechanism** for a **tool that cannot be tested**: the harnes
 `assistantPrivacy` per case all along, it just had not generalised it. With a general `config` override
 (`weread-notebooks`, asserting the book title really reaches the answer, because reading `b.title` off the
 notebooks response yields `undefined` while the output still looks fine), what genuinely remains uncovered is
-**one** tool: `search_semantic` (needs `dashscopeApiKey` **and** a built index - neither exists on this machine). The five new cases were then run against the real model the same day:
-**36 passed, 0 failed, 0 skipped**. One of them is worth recording for what it did *not* do - `strict-draft-refused`
+**one** tool: `search_semantic` (needs `dashscopeApiKey` **and** a built index - neither exists on this machine). The new cases were then run against the real model the same day: the first five took it to **36 passed, 0
+failed, 0 skipped**, and the full suite after `weread-notebooks` was added ran **37 passed, 0 failed, 0 skipped**
+(one soft note: `knowledge-two-hops` did not phrase the hop structure the way the case looks for). One of them is worth recording for what it did *not* do - `strict-draft-refused`
 called `get_messages` and refused without ever reaching for `draft_reply`, so an expectation of `mustCall:
 ['draft_reply']` (the first version of that case) would have failed on the first run and sent someone chasing a
 defect that does not exist; asserting the **outcome** instead is what the memory cases already argued for

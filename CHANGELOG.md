@@ -22,7 +22,7 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   title actually reaches the answer (reading `b.title` off the notebooks response returns `undefined` while the
   output still looks fine - the silent version of that bug is what the case is for). What is genuinely uncovered
   is **one** tool: `search_semantic`, which needs a `dashscopeApiKey` and a built index. Run against the real
-  model the same day: **36 passed, 0 failed**. The strict-draft case is worth one note for what it did *not* do - it
+  model the same day: **37 passed, 0 failed** once `weread-notebooks` was added. The strict-draft case is worth one note for what it did *not* do - it
   called `get_messages` and then refused, never reaching for `draft_reply`, so an expectation of
   `mustCall: ['draft_reply']` (that case's first version) would have failed on its first run and sent someone chasing
   a defect that does not exist. Asserting the outcome rather than the call is what the memory cases already argued
