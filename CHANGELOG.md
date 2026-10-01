@@ -7,6 +7,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **Five more behaviour-eval cases, and a limitation list that had gone stale.** Walking the 31 tools one by one
+  against `assistantEval.ts` turned up five with no assertions at all - and one stub that made its own case
+  untestable: `getSnsTimeline` returned a hard-coded empty timeline, so `get_sns` could only ever be asserted as "no
+  cached data", the same defect `listContacts` had. The `sns` fixture is per-case now, and the new cases cover
+  `get_sns`, `read_skill` (the body, not just `list_skills`' catalogue), `get_stats`' knowledge-base half,
+  `export_chat` (into a temp root, via `WEFLOW_ASSISTANT_EXPORT_ROOT`), and `draft_reply` under strict privacy - that
+  last one is a guard for a real regression: with `aiEngine=ollama` the old code still handed the conversation to the
+  script, whose two remote calls have nothing to do with that setting. The block of comments claiming which tools
+  were untestable was rewritten too, because two of its claims were no longer true (`get_concepts`/`get_review` had
+  been covered since 2026-09-30, and the harness does set environment variables). What is genuinely uncovered is
+  **two** tools: `search_semantic` (needs a `dashscopeApiKey` and a built index) and `get_weread` (refuses before it
+  reads anything when `wereadApiKey` is unset, and that config key cannot be injected reliably). The five cases have
+  **not** been run against the real model yet - the offline tests only check that they are well-formed.
 - **`backfill_articles.py --topic` fetches one topic instead of a whole day - and a day fetched that way knows it is
   partial.** The filter is the classifier the script already had: `_guess_topic` reads only the article's title and its
   account name, never the body, so `--topic AI` selects exactly the articles a full run would have filed under `AI`.
