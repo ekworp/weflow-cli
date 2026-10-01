@@ -7,6 +7,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **Voice messages reach the conversation cards as text, not as `[语音]`.** The chat line fed the model a bare
+  `[语音]` placeholder for every voice message - no length, no words - while the transcripts were already on disk:
+  the local faster-whisper pass writes a content-addressed cache, and measured over the last 30 days **1,780 of
+  1,869 clips** in the busiest conversations already had a transcript that nothing was reading. `chat-notes` now
+  reads that cache and substitutes the text, labelled `[语音·本机转写·未校对]` - the label is not decoration: it is
+  someone's speech as a machine heard it and it will contain errors, so the model has to know not to treat it as
+  quoted fact (the same discipline as `verified: false` on concept pages). `--transcribe-voice` fills what is
+  missing (local model, never leaves the machine, resumable - the cache is the progress); without it the run only
+  reads, and the count of what is still missing is printed rather than quietly omitted. First real run: **54 of the
+  125 voice messages in the 30-day window** carry text into the cards that previously said `[语音]`.
+  Finding this also surfaced a quieter bug in the same feature: the cache directory was being derived from
+  `chat-notes`'s *card* output directory, so it read a cache it had just created itself (`output/chat-notes/.voice-cache`,
+  16 entries) instead of the real one (`output/.voice-cache`, 1,788) - and the run reported "16 hits" that were
+  internally consistent and wrong. The cache's location is now defined once, in the module that owns the cache, and
+  a test asserts the three readers agree.
 - **The MCP server can speak Streamable HTTP, so clients that cannot spawn a process can use it too.** stdio stays
   the default and is unchanged; `--http` (or `WEFLOW_MCP_HTTP=1`) serves the **same tools** over HTTP, because the
   table is derived from one place (`TOOL_DEFS` -> `MCP_TOOL_DEFS`). Serving private messages on a listening socket is

@@ -2379,7 +2379,9 @@ def main():
     # Voice: load the payloads so a cached transcript can be shown. Anything
     # not yet transcribed simply renders as `[语音 N″]`.
     if _WECHAT_VOICE:
-        VOICE_STATE['cache'] = wechat_voice.TranscriptCache(os.path.join(args.out, '.voice-cache'))
+        # 缓存的家由 `wechat_voice` 定义：以前这里按 `--out` 拼，于是同一段音频在不同
+        # 输出目录下会被各转写一遍，而卡片那条线读的又是另一处（2026-10-01）。
+        VOICE_STATE['cache'] = wechat_voice.TranscriptCache(wechat_voice.DEFAULT_CACHE_DIR)
         try:
             VOICE_STATE['map'] = wechat_voice.load_voice_map(
                 args.db, args.key, args.salt, args.passphrase, args.talker)

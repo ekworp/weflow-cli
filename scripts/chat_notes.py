@@ -48,6 +48,9 @@ from _utils import (CHAT_CARD_PREFIX, SEPARATOR, call_deepseek, decrypt_lock,  #
 from reply_debt import collect_conversations, format_line  # noqa: E402
 
 import nt_decrypt  # noqa: E402
+# 语音转写：**只读它的缓存**（`output/.voice-cache`，内容寻址）。模型加载在 wechat_voice 内部，
+# 不 import 就不会付出那份代价；`--transcribe-voice` 才真的调它去识别。
+import wechat_voice  # noqa: E402
 
 TZ = timezone(timedelta(hours=8))
 OUTPUT_ROOT = 'output/chat-notes'
@@ -291,7 +294,44 @@ def copy_to_vault(out_root, vault_root):
     return {'copied': copied, 'dir': str(target_dir)}
 
 
-def collect(out_root, days, limit):
+VOICE_TYPE = 34
+# 缓存的家由 `wechat_voice` 定义（见那里的 `DEFAULT_CACHE_DIR`）。**不要从这里拼路径**：
+# `OUTPUT_ROOT` 是卡片目录（`output/chat-notes`），拿它拼出来的缓存目录是另一个，
+# 与导出侧那份（`output/.voice-cache`）不相通 —— 2026-10-01 就是这么错的。
+VOICE_CACHE_DIR = wechat_voice.DEFAULT_CACHE_DIR
+# 标签必须写明**机器转写、未经校对**：那是"别人说的话"被机器认出来的字，会有错（粤语/方言尤其）。
+# 不标的话，模型看到一段像正常文本的东西，就会把它当成事实原文——这与本仓库对未核验信息的一贯
+# 处理是同一条纪律（概念页上的 `verified: false`、卡片里的 `summary_by: card` 都是这个意思）。
+VOICE_LABEL = '[语音·本机转写·未校对]'
+
+
+def attach_voice_transcripts(messages, voice_map, cache):
+    """把语音消息的 `parsedContent` 换成**已缓存的转写**，返回 `(用上几条, 还缺几条)`。
+
+    为什么值得接这一步：在此之前语音消息喂给模型的是 `parsedContent` 里那句 `[语音]` —— 零信息。
+    实测最近 20 个会话里有 **1,869 条**语音，其中 **1,780 条的转写早就躺在 `output/.voice-cache`
+    里**（内容寻址，key 是音频的 md5，见 `wechat_voice.voice_key`），只因为没有东西去读它，
+    全部白白丢掉。
+
+    **只读缓存，不在这里跑模型**：转写要加载 whisper、一句一两秒，那是另一条路的事
+    （`--transcribe-voice` 会替你调它）。缺的**返回给调用方**，好让"缺多少"是个可见的数字，
+    而不是悄悄少几条。
+    """
+    enriched = pending = 0
+    for message in messages:
+        if message.get('localType') != VOICE_TYPE:
+            continue
+        blob = voice_map.get(message.get('localId')) if voice_map else None
+        text = cache.get(wechat_voice.voice_key(blob)) if (blob and cache) else None
+        if text:
+            message['parsedContent'] = '%s %s' % (VOICE_LABEL, text)
+            enriched += 1
+        else:
+            pending += 1
+    return enriched, pending
+
+
+def collect(out_root, days, limit, transcribe_voice=False):
     """读本地库：最近有动静的会话 + 每个会话窗口内的对话。**不调用任何模型。**"""
     config = load_config()
     db = config.get('ntDbPath', '')
@@ -316,12 +356,43 @@ def collect(out_root, days, limit):
         cutoff = int((datetime.now(TZ) - timedelta(days=days)).timestamp())
         cards = []
         thin = []
+        voice_cache = wechat_voice.TranscriptCache(VOICE_CACHE_DIR)
+        voice_total = {'enriched': 0, 'pending': 0}
+        passphrase = decrypt_lock(config.get('favPassphrase') or config.get('decryptKey') or '')
         for item in picked:
             messages, truncated = fetch_all_messages(conns, item['talker'], name_map,
                                                      config.get('wxid', ''))
             in_window = within_window(messages, cutoff)
             if not in_window:
                 continue
+            # 语音：先用缓存里的转写把 `[语音]` 换掉（只读，不跑模型）。
+            # 映射按会话取：微信把语音载荷按会话分片存，没有它就查不到 key。
+            if any(m.get('localType') == VOICE_TYPE for m in in_window):
+                voice_map = {}
+                try:
+                    voice_map = wechat_voice.load_voice_map(
+                        db, decrypt_lock(config.get('ntKey', '')), config.get('ntSalt', ''),
+                        passphrase, item['talker'])
+                except Exception as error:
+                    # 降级**要说出来**：静默退化等于让模型把 `[语音]` 当成"他说了个'语音'"
+                    print('  语音映射读不了（%s），这个会话的语音按占位符处理' % str(error)[:70],
+                          file=sys.stderr)
+                if transcribe_voice and voice_map:
+                    # `ensure_transcripts` 要的是**字典**（它自己 `.items()`）；只补窗口内缺的那些，
+                    # 已有转写它会自己跳过（缓存即进度，中断了再跑接着来）。
+                    wanted = {m.get('localId'): voice_map.get(m.get('localId'))
+                              for m in in_window if m.get('localType') == VOICE_TYPE}
+                    wanted = {k: v for k, v in wanted.items() if v}
+                    if wanted:
+                        # 本地 whisper：慢、吃 CPU，所以是显式的开关，不是默认行为
+                        done, already, failed = wechat_voice.ensure_transcripts(
+                            wanted, VOICE_CACHE_DIR,
+                            log=lambda line: print('    ' + line, file=sys.stderr))
+                        print('  语音转写: 新识别 %d 条、已有 %d 条、失败 %d 条（本地模型，未出网）'
+                              % (done, already, failed), file=sys.stderr)
+                enriched, pending = attach_voice_transcripts(in_window, voice_map, voice_cache)
+                voice_total['enriched'] += enriched
+                voice_total['pending'] += pending
             lines = [format_line(m, NOTE_MSG_CHARS) for m in reversed(in_window)]
             # 超上下文预算就从最旧的丢（见 `trim_to_budget`），丢了几条要写进卡里
             lines, dropped = trim_to_budget(lines)
@@ -332,7 +403,7 @@ def collect(out_root, days, limit):
             cards.append({'talker': item['talker'], 'name': item['name'],
                           'messages': len(lines), 'chars': chars, 'lines': lines,
                           'truncated': truncated, 'dropped': dropped})
-        return {'cards': cards, 'skipped': thin, 'outRoot': out_root}, None
+        return {'cards': cards, 'skipped': thin, 'outRoot': out_root, 'voice': voice_total}, None
     finally:
         for conn in conns:
             conn.close()
@@ -361,6 +432,9 @@ def main():
                         help='Vault 根目录（--vault-copy 用）')
     parser.add_argument('--vault-copy', action='store_true',
                         help='把聊天卡拷进 Vault 的 Sources/Chat（本地，不调模型）')
+    parser.add_argument('--transcribe-voice', action='store_true',
+                        help='把缺转写的语音**本机**识别掉再产卡（本地 whisper，慢、吃 CPU、不出网；'
+                             '不加则只用 output/.voice-cache 里已有的）')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -368,7 +442,8 @@ def main():
         print(json.dumps({'success': False, 'error': '--days 要 ≥ 1'}))
         return 1
 
-    collected, failure = collect(args.out, args.days, args.limit)
+    collected, failure = collect(args.out, args.days, args.limit,
+                                 transcribe_voice=args.transcribe_voice)
     if collected is None:
         if args.json:
             print(json.dumps({'success': False, 'error': failure}))
@@ -385,6 +460,8 @@ def main():
                    'skippedNames': [s['name'] for s in skipped][:20],
                    'model': 'DeepSeek（生成）', 'calls': len(cards),
                    'readsLocalData': True, 'invokesAI': False, 'writesFiles': True,
+                   'voiceWithTranscript': (collected.get('voice') or {}).get('enriched', 0),
+                   'voiceWithoutTranscript': (collected.get('voice') or {}).get('pending', 0),
                    'note': '每个会话一次调用；卡片写到 %s，之后用 compile_wiki --source 聚合' % args.out}
         if args.json:
             print(json.dumps(preview, ensure_ascii=False, indent=2))
@@ -395,6 +472,10 @@ def main():
                 print('另有 %d 个会话太薄（<%d 条或 <%d 字）不产卡：%s'
                       % (len(skipped), MIN_MESSAGES_FOR_CARD, MIN_CHARS_FOR_CARD,
                          '、'.join(s['name'] for s in skipped[:8])))
+            voice = collected.get('voice') or {}
+            if voice.get('enriched') or voice.get('pending'):
+                print('语音：%d 条用上了已有转写、%d 条还没有（本机转写、未校对；要补跑加 --transcribe-voice）'
+                      % (voice.get('enriched', 0), voice.get('pending', 0)))
             print('卡片写到 %s；之后跑 python scripts/compile_wiki.py --source %s 聚成概念页'
                   % (args.out, args.out))
         return 0

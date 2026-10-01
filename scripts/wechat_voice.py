@@ -33,6 +33,15 @@ EMPTY_MARKER = '\x00empty'
 
 DEFAULT_MODEL = 'small'
 
+# **转写缓存的家**，由这个模块定义，别处一律引用它。
+#
+# 2026-10-01 踩过一次：`chat_notes` 拿自己的输出目录（`output/chat-notes`）去拼缓存路径，于是
+# 它读到的是 `output/chat-notes/.voice-cache` —— 一个刚被它自己建出来的空目录，而真正的缓存
+# 在 `output/.voice-cache`（1,788 条）。它「命中 16 条」那个数字是自洽的，只是与真缓存不相通，
+# 报告看不出来。位置只要有两份定义就会漂，所以从这里定一份。
+# 可用 `WEFLOW_VOICE_CACHE` 覆盖（测试与自定义布局用）。
+DEFAULT_CACHE_DIR = os.environ.get('WEFLOW_VOICE_CACHE') or os.path.join('output', '.voice-cache')
+
 # A Cantonese-tuned model, fetched separately (see the README note in
 # OPERATIONS.md). Worth preferring automatically when present: stock Whisper
 # answers Cantonese speech with fluent-looking Mandarin nonsense - text that
