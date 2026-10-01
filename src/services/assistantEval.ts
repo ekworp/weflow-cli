@@ -48,6 +48,20 @@ export interface EvalCase {
    */
   sns?: Array<Record<string, unknown>>
   /**
+   * 微信读书的桩数据（`get_weread` 的 `shelf` / `notebooks` 两个模式读的那份）。
+   * 与 `sns` 同理：桩原先是**写死空列表**，只能断言"暂无读书笔记"。
+   */
+  wereadShelf?: Array<Record<string, unknown>>
+  wereadNotebooks?: Array<Record<string, unknown>>
+  /**
+   * 按用例覆盖**配置键**（`configService.get`）。
+   *
+   * `privacy` 是它的第一个特例（盖 `assistantPrivacy`），2026-10-01 泛化成这个字段 ——
+   * 因为"先看配置再决定"的工具此前一条都测不了：`get_weread` 在 `wereadApiKey` 未配置时
+   * 直接返回，而那个键由 `configService` 在**构造时**读一次，用文件夹具赶不上。
+   */
+  config?: Record<string, string>
+  /**
    * 通讯录（`list_contacts` 读的那份）。**不写就从 `sessions` 派生**——评测里的"人"就是那些人。
    *
    * 2026-09-30 之前这里没有字段，`listContacts` 也**没有打桩**：于是 `list_contacts` 在评测里
@@ -391,13 +405,11 @@ export const EVAL_CASES: EvalCase[] = [
   // 这段原先还写着"`get_concepts` 也暂时没测……`get_review` 同理（评测器目前不会设环境变量）"。
   // **两句都过期了**：两条用例已经补上（`daily-review` / `knowledge-overview`），环境变量也早就会设。
   // 过期局限清单不会报错、只会越看越可信，所以按实际重列 —— 2026-10-01 盘过一遍 31 个工具之后，
-  // 真正还没覆盖的只剩两个：
+  // 真正还没覆盖的只剩一个：
   //   · `search_semantic`：要 dashscopeApiKey **且**要建过语义索引，这台机器两样都没有（索引从没建过）。
   //     评测里造不出来，只能靠 `test/assistant-tools*.test.ts` 的代码路径测试。
-  //   · `get_weread`：工具在拿到 `wereadApiKey` **之前**就返回"未配置"。那是**配置项**不是环境变量，
-  //     而 `configService` 在构造时就 `load()` 一次（模块加载时机），用 `files` 夹具铺一个
-  //     临时 HOME 的 config.json 能不能赶上那一刻，取决于哪个用例先 import 它 —— 时序上不可靠，
-  //     所以宁可不测，也不写一条会随用例顺序变红的测试。
+  // （`get_weread` 本来也在这一档，理由是"配置项注入不可靠"—— 那是把**机制缺失**当成了**不可测**：
+  //   `privacy` 早就在按用例盖配置键了，只是没泛化。加了通用的 `config` 覆盖之后它就通了。）
   // 另外 `get_sns` 那个桩原先是**写死的空列表**，只能断言"暂无缓存数据"（与 `contacts` 当初同一类
   // 毛病：数据是假的，用例就碰不到真分支），2026-10-01 改成按用例给了。
 
@@ -517,6 +529,21 @@ export const EVAL_CASES: EvalCase[] = [
     question: '把和甲的聊天导出成 txt 给我。',
     env: { WEFLOW_ASSISTANT_EXPORT_ROOT: '.eval-fixtures/exports' },
     expect: { mustCall: ['export_chat'], maxTools: 6, toolBudget: 3 },
+  },
+  {
+    id: 'weread-notebooks',
+    // 钉一个**真踩过的 bug**：`/user/notebooks` 把书名与作者**嵌在 `book` 里**，条目顶层没有这两个
+    // 字段。直接读 `b.title` 会得到 undefined —— 而输出**照样成立**，只是每本书都没名字（2026-09-28
+    // 实测）。这条断言书名真出现在答复里，那种静默就藏不住。
+    //
+    // 配置覆盖是必需的：`get_weread` 在拿到 `wereadApiKey` 之前就返回"未配置"，走不到桩。
+    question: '我微信读书上有笔记的那些书都叫什么？',
+    config: { wereadApiKey: 'eval-only-not-a-real-key' },
+    wereadNotebooks: [{ book: { title: '青花瓷里的化学', author: '某人' }, noteCount: 7 }],
+    // 硬断言，不是软通道：**书名出现**就是这条用例存在的理由（那种静默丢名字的 bug 不会报错、
+    // 只会少几个字）。先连跑三次确认它不是随走法浮动的：三次都是 `get_weread` 各一次、书名都在。
+    expect: { mustCall: ['get_weread'], maxTools: 6, toolBudget: 3,
+              answerMatches: /青花瓷/ },
   },
   {
     id: 'strict-draft-refused',
@@ -760,8 +787,8 @@ export async function installStubs(spec: EvalCase): Promise<() => void> {
     }))
   }
   svc.getSnsExportStats = async () => ({ success: true, data: { totalPosts: 0, totalFriends: 0 } })
-  weread.shelf = async () => ({ ok: true, data: { books: [] } })
-  weread.notebooks = async () => ({ ok: true, data: { books: [] } })
+  weread.shelf = async () => ({ ok: true, data: { books: spec.wereadShelf ?? [] } })
+  weread.notebooks = async () => ({ ok: true, data: { books: spec.wereadNotebooks ?? [] } })
   weread.search = async () => ({ ok: true, data: { books: [] } })
 
   // 铺"本机文件 + 环境变量"（见 `EvalCase.files` / `EvalCase.env`）。
@@ -827,9 +854,17 @@ export async function runCase(spec: EvalCase, userId: string): Promise<CaseResul
   const restore = await installStubs(spec)
   const { configService } = await import('./configService.js')
   const realGet = configService.get.bind(configService) as (key: string) => any
-  const privacy = spec.privacy ?? 'balanced'
+  // 按用例覆盖配置键。**先例是 `privacy`**：它一直就是这么盖 `assistantPrivacy` 的，只是到
+  // 2026-10-01 之前只有那一个键能盖 —— 于是任何"先看配置再决定"的工具都测不了：
+  // `get_weread` 在拿到 `wereadApiKey` **之前**就 `return '(微信读书未配置)'`，
+  // 而那个键是配置项、`configService` 构造时 `load()` 一次（模块加载时机），
+  // 用 `files` 铺一份临时 HOME 的 config.json 赶不上那一刻。盖成通用的之后，那条路才通。
+  const overrides: Record<string, string> = {
+    assistantPrivacy: spec.privacy ?? 'balanced',
+    ...(spec.config ?? {}),
+  }
   ;(configService as any).get = (key: string) =>
-    (key === 'assistantPrivacy' ? privacy : realGet(key))
+    (key in overrides ? overrides[key] : realGet(key))
 
   const started = Date.now()
   const turns = spec.turns ?? (spec.question ? [spec.question] : [])

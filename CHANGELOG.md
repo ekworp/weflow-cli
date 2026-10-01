@@ -16,9 +16,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   last one is a guard for a real regression: with `aiEngine=ollama` the old code still handed the conversation to the
   script, whose two remote calls have nothing to do with that setting. The block of comments claiming which tools
   were untestable was rewritten too, because two of its claims were no longer true (`get_concepts`/`get_review` had
-  been covered since 2026-09-30, and the harness does set environment variables). What is genuinely uncovered is
-  **two** tools: `search_semantic` (needs a `dashscopeApiKey` and a built index) and `get_weread` (refuses before it
-  reads anything when `wereadApiKey` is unset, and that config key cannot be injected reliably). Run against the real
+  been covered since 2026-09-30, and the harness does set environment variables). `get_weread` was filed as untestable too, for the same reason - which mistook a missing mechanism for an
+  untestable tool, since the harness had been overriding `assistantPrivacy` per case all along without
+  generalising it. A general per-case `config` override fixed that, and `weread-notebooks` now asserts the book
+  title actually reaches the answer (reading `b.title` off the notebooks response returns `undefined` while the
+  output still looks fine - the silent version of that bug is what the case is for). What is genuinely uncovered
+  is **one** tool: `search_semantic`, which needs a `dashscopeApiKey` and a built index. Run against the real
   model the same day: **36 passed, 0 failed**. The strict-draft case is worth one note for what it did *not* do - it
   called `get_messages` and then refused, never reaching for `draft_reply`, so an expectation of
   `mustCall: ['draft_reply']` (that case's first version) would have failed on its first run and sent someone chasing
