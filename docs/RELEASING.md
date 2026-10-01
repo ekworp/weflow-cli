@@ -68,7 +68,7 @@ grep -E "新文件名" /tmp/list.txt
 | 现象 | 原因 |
 | --- | --- |
 | `403 ... two-factor authentication ... required` | token 没勾 Bypass 2FA，或没用 OTP |
-| `ENEEAUTH` | 没登录 / 没配 token |
+| `ENEEDAUTH` | 没登录 / 没配 token |
 
 **验证 token 是否可用**（`bypass_2fa` 必须是 `true`）：
 
@@ -110,6 +110,22 @@ npm publish    # 再发一次
 ```
 
 报 `409 Conflict - Cannot publish over previously staged version` → **已经发布成功**。
+
+但 409 只说明**版本槽位已被占**，不等于 registry 已经能查到它。发布后 npm 要先扫描再让版本可读，
+**官方不承诺上限**：常见 5 分钟，实测出现过 14、16、25、55 分钟。这个窗口里的表现是：
+
+- `npm view weflow-cli version` 还是旧版本号
+- tarball 直链仍然 404
+- 再发一次仍然是 409 —— 所以 409 **区分不了**「还在传播」和「已经好了」
+
+窗口期内只做一件事：等 + 轮询，**不要改版本号重发**。想确认不是卡在人工审批：
+
+```powershell
+npx --yes npm@11.17.0 stage list weflow-cli --json   # 返回 [] 即无待审批版本，属传播中
+```
+
+（`npm stage` 需要 npm ≥ 11.15；本机装的是 11.6.2，直接跑会报 `Unknown command: "stage"`，
+所以用 npx 临时拉一个高版本。`npm@11.17.0` 是在本机 Node 24.11.1 上验证过能用的。）
 
 ## 8. 兜底：告诉用户怎么绕开镜像
 
