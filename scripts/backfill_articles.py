@@ -133,6 +133,20 @@ def apply_topics(articles):
     return articles
 
 
+def parse_topics(values):
+    """把 `--topic` 的取值展开成一个列表：**可重复，也可逗号分隔**。
+
+    两种都收的理由是仓库里另一条命令（`article_notes.py`）的 `--topic` 就是 `action='append'`
+    且写明"可重复或逗号分隔"。只认一种的话，照另一边习惯写就会**静默只做一个主题**。
+
+    `values` 传字符串也当单个处理：`for chunk in 'AI'` 会**逐字符**迭代，而每个字符都不在分类法里
+    —— 于是"整批被拒"看起来跟"参数拼错"一模一样，很难查。这里把它挡住。
+    """
+    if isinstance(values, str) or values is None:
+        values = [values or '']
+    return [t.strip() for chunk in values for t in str(chunk).split(',') if t.strip()]
+
+
 def select_topics(articles, topics):
     """只留下选中主题的文章；`topics` 为空/None 表示全要（原样返回）。
 
@@ -175,6 +189,43 @@ def fetch_bodies(articles, workers: int, log=None):
     return {'attempted': len(todo), 'ok': ok}
 
 
+def _read_index(day_dir) -> dict:
+    """读这一天已有的 `.articles.json`（没有就空表）。
+
+    **读不了的时候不是安静地返回空表**：那等于把已有条目从索引里抹掉，而这件事不会报错
+    —— 正是这一整段要防的事。所以把原文件改名留成 `.json.bad` 再继续，至少还能人工救。
+    """
+    path = Path(day_dir) / '.articles.json'
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        try:
+            path.rename(path.with_name('.articles.json.bad'))
+        except OSError:
+            pass
+        print('    警告：%s 读不了（%s），已留成 .articles.json.bad，旧索引未参与合并'
+              % (path.name, exc))
+        return {}
+
+
+def _merge_articles(kept, fresh):
+    """合并两组 `.articles.json` 条目，按「来源-标题」去重（那是它在盘上的文件名）。
+
+    顺序按 `time` 再 `title` 排，是为了让同一天的索引**稳定**：分两次回填的那天，
+    第二次不该把先前的条目挤到别处去，否则每次跑都产生一份看着像"改了"的索引。
+    没有 `time` 的老条目（理论上不会有）排在前面，不参与排序。
+    """
+    merged = {}
+    for entry in list(kept) + list(fresh):
+        if not isinstance(entry, dict):
+            continue
+        merged[(str(entry.get('source', '')), str(entry.get('title', '')))] = entry
+    return sorted(merged.values(), key=lambda e: (str(e.get('time', '')), str(e.get('title', ''))))
+
+
 def write_day(articles, day, out_root, topic_filter=None, truncated=False):
     """落盘：`<日期>/<主题>/<来源>-<标题>.md` + `.articles.json` + README。
 
@@ -190,6 +241,10 @@ def write_day(articles, day, out_root, topic_filter=None, truncated=False):
     - README 里也写明这一天是哪几个主题。**这两处不是装饰**：一天只回填了一半却看起来像
       完整的一天，是这份产出唯一会"静默变少"的方式（见 `day_done`）。
     - 传了 `truncated`（`--limit-per-day` 截过）时同理，多一个 `truncated` 标记。
+    - **索引是与这一天已有的内容合并的，不是覆盖**：先 `--topic AI` 再来 `--topic 学术`，
+      先前那个主题的条目必须留着。覆盖会让**索引比盘上少几条**而 md 还在 —— 不报错，
+      而"索引与盘不一致"正是这一支反复吃的那个形状（见 `_merge_articles`、`_read_index`）。
+      `topicFilter` 取并集；只要这次是全量、或这天本来就是完整的，标记就**消失**。
 
     `truncated` 只影响元数据（它记录的是"调用方截过"，不宜在这里重算——截在调用方发生）。
     """
@@ -237,25 +292,50 @@ def write_day(articles, day, out_root, topic_filter=None, truncated=False):
             written.append(article)
     out_dir.mkdir(parents=True, exist_ok=True)
     serializable = [_serializable_article(a, day) for a in written]
+    # **索引描述的是这一天盘上全部的文章，不是这一轮写的那批。** 分两次、用不同主题回填同一天
+    # 时（`--topic AI` 之后再来 `--topic 学术`），只写本轮的话，先前那个主题的条目会从索引里
+    # 消失而 md 还留在盘上——索引少一条、盘上多一篇，不报错。所以先把不属于本轮的旧条目接过来。
+    prior = _read_index(out_dir)
+    kept = [e for e in prior.get('articles', [])
+            if e.get('topic') not in set(topic_filter or ())]
+    stored_filter = prior.get('topicFilter')
+    # 「**没有**旧索引」与「旧索引是**完整**的一天」是两件事，第一版把它们混成了一个 `None`：
+    # 于是第一次做过滤回填时标记根本没写，那天看起来像完整的一天 —— 正是要防的那件事。
+    # 区分它们的是"旧索引里有没有东西"，不是"有没有那个键"。
+    if topic_filter is None:
+        scope_filter = None                       # 全量跑过 → 这天完整
+    elif not prior.get('articles'):
+        scope_filter = sorted(topic_filter)       # 第一次写这天，且只写了一部分
+    elif stored_filter is None:
+        scope_filter = None                       # 本来就完整，这次只是重做其中一部分
+    else:
+        scope_filter = sorted(set(stored_filter) | set(topic_filter))
+    if scope_filter and set(scope_filter) >= set(TOPICS):
+        # 六个主题都做过一遍了 —— 这一天"能做的都做了"，与全量跑过没有区别。
+        # 不撤标记的话它**永远**被当成没做完：以后随便跑一次全量都会把整个窗口重抓一遍。
+        scope_filter = None
     payload = {'date': day, 'generated_at': datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S'),
-               'backfilled': True, 'articles': serializable}
+               'backfilled': True, 'articles': _merge_articles(kept, serializable)}
     # 只在**确实是一部分**的时候才加这两个键：全量回填写出来的文件与以前逐字节相同，
     # 而 `day_done` 把"没有 topicFilter"读作"完整的一天"。缺了它就等于把半天的产出
     # 冒充成整天——这正是这条路径唯一能静默丢东西的地方。
-    if topic_filter:
-        payload['topicFilter'] = sorted(topic_filter)
-    if truncated:
+    if scope_filter:
+        payload['topicFilter'] = scope_filter
+    if truncated or prior.get('truncated'):
+        # `truncated` 一旦记上就不撤销：这一次没截，不代表上一次截掉的那些补回来了。
         payload['truncated'] = True
     (out_dir / '.articles.json').write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    if topic_filter:
+    if scope_filter:
         scope = ('**只回填了 %s 主题** —— 这一天并非全部文章，其余主题还没拉。\n'
-                 % '、'.join(sorted(topic_filter)))
+                 % '、'.join(scope_filter))
     else:
         scope = ''
+    # README 说的是**这一天**有几篇（合并后的），不是这一轮写了几篇 —— 分两次回填的那天，
+    # 前者才是读它的人想要的数。
     (out_dir / 'README.md').write_text(
         '# 公众号文章 — %s（历史回填）\n\n共 %d 篇。正文由 `backfill_articles.py` 抓取，'
-        '**未下载图片、未调用模型**。\n%s' % (day, len(written), scope), encoding='utf-8')
+        '**未下载图片、未调用模型**。\n%s' % (day, len(payload['articles']), scope), encoding='utf-8')
     return {'written': len(written), 'skipped': len(skipped),
             'fallbackTopics': fallbacks, 'skipSample': skipped[:3]}
 
@@ -372,8 +452,8 @@ def main():
     parser.add_argument('--limit-per-day', type=int, default=0,
                         help='每天最多抓几篇（0=不限）。设了就不是完整的一天：'
                              '截掉的那些既没抓也看不出来，所以增量判断会重做这天')
-    parser.add_argument('--topic', default='',
-                        help='只回填这些主题（逗号分隔，合法值 %s），不写=全部。'
+    parser.add_argument('--topic', action='append', default=[], metavar='T',
+                        help='只回填这些主题（可重复或逗号分隔，合法值 %s），不写=全部。'
                              '只回填过一部分主题的一天，之后跑全量时不会被跳过。'
                              % '/'.join(TOPICS))
     parser.add_argument('--refresh', action='store_true', help='已回填过的天也重做（默认跳过）')
@@ -394,7 +474,7 @@ def main():
         print('--until 不能早于 --since'); return 1
     if args.workers < 1:
         print('--workers 要 ≥ 1'); return 1
-    picked = [t.strip() for t in str(args.topic).split(',') if t.strip()]
+    picked = parse_topics(args.topic)
     unknown = [t for t in picked if t not in TOPICS]
     if unknown:
         # 拼错一个词（比如 `--topic ai` 小写）会静默筛出 0 篇、然后报一句"没有要处理的"——

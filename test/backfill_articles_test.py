@@ -373,6 +373,142 @@ class TopicFilterTests(unittest.TestCase):
             self.assertFalse(bf.day_done(tmp, '2026-03-05'))
             self.assertFalse(bf.day_done(tmp, '2026-03-05', ['AI']))
 
+    def test_分两次回填同一天_先前那个主题不会掉出索引(self):
+        """**这条迟到了**：`--topic` 第一版只验证过一次跑一个主题。
+
+        分两次跑是它本来的用法（先补齐一个主题，later 再补别的），而第一版 `write_day` 会用
+        本轮结果**重写** `.articles.json` —— 先前那个主题的条目全部消失、md 却还在盘上。
+        索引少几条、盘上多几篇，不报错。所以这里钉住"索引描述的是这一天，不是这一轮"。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article(title='讲 MCP 的那篇')], '2026-03-05', tmp, topic_filter=['AI'])
+            bf.write_day([article(title='一篇散文', topic='文学', fetched_md='正文第二段。' * 30)],
+                         '2026-03-05', tmp, topic_filter=['文学'])
+            payload = self.read_json(tmp)
+            titles = sorted(a['title'] for a in payload['articles'])
+            self.assertEqual(titles, ['一篇散文', '讲 MCP 的那篇'],
+                             '第二次回填不该把第一次的条目挤掉')
+            self.assertEqual(payload['topicFilter'], ['AI', '文学'], '主题范围取并集')
+            # md 也要两个都还在
+            mds = sorted(p.name for p in Path(tmp, '2026-03-05').rglob('*.md') if p.name != 'README.md')
+            self.assertEqual(len(mds), 2)
+            self.assertIn('共 2 篇', self.read_readme(tmp),
+                          'README 说的是这一天有几篇，不是这一轮写了几篇')
+
+    def test_全量重写同一天_索引里不会出现两条一样的(self):
+        """**这条是变异检查逼出来的**：原来那条"重复回填不翻倍"其实碰不到去重 ——
+        第二次跑时先前那条属于被筛掉的主题，压根不进 `kept`，去重有没有都一样。
+
+        真正会重合的是**全量重写**（`--refresh`、或补完别的主题后再全量跑一次）：全量时
+        `kept` 收下那天的**全部**旧条目，而 `fresh` 又把同一批生成一遍 —— 不去重就是一条
+        文章在索引里出现两次。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])
+            bf.write_day([article()], '2026-03-05', tmp)      # 全量：同一条又被写了一次
+            self.assertEqual(len(self.read_json(tmp)['articles']), 1,
+                             '同一条文章在索引里只能有一条')
+
+    def test_六个主题都补齐后标记要撤掉(self):
+        """一个主题一个主题地补齐是这条路的正常用法，而它必须**能收敛**。
+
+        不撤标记的话，"六个主题都做过"的一天仍被 `day_done` 当成没做完 —— 于是以后随便跑一次
+        全量都会把整个窗口重抓一遍，永远收敛不了。判据取的是"主题并集覆盖了分类法"，
+        与全量跑过等价（同一天的文章是有界的，都过了一遍就是都过了一遍）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, topic in enumerate(bf.TOPICS):
+                if index == len(bf.TOPICS) - 1:
+                    break
+                bf.write_day([article(topic=topic, title='甲' + topic, fetched_md='正文。' * 40)],
+                             '2026-03-05', tmp, topic_filter=[topic])
+            self.assertIn('topicFilter', self.read_json(tmp), '还差一个主题，仍算残的')
+            last = bf.TOPICS[-1]
+            bf.write_day([article(topic=last, title='甲' + last, fetched_md='正文。' * 40)],
+                         '2026-03-05', tmp, topic_filter=[last])
+            self.assertNotIn('topicFilter', self.read_json(tmp), '六个主题都做过了，标记要撤')
+            self.assertTrue(bf.day_done(tmp, '2026-03-05'))
+            self.assertTrue(bf.day_done(tmp, '2026-03-05', ['AI']))
+            self.assertEqual(len(self.read_json(tmp)['articles']), len(bf.TOPICS), '每一篇都还在')
+
+    def test_同一主题重复回填不会在索引里翻倍(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for _ in range(2):
+                bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])
+            self.assertEqual(len(self.read_json(tmp)['articles']), 1)
+
+    def test_全量收尾后不再自称是残的(self):
+        """先前只回填了 AI 的一天，被全量补完之后标记必须消失 —— 否则它永远被当成没做完。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])
+            bf.write_day([article(title='一篇散文', topic='文学', fetched_md='正文第二段。' * 30)],
+                         '2026-03-05', tmp)
+            payload = self.read_json(tmp)
+            self.assertNotIn('topicFilter', payload)
+            self.assertTrue(bf.day_done(tmp, '2026-03-05'), '补全之后就是完整的一天了')
+
+    def test_本来就完整的一天_重做其中一部分不会降级(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp)
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])   # --refresh 的一部分
+            self.assertNotIn('topicFilter', self.read_json(tmp),
+                             '盘上仍然是完整的一天，不该被盖上"只回填了一部分"的章')
+
+    def test_截断标记一旦记上就不撤销(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'], truncated=True)
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])   # 这次没截
+            self.assertTrue(self.read_json(tmp).get('truncated'),
+                            '这一次没截，不等于上一次截掉的那些补回来了')
+
+    def test_索引坏掉时不静默丢条目(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            day = Path(tmp, '2026-03-05')
+            day.mkdir(parents=True)
+            (day / '.articles.json').write_text('{ 这不是 json', encoding='utf-8')
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])
+            self.assertTrue((day / '.articles.json.bad').exists(), '读不了的原文件要留下来')
+            self.assertEqual(len(self.read_json(tmp)['articles']), 1)
+
+    def test_重复的_topic_参数两个都要读到(self):
+        """`--topic ai --topic AI`（**非法值在前**）必须被拒。
+
+        顺序是有讲究的：`--topic AI --topic ai` 判别不了任何东西 —— 只读最后一个参数的实现
+        拿到 `ai` 也照样报错，看起来一样（这一版最初就是这么写的，变异检查没变红才发现）。
+        把非法值放在**前面**，只读最后一个的实现就会拿到合法的 `AI`、一路跑到连库那一步，
+        在测试环境里以异常而不是返回码暴露出来。同仓库 `article_notes.py` 的 `--topic` 本就
+        是可重复的，照那边习惯写却静默只做一个主题，是我们要防的那类"安静地少做事"。
+        """
+
+        class Out(io.StringIO):
+            def reconfigure(self, **_):
+                pass
+
+        argv = ['backfill_articles.py', '--since', '2026-03-01', '--until', '2026-03-02',
+                '--topic', 'ai', '--topic', 'AI']
+        buffer = Out()
+        with mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(buffer):
+            rc = bf.main()
+        self.assertEqual(rc, 1, '第一个 --topic 里的 ai 不合法，应当被拒')
+        self.assertIn('合法值', buffer.getvalue())
+
+    def test_主题解析_可重复与逗号两种写法(self):
+        """`--topic` 的两种写法都要展开对。
+
+        为什么不靠命令行去测：**只断言"被拒"是分不出对错的** —— 把 `--topic` 改回单值之后，
+        `for chunk in 'AI'` 会逐字符迭代，每个字符都不在分类法里，于是它照样"被拒"，看着一样。
+        所以直接钉解析本身，正反两个方向都钉住。
+        """
+        self.assertEqual(bf.parse_topics(['AI']), ['AI'])
+        self.assertEqual(bf.parse_topics(['AI', '学术']), ['AI', '学术'], '可重复')
+        self.assertEqual(bf.parse_topics(['AI,学术']), ['AI', '学术'], '逗号')
+        self.assertEqual(bf.parse_topics(['AI, 学术', '文学']), ['AI', '学术', '文学'], '混着来')
+        self.assertEqual(bf.parse_topics(['AI,,学术']), ['AI', '学术'], '空段要丢掉')
+        self.assertEqual(bf.parse_topics([]), [])
+        self.assertEqual(bf.parse_topics('AI,学术'), ['AI', '学术'],
+                         '传字符串也当单个处理 —— 逐字符迭代会让整批看起来像"参数拼错"')
+        self.assertEqual(bf.parse_topics(''), [])
+
     def test_拼错的主题在碰库之前就被拒(self):
         """`--topic ai`（小写）会静默筛出 0 篇，然后报一句"没有要处理的"——看着像那天本来就没文章。
 
