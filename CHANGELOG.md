@@ -7,6 +7,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 ### Added
+- **`backfill_articles.py --topic` fetches one topic instead of a whole day - and a day fetched that way knows it is
+  partial.** The filter is the classifier the script already had: `_guess_topic` reads only the article's title and its
+  account name, never the body, so `--topic AI` selects exactly the articles a full run would have filed under `AI`.
+  The saving is the point - over 2025-09-05 ~ 2026-03-02 the untouched backlog is 9,207 articles across 156 days
+  (official accounts only: `gh_%`), 1,758 of them AI, and because 5,278 of the 9,207 already hold enough text in the
+  database a full run needs **3,929** network fetches against the AI run's **1,208**. What makes it safe rather than merely convenient is the bookkeeping: the day
+  records `topicFilter` in `.articles.json` and names the missing topics in its README, and `day_done` refuses to call
+  it finished, so a later full run still covers those days. Without that marker the other five topics would have been
+  dropped with nothing to report it - the same shape as the `backfilled`-marker mistake of 2026-09-28 (D-060). The
+  filter is applied inside `write_day` too, so a caller that forgets cannot stamp "only AI" on a directory holding all
+  six topics. An unknown `--topic` is rejected before the database is opened: a typo would otherwise select zero
+  articles and report "nothing to do", which is indistinguishable from a day that genuinely had none.
 - **Two more behaviour-eval cases cover the tools that had no testable data at all.** `daily-review`
   (`get_review`) and `knowledge-overview` (`get_concepts`) both read directories rather than services, and
   with the eval running in a temporary home those directories are always empty - which is why neither tool
@@ -105,6 +117,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   to equal the old ball image exactly. If your system asks for reduced motion, the eyes stay still.
 
 ### Fixed
+- **A day backfilled with `--limit-per-day` reported itself as complete.** The day was sliced, written, and then
+  `day_done` saw a non-empty article list and skipped it from then on, so everything past the limit was silently out
+  of scope - and had been since the flag was added. Such a day now carries a `truncated` marker and is redone on the
+  next run. Note the behaviour change: a limited day is no longer incremental, so re-running it re-fetches the same
+  first N articles. Written down as D-060 alongside `--topic`, because it is the same defect - an incomplete
+  criterion read as "done".
 - **The subscription-account database key was derived in three places, and two of them could never
   have worked.** `chat_stats.py` and `mcp_bridge.py` read `bizKey` / `bizSalt` from the configuration -
   two keys that do not exist on this machine, because WeChat 4.x derives each database's key from the

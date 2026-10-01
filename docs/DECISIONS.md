@@ -1403,6 +1403,44 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-060: A backfilled day records which topics it holds, because "the file exists" is not "the day is done"
+
+**Status:** Active
+
+**Decision.** `backfill_articles.py` can fetch one topic instead of a whole day (`--topic AI`), and a day written
+that way is **partial and says so**. It uses the classifier the script already had - `_guess_topic`, which reads only
+the title and the account name and never the article body - so filtering first selects exactly the articles a full run
+would have filed under that topic. There is no second criterion. What is new is the bookkeeping: `.articles.json`
+carries `topicFilter`, the README states which topics are missing, and `day_done` refuses to call that day complete,
+so a later full run still covers it.
+
+**Reason: one truncation prevented, and one found already live.** Without the marker, a day holding only its AI
+articles looks finished - the md files exist, `.articles.json` exists, and `day_done` asked nothing more than "is the
+list non-empty". The other five topics would never be fetched and **nothing would report it**, which is the failure
+shape this repository has already paid for once: `--vault-sync` was keyed off a `backfilled` marker that only one of
+its two writers sets, so 12 days were never copied *and* never reported as skipped (2026-09-28, 187 → 199 days).
+Checking for this one turned up the same defect already shipped in `--limit-per-day`: the day is sliced, written, and
+then reads as done, so everything past the limit was silently out of scope forever. It is recorded in the same marker
+(`truncated`) because it is the same mechanism, and it is a **behaviour change** - a limited day is now redone on the
+next run rather than skipped.
+
+The filtering is applied **inside `write_day`** as well as at the call site. If only the caller filtered, a caller
+that forgot to would write all six topic directories and stamp "only AI" on them; a marker that lies is worse than no
+marker, and this is the only way to make the two structurally unable to disagree.
+
+**Consequences.** `.articles.json` gains two optional keys; a full run's output is byte-identical to before, so no
+existing output needs migrating, and `day_done` reads a missing `topicFilter` as "complete" - which is also what the
+days already on disk mean. `--topic` changes no criterion: over 2025-09-05 ~ 2026-03-02 the script's own classifier
+puts **1,758 of 9,207** in-scope articles in `AI` (5-day sample: 300 → 66, the same share the daily pipeline reports
+over the 3,498 articles already backfilled). That figure is the tool's **keyword** view and not the daily line's model view -
+these articles have never been through a model, which is why the script can pre-filter at all, and why the count is
+labelled as the keyword's. The scope is official accounts only (`gh_%`), which is what the script queries - an earlier
+count over every session in `Name2Id` read 10,880 and was wrong by 1,673 articles that live in non-official
+conversations and that this path never fetches. Anything scripted against a partially backfilled day must read `topicFilter` rather than
+infer completeness from the presence of `.articles.json`. An unknown `--topic` is rejected before the database is
+opened, since a typo would otherwise select 0 articles and report "nothing to do" - indistinguishable from a day that
+genuinely had none.
+
 ## D-059: The ball's eyes follow the mouse - and that makes the cursor position a data flow, so it is written down
 
 **Status:** Active

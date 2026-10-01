@@ -6,12 +6,15 @@
 时**都不报错**——笔记会生成、概念页也会有，只是的字段是空的。所以这里把两边的读法
 都钉住，而不是只断言"文件存在"。
 """
+import contextlib
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -286,6 +289,109 @@ class IncrementalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bf.write_day([article(fetched_md='短')], '2026-03-05', tmp)
             self.assertFalse(bf.day_done(tmp, '2026-03-05'))
+
+
+class TopicFilterTests(unittest.TestCase):
+    """`--topic`：只回填一部分主题。
+
+    这一支盯的是**"半天的产出被当成整天"**。它危险的地方在于产物**真的变少了**，而所有
+    "文件在不在"式的检查都还是绿的 —— 唯一能看出区别的是 `.articles.json` 里的标记和
+    `day_done` 的判据。同类的坑这一支记过一次（见 `days_with_articles` 那段注释：
+    拿一个不完整的判据当"做完了"，199 天里有 12 天因此既不被补也不被报出来）。
+    """
+
+    def read_json(self, tmp, day='2026-03-05'):
+        return json.loads((Path(tmp) / day / '.articles.json').read_text(encoding='utf-8'))
+
+    def read_readme(self, tmp, day='2026-03-05'):
+        return (Path(tmp) / day / 'README.md').read_text(encoding='utf-8')
+
+    def test_只回填指定主题_其余不落盘(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            items = [article(title='讲 MCP 的那篇'),
+                     article(title='一篇散文', topic='文学', fetched_md='正文第二段。' * 30)]
+            result = bf.write_day(items, '2026-03-05', tmp, topic_filter=['AI'])
+            dirs = sorted(p.name for p in Path(tmp, '2026-03-05').iterdir() if p.is_dir())
+        self.assertEqual(dirs, ['AI'], '没选的主题不该建目录出来')
+        self.assertEqual(result['written'], 1)
+
+    def test_筛选本身_不传就是不筛(self):
+        items = [article(title='甲', topic='AI'), article(title='乙', topic='文学')]
+        self.assertEqual([a['title'] for a in bf.select_topics(items, ['AI'])], ['甲'])
+        self.assertEqual([a['title'] for a in bf.select_topics(items, ['AI', '文学'])], ['甲', '乙'])
+        self.assertEqual(len(bf.select_topics(items, None)), 2, '不传 = 全要')
+        self.assertEqual(len(bf.select_topics(items, [])), 2)
+
+    def test_部分主题的标记写进了_json_和_README(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])
+            payload, readme = self.read_json(tmp), self.read_readme(tmp)
+        self.assertEqual(payload['topicFilter'], ['AI'])
+        self.assertIn('只回填了', readme, '人读的 README 也要说清这一天是残的')
+        self.assertIn('AI', readme)
+
+    def test_全量的产出与以前逐字节同形_没有那两个键(self):
+        """全量路径**不能**多出标记键。
+
+        `day_done` 把"没有 `topicFilter`"读作"完整的一天"，所以这个键的存在与否就是判据本身；
+        顺手也给旧的天保住了格式（它们在盘上本来就没有这个键）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp)
+            payload, readme = self.read_json(tmp), self.read_readme(tmp)
+        self.assertNotIn('topicFilter', payload)
+        self.assertNotIn('truncated', payload)
+        self.assertTrue(payload['backfilled'], '原有的键一个都不能少')
+        self.assertNotIn('只回填了', readme)
+
+    def test_只回填过一部分的天_全量时必须重做(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])
+            self.assertFalse(bf.day_done(tmp, '2026-03-05'),
+                             '只回填过 AI 的一天，跑全量时必须重做，否则其余主题永久漏掉')
+            self.assertTrue(bf.day_done(tmp, '2026-03-05', ['AI']),
+                            '同样只要 AI 的话就不必再抓一遍')
+
+    def test_要的比存过的多就得重做(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp, topic_filter=['AI'])
+            self.assertFalse(bf.day_done(tmp, '2026-03-05', ['AI', '学术']))
+            self.assertTrue(bf.day_done(tmp, '2026-03-05', ['AI']))
+
+    def test_完整的一天对任何主题都算做完(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp)
+            self.assertTrue(bf.day_done(tmp, '2026-03-05', ['AI']),
+                            '完整的一天里当然已经有 AI 了，不该为它再抓一遍')
+            self.assertTrue(bf.day_done(tmp, '2026-03-05'))
+
+    def test_被截过的一天从来不算做完(self):
+        """`--limit-per-day` 截掉的那些既没抓、也看不出来，所以那天永远不算完成。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bf.write_day([article()], '2026-03-05', tmp, truncated=True)
+            self.assertTrue(self.read_json(tmp)['truncated'], '截断要留下痕迹')
+            self.assertFalse(bf.day_done(tmp, '2026-03-05'))
+            self.assertFalse(bf.day_done(tmp, '2026-03-05', ['AI']))
+
+    def test_拼错的主题在碰库之前就被拒(self):
+        """`--topic ai`（小写）会静默筛出 0 篇，然后报一句"没有要处理的"——看着像那天本来就没文章。
+
+        所以必须在**读配置/连库之前**就报错并列出合法值。这条测试同时也是"它没有走到连库"的
+        证明：真走到那一步，测试会因为没有微信库而炸，而不是返回 1。
+        """
+
+        class Out(io.StringIO):
+            def reconfigure(self, **_):   # main() 开头会调它，StringIO 没有
+                pass
+
+        argv = ['backfill_articles.py', '--since', '2026-03-01', '--until', '2026-03-02',
+                '--topic', 'ai']
+        buffer = Out()
+        with mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(buffer):
+            rc = bf.main()
+        self.assertEqual(rc, 1)
+        self.assertIn('合法值', buffer.getvalue())
+        self.assertIn('AI', buffer.getvalue())
 
 
 class VaultSyncSelectionTests(unittest.TestCase):

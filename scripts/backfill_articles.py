@@ -4,6 +4,7 @@
 用法:
   python scripts/backfill_articles.py --since 2026-03-01 --until 2026-08-31 --dry-run --json
   python scripts/backfill_articles.py --since 2026-03-01 --until 2026-08-31 --workers 12 --yes
+  python scripts/backfill_articles.py --since 2025-09-05 --until 2026-03-02 --topic AI --yes
 
 ## 为什么不是直接跑 `pipeline run --date`
 
@@ -26,6 +27,17 @@
 **图片型文章抓不到正文。** 实测 3/4、7/4 两天：27/40、44/60 有正文，其余是图文消息
 （内容全在图片里），清洗掉图片与链接后不足 100 字，与 `biz_daily` 一样被跳过。这不是
 抓取失败，是那类文章本来就没有文字。所以"2 万篇"这个量级是有正文的部分，不是总量。
+
+## `--topic`：只回填一部分主题（先筛后抓）
+
+`--topic AI` 用的就是本脚本自己判主题的那套 `_guess_topic`（只看标题与号名、**不看正文**），
+所以它筛出来的 AI 集合，与全量跑完之后落在 `AI/` 目录里的那批**逐个相同** —— 不是另立一套
+口径，只是省掉了其余主题的抓取（实测 2025-09-05~2026-03-02 那段：全量 10,880 篇里 AI 占
+1,759 篇，抓取量约 1/6）。
+
+**代价必须写出来：那一天就不再是完整的一天。** 所以 `.articles.json` 里会多一个 `topicFilter`
+（README 里也写明），`day_done` 据此在之后跑**全量**时**不会**跳过这一天。少了这一步，那天
+其余五个主题的文章会被永久漏掉、而且不报错 —— 文件在、json 在、"已回填"看起来处处成立。
 """
 import argparse
 import hashlib
@@ -121,6 +133,18 @@ def apply_topics(articles):
     return articles
 
 
+def select_topics(articles, topics):
+    """只留下选中主题的文章；`topics` 为空/None 表示全要（原样返回）。
+
+    必须在 `apply_topics` **之后**调：主题是那个函数的输出。顺序对"选中哪些"没有影响
+    （`_guess_topic` 逐篇独立、只看标题与号名），所以筛出来的集合与全量跑完落在对应主题
+    目录里的那批逐个相同。
+    """
+    if not topics:
+        return articles
+    return [a for a in articles if a.get('topic') in topics]
+
+
 def fetch_bodies(articles, workers: int, log=None):
     """并发把这批文章的正文抓回来，写进 `fetched_md`。
 
@@ -151,13 +175,25 @@ def fetch_bodies(articles, workers: int, log=None):
     return {'attempted': len(todo), 'ok': ok}
 
 
-def write_day(articles, day, out_root):
+def write_day(articles, day, out_root, topic_filter=None, truncated=False):
     """落盘：`<日期>/<主题>/<来源>-<标题>.md` + `.articles.json` + README。
 
     格式与 `biz_daily` 一致——`create_reading_notes` 与 `compile_wiki` 都按那个形状读。
     正文那段写 `## AI 摘要`（内容用文章自带的 digest）：**本脚本不调模型**，所以这里
     放的只能是原文已有的东西，不能假装是生成的摘要。
+
+    传了 `topic_filter`（`--topic`）时，这里会**再筛一次**并在元数据里留下 `topicFilter`：
+
+    - 筛在**这里**做，是为了让标记不可能撒谎。如果筛只发生在调用方（`main`），那么有人
+      漏调那一步时，`write_day` 会把六个主题全写出去、同时盖上"只回填了 AI"的章 ——
+      一个自称只回填了一半、实际写满了的目录，比不写标记更坏。
+    - README 里也写明这一天是哪几个主题。**这两处不是装饰**：一天只回填了一半却看起来像
+      完整的一天，是这份产出唯一会"静默变少"的方式（见 `day_done`）。
+    - 传了 `truncated`（`--limit-per-day` 截过）时同理，多一个 `truncated` 标记。
+
+    `truncated` 只影响元数据（它记录的是"调用方截过"，不宜在这里重算——截在调用方发生）。
     """
+    articles = select_topics(articles, topic_filter)
     groups, fallbacks = _group_by_topic(articles)
     out_dir = Path(out_root) / day
     written, skipped = [], []
@@ -201,13 +237,25 @@ def write_day(articles, day, out_root):
             written.append(article)
     out_dir.mkdir(parents=True, exist_ok=True)
     serializable = [_serializable_article(a, day) for a in written]
+    payload = {'date': day, 'generated_at': datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S'),
+               'backfilled': True, 'articles': serializable}
+    # 只在**确实是一部分**的时候才加这两个键：全量回填写出来的文件与以前逐字节相同，
+    # 而 `day_done` 把"没有 topicFilter"读作"完整的一天"。缺了它就等于把半天的产出
+    # 冒充成整天——这正是这条路径唯一能静默丢东西的地方。
+    if topic_filter:
+        payload['topicFilter'] = sorted(topic_filter)
+    if truncated:
+        payload['truncated'] = True
     (out_dir / '.articles.json').write_text(
-        json.dumps({'date': day, 'generated_at': datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S'),
-                    'backfilled': True, 'articles': serializable},
-                   ensure_ascii=False, indent=2), encoding='utf-8')
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    if topic_filter:
+        scope = ('**只回填了 %s 主题** —— 这一天并非全部文章，其余主题还没拉。\n'
+                 % '、'.join(sorted(topic_filter)))
+    else:
+        scope = ''
     (out_dir / 'README.md').write_text(
         '# 公众号文章 — %s（历史回填）\n\n共 %d 篇。正文由 `backfill_articles.py` 抓取，'
-        '**未下载图片、未调用模型**。\n' % (day, len(written)), encoding='utf-8')
+        '**未下载图片、未调用模型**。\n%s' % (day, len(written), scope), encoding='utf-8')
     return {'written': len(written), 'skipped': len(skipped),
             'fallbackTopics': fallbacks, 'skipSample': skipped[:3]}
 
@@ -277,15 +325,36 @@ def days_with_articles(out_root) -> list:
     return days
 
 
-def day_done(out_root, day) -> bool:
-    """这一天已经回填过了吗（增量：免得重跑把同样的文章再抓一遍）。"""
+def day_done(out_root, day, topics=None) -> bool:
+    """这一天**我们要的那些主题**已经回填过了吗（增量：免得重跑把同样的文章再抓一遍）。
+
+    `topics=None` 表示"全量"。**判据不只是"写过"**，还要看写的是不是完整的一天：
+
+    - 只回填过 AI 的一天，`.articles.json` 里带着 `topicFilter`。此后跑**全量**时必须
+      **不能**被跳过 —— 否则那天其余五个主题的文章会被永久漏掉，而且不报错：文件在、
+      `.articles.json` 在、"已回填"看起来成立。这就是 `days_with_articles` 那条注释里
+      记的同一类事故（拿一个不完整的判据当"做完了"）。
+    - 反向：`--topic AI` 之后又跑 `--topic AI,学术`，存过的是子集，也要重做；
+      而存过的**覆盖**了这次要的（或那天本来就完整），才算做完。
+    - 被 `--limit-per-day` 截过的一天**从来不算做完**：截掉的那些既没抓、也看不出来。
+    """
     path = Path(out_root) / day / '.articles.json'
     if not path.exists():
         return False
     try:
-        return bool(json.loads(path.read_text(encoding='utf-8')).get('articles'))
+        payload = json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return False
+    if not payload.get('articles'):
+        return False
+    if payload.get('truncated'):
+        return False
+    stored = payload.get('topicFilter')
+    if stored is None:
+        return True            # 完整的一天，所有主题都在
+    if topics is None:
+        return False           # 只要过一部分，全量的活还没干
+    return set(stored) >= set(topics)
 
 
 def main():
@@ -300,7 +369,13 @@ def main():
     parser.add_argument('--vault-sync', action='store_true',
                         help='只做这件事：把已回填的天补拷进 Vault 的 Sources（本地，不抓取、不调模型）')
     parser.add_argument('--workers', type=int, default=8, help='抓正文的并发数（默认 8）')
-    parser.add_argument('--limit-per-day', type=int, default=0, help='每天最多抓几篇（0=不限）')
+    parser.add_argument('--limit-per-day', type=int, default=0,
+                        help='每天最多抓几篇（0=不限）。设了就不是完整的一天：'
+                             '截掉的那些既没抓也看不出来，所以增量判断会重做这天')
+    parser.add_argument('--topic', default='',
+                        help='只回填这些主题（逗号分隔，合法值 %s），不写=全部。'
+                             '只回填过一部分主题的一天，之后跑全量时不会被跳过。'
+                             % '/'.join(TOPICS))
     parser.add_argument('--refresh', action='store_true', help='已回填过的天也重做（默认跳过）')
     parser.add_argument('--max-days', type=int, default=0, help='最多处理几天（0=不限，用于试跑）')
     parser.add_argument('--dry-run', action='store_true', help='只报到要抓多少，不抓不写')
@@ -319,6 +394,17 @@ def main():
         print('--until 不能早于 --since'); return 1
     if args.workers < 1:
         print('--workers 要 ≥ 1'); return 1
+    picked = [t.strip() for t in str(args.topic).split(',') if t.strip()]
+    unknown = [t for t in picked if t not in TOPICS]
+    if unknown:
+        # 拼错一个词（比如 `--topic ai` 小写）会静默筛出 0 篇、然后报一句"没有要处理的"——
+        # 看着像"这天本来就没文章"。所以这里当场报错并列出合法值，放在碰库之前。
+        message = ('--topic 里有不在分类法里的主题：%s\n合法值：%s'
+                   % ('、'.join(unknown), '、'.join(TOPICS)))
+        print(json.dumps({'success': False, 'error': message}, ensure_ascii=False)
+              if args.json else message)
+        return 1
+    topics = sorted(set(picked)) or None
 
     if args.vault_sync:
         # **补拷模式**：不抓取、不调模型，只把已经躺在 biz-daily 的那几天补进 Vault。
@@ -328,6 +414,8 @@ def main():
         # 重复跑是**安全**的：`copy_to_vault` 逐 md 覆盖、不删别的东西，而它现在还会洗残留，
         # 所以"再补一次"同时也是"把库里那一层重新洗一遍"（2026-09-28 就是这么把 1,755 篇
         # 漏网的补上的 —— 那天被 `backfilled` 标记挡在门外的 12 天）。
+        if topics:
+            print('提示：--vault-sync 只把**已回填的** md 补拷进 Vault，--topic 对这一步不起作用。')
         days = days_with_articles(args.out)
         if args.max_days:
             days = days[:args.max_days]
@@ -374,28 +462,35 @@ def main():
 
     todo = []
     for day in days:
-        if not args.refresh and day_done(args.out, day):
+        if not args.refresh and day_done(args.out, day, topics):
             continue
         articles = collect_articles(cursor, users, name_map, day)
+        # 筛选在 `collect_articles` **之后**：主题是它内部 `apply_topics` 的输出，
+        # 先筛就无从筛起（理由与等价性写在 `select_topics` 上）。
+        articles = select_topics(articles, topics)
+        # 截断要在**筛完之后**判断：`--limit-per-day 5 --topic AI` 该解作"每天 5 篇 AI"。
+        truncated = bool(args.limit_per_day) and len(articles) > args.limit_per_day
         if args.limit_per_day:
             articles = articles[:args.limit_per_day]
         if articles:
-            todo.append((day, articles))
+            todo.append((day, articles, truncated))
 
     if args.dry_run:
-        total = sum(len(items) for _, items in todo)
-        need = sum(1 for _, items in todo for a in items
+        total = sum(len(items) for _, items, _ in todo)
+        need = sum(1 for _, items, _ in todo for a in items
                    if len(body_without_media(a.get('local_text'))) < MIN_BODY_CHARS and a.get('url'))
         payload = {
             'success': True, 'dryRun': True, 'action': 'backfill-articles',
+            'topics': topics or '全部',
             'days': len(todo), 'articles': total, 'needFetch': need,
             'workers': args.workers, 'invokesAI': False, 'downloadsImages': False,
             'readsLocalData': True,
             'note': '只抓正文，不下图片、不调用模型；抓完还要跑 vault notes 与 article-notes',
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json
-              else '%d 天、%d 篇（其中 %d 篇要联网抓正文），并发 %d'
-                   % (len(todo), total, need, args.workers))
+              else '%d 天、%d 篇（其中 %d 篇要联网抓正文），并发 %d，主题 %s'
+                   % (len(todo), total, need, args.workers,
+                      '全部' if not topics else '、'.join(topics)))
         conn.close()
         return 0
 
@@ -404,23 +499,25 @@ def main():
         conn.close()
         return 0
     if not args.yes:
-        print('会抓 %d 天、%d 篇的正文（不调模型）。加 --yes 确认。'
-              % (len(todo), sum(len(i) for _, i in todo)))
+        print('会抓 %d 天、%d 篇的正文（不调模型，主题 %s）。加 --yes 确认。'
+              % (len(todo), sum(len(i) for _, i, _ in todo),
+                 '全部' if not topics else '、'.join(topics)))
         conn.close()
         return 1
 
     report = []
-    for index, (day, articles) in enumerate(todo, 1):
-        print('\n[%d/%d] %s — 库里 %d 篇' % (index, len(todo), day, len(articles)))
+    for index, (day, articles, truncated) in enumerate(todo, 1):
+        print('\n[%d/%d] %s — 选中 %d 篇' % (index, len(todo), day, len(articles)))
         fetch = fetch_bodies(articles, args.workers, log=print)
-        result = write_day(articles, day, args.out)
+        result = write_day(articles, day, args.out, topic_filter=topics, truncated=truncated)
         print('    写入 %d 篇，跳过 %d 篇（正文太短），主题兜底 %d 篇'
               % (result['written'], result['skipped'], result['fallbackTopics']))
         if args.vault_copy:
             sync = copy_to_vault(day, args.out, args.vault_root)
             print('    入 Vault 的 Sources: %d 个 md' % sync['copied'])
         report.append({'date': day, 'inDb': len(articles), 'fetched': fetch['ok'],
-                       'written': result['written'], 'skippedThin': result['skipped']})
+                       'written': result['written'], 'skippedThin': result['skipped'],
+                       'truncated': truncated})
     conn.close()
 
     total_written = sum(r['written'] for r in report)
