@@ -145,6 +145,14 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
   那既不可复现，也不是发布这件事该做的判断。
 - **补历史的 Release 要显式 `--latest=false`。** `gh release create` 默认会把新页面标成 Latest ——
   给 1.8.x 补账时会把 1.9.0 从 Latest 上挤下去。补完用 `gh release list` 确认 Latest 还是最新的那个。
+- **发布前先确认工作区干净**（`git status` 为空，HEAD 就是你打算打 tag 的那次提交）。
+  理由不是形式主义，是实测出来的：2026-10-02 给 1.8.0/1.8.1/1.8.2 补 tag 时做了逐文件溯源
+  （拿 registry 上的 tarball 与 `git archive <tag>` 比，行尾差异不算），结果是 1.8.1 与 1.8.2 的
+  发布源码与 tag 树**一致**，而 **1.8.0 的包里有两个文档文件在 git 里找不到对应状态**：
+  `docs/DECISIONS.md` 与更晚的一次提交一致，`README.en.md` 则**与任何提交都不一致**（比 tag 那份
+  长约 7,000 字符）。代码部分没问题（逐字节相同），但**那次发布出去的文档再也回不来** ——
+  这正是"不把 npm 发布包当作 GitHub 源码的实时镜像；先确认版本和提交"这条规矩要防的事。
+
 
 ## 发布后
 
