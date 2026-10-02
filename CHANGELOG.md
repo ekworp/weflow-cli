@@ -55,8 +55,9 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   drag speed and leaned **against** the direction of travel, the way something carried lags behind; the user asked
   for something more specific - it should start swinging **when picked up**, and the side it leans towards should be
   the side you are moving towards. So it is now a continuous sine (a 900 ms period, +/-12 degrees) with a **bias
-  towards the direction of travel** of up to 9 degrees on top of it: drag right and the rightward swings reach
-  about 21 degrees while the leftward ones are pressed down to about 3, and the reverse for a leftward drag. A
+  towards the direction of travel** of up to 10 degrees on top of it, **scaled by how fast you are moving**: drag
+  right and the rightward swings reach about 22 degrees while the leftward ones are pressed down to about 2, and
+  the reverse for a leftward drag. A
   click sways too, since a click *is* a pick-up - the 4-pixel threshold only decides whether the gesture counts as a
   drag, which is why the old "a click must not tilt" assertion is **removed rather than inverted**. Rotation about
   the ball's centre preserves every pixel's distance from it, so the amplitude is **a matter of taste, not of
@@ -71,6 +72,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   testing showed could not fail on the decay bug above, the negative peak it depends on never falling in that
   window.
 
+- **...and it leans harder the faster you move.** The bias above is scaled by the drag speed, but the first cut
+  saturated it at **450 px/s - slower than any real drag** - so the speed term was inert in practice and the user
+  reported the amplitude as "fixed: move it left quickly and it should sway further left". The saturation point is
+  now 1800 px/s, and the curve is pinned by a test on a **virtual clock** (see below): 100 px/s reaches 12.45
+  degrees, 400 reaches 13.78, 900 reaches 16.08, 1800 reaches 20.26, so a slow nudge and a fast flick differ by
+  about 6 px of travel at the ball's rim (a 96 px circle) - visible, and monotone in between. `DANGLE_FULL_SPEED`
+  is a taste value, not a measurement: lower it for a more sensitive ball, raise it for a stiffer one.
+- **`test/panel-dangle.test.ts` runs on a virtual clock, because a real one could not control the thing it was
+  testing.** The speed cases set the speed as *pixels moved / milliseconds waited*, and that only means something
+  if the wait is the wait you asked for: measured here, `await wait(20)` actually took 25-31 ms (Windows timer
+  granularity), so "slow" was never the speed the test believed. Mutation testing found the consequence - restoring
+  the 450 px/s saturation above, **the very bug the user reported**, left the suite green. The harness now replaces
+  `setTimeout` and `performance.now` and advances time itself, which makes the speed exact, removes the jitter, and
+  cuts the file from 5.6 s to under a second. `setInterval` was already stubbed, so the status poll still never
+  runs.
 - **The panel can show you what the assistant remembers about you.** Those long-term facts were previously visible
   only by opening `~/.weflow-cli/assistant_memory.json` by hand, so the assistant could act on a belief the user had
   no window into. A `记忆` button in the bubble header fetches `GET /api/memory` - token-gated like every other
