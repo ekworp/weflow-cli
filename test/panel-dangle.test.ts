@@ -204,6 +204,21 @@ test('换形态也要停并回正（托盘/快捷键那条路）', async () => {
   } finally { app.window.close() }
 })
 
+test('被拎着时 body 上必须有 ball-lift（那条 CSS 只挂在它下面，漏了就等于"算了不画"）', async () => {
+  // 晃动那条规则是 `body.ball-lift #ball { transform: rotate(var(--dangle-deg)) }`。也就是说
+  // 上面所有断言读的 `--dangle-deg` 只是**算出来的数**：`ball-lift` 没挂上，CSS 就不生效，
+  // 球看起来一动不动，而每一条断言照样全绿。这条把"算"与"画"之间的那根线也钉住。
+  const app = await boot()
+  try {
+    app.press()
+    app.advance(400)                       // 走完起势那几帧，停在悬空
+    assert.ok(app.window.document.body.classList.contains('ball-lift'), '拎起来这一段里该有 ball-lift')
+    app.release()
+    app.advance(900)                       // 落地那几帧走完
+    assert.ok(!app.window.document.body.classList.contains('ball-lift'), '落地之后要摘掉，否则球会一直挂着晃动状态')
+  } finally { app.window.close() }
+})
+
 test('reduced-motion：一点不摆', async () => {
   const app = await boot({ reducedMotion: true })
   try {
