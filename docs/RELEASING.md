@@ -137,6 +137,15 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
 两个源结果不一致 → 是镜像同步问题，不是包的问题：
 `npm install -g weflow-cli@<版本> --registry=https://registry.npmjs.org` 立刻可用。
 
+## 建 GitHub Release 时的两个坑（2026-10-02 补 1.8.0/1.8.1/1.8.2 时实测）
+
+- **正文上限 125,000 字符。** 1.8.0 那段 CHANGELOG 是 140,154 字符，直接贴会被 API 拒：
+  `HTTP 422 ... body is too long (maximum is 125000 characters)`。处理方式是**按 `### ` 小节边界
+  机械截断**（放到装不下为止），末尾补一句"完整条目在 `CHANGELOG.md`"。**不要凭"哪几段更重要"去挑**：
+  那既不可复现，也不是发布这件事该做的判断。
+- **补历史的 Release 要显式 `--latest=false`。** `gh release create` 默认会把新页面标成 Latest ——
+  给 1.8.x 补账时会把 1.9.0 从 Latest 上挤下去。补完用 `gh release list` 确认 Latest 还是最新的那个。
+
 ## 发布后
 
 - 回到相关 issue 回复「已发布 + 升级方式」
