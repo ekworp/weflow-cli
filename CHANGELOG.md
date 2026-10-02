@@ -54,14 +54,15 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   played the "picked up" sequence, but the carry itself was stiff. The first version derived a static tilt from the
   drag speed and leaned **against** the direction of travel, the way something carried lags behind; the user asked
   for something more specific - it should start swinging **when picked up**, and the side it leans towards should be
-  the side you are moving towards. So it is now a continuous sine (a 900 ms period, +/-12 degrees) with a **bias
-  towards the direction of travel** of up to 10 degrees on top of it, **scaled by how fast you are moving**: drag
-  right and the rightward swings reach about 22 degrees while the leftward ones are pressed down to about 2, and
-  the reverse for a leftward drag. A
+  the side you are moving towards. So it is now a single sine (a 900 ms period) whose **amplitude and lean both
+  come from one "energy" value** read off the drag speed: the swing runs from 6 degrees when it is hanging still
+  (picking it up is enough to start it) up to 16, and the lean towards the direction of travel runs from 0 to 6 on
+  top of that - a full-speed fling reaches about 22 degrees on the side you are moving towards and dips only to
+  about -10 on the other. A
   click sways too, since a click *is* a pick-up - the 4-pixel threshold only decides whether the gesture counts as a
   drag, which is why the old "a click must not tilt" assertion is **removed rather than inverted**. Rotation about
   the ball's centre preserves every pixel's distance from it, so the amplitude is **a matter of taste, not of
-  budget** (a translation would have had to fit inside the circle's remaining 2%). The bias decays after 1.2 s of
+  budget** (a translation would have had to fit inside the circle's remaining 2%). The energy decays after 1.2 s of
   stillness, **deliberately longer than the 900 ms period**: the 240 ms tried first expired before the second peak
   arrived, so a leftward drag merely damped the rightward swing (measured -12.6 degrees, indistinguishable from not
   dragging at all) instead of amplifying the leftward one - half of the request. The CSS transition was shortened
@@ -72,13 +73,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   testing showed could not fail on the decay bug above, the negative peak it depends on never falling in that
   window.
 
-- **...and it leans harder the faster you move.** The bias above is scaled by the drag speed, but the first cut
-  saturated it at **450 px/s - slower than any real drag** - so the speed term was inert in practice and the user
-  reported the amplitude as "fixed: move it left quickly and it should sway further left". The saturation point is
-  now 1800 px/s, and the curve is pinned by a test on a **virtual clock** (see below): 100 px/s reaches 12.45
-  degrees, 400 reaches 13.78, 900 reaches 16.08, 1800 reaches 20.26, so a slow nudge and a fast flick differ by
-  about 6 px of travel at the ball's rim (a 96 px circle) - visible, and monotone in between. `DANGLE_FULL_SPEED`
-  is a taste value, not a measurement: lower it for a more sensitive ball, raise it for a stiffer one.
+- **...and the whole swing grows with the speed - scaling only the lean was not enough.** The speed term was inert
+  from the start there: it saturated at **450 px/s, slower than any real drag**. Raising that to 1800 px/s fixed
+  the lean, and the ball still looked the same at any speed, because the swing itself was a constant +/-12 degrees
+  - the part you actually see was fixed, and the speed only moved a 10-degree lean on top of it. The user said so
+  twice ("move it left quickly and it should sway further left... currently fixed"), and the second time named the
+  gesture explicitly, which is what separated it from the tickle: the swing is the one that renders only while the
+  ball is held (`body.ball-lift`), the tickle is the 4-degree tilt you get by running the pointer across it, and
+  the two cannot co-occur (`canTickle()` excludes `ball-lift`). Both quantities now come from the single energy
+  value described above, and the curve is pinned on a **virtual clock** (see below): hanging still is 6.0 degrees,
+  100 px/s 6.7, 400 px/s 8.9, 900 px/s 12.6, and 1800 px/s 19.3 for a single move - a continuous drag reaches
+  about 22 - so a slow nudge and a fast flick differ by about 10 px of travel at the rim of the 96 px ball, and
+  everything in between is monotone. `DANGLE_FULL_SPEED` is a taste value, not a measurement: lower it for a more
+  sensitive ball, raise it for a stiffer one.
 - **`test/panel-dangle.test.ts` runs on a virtual clock, because a real one could not control the thing it was
   testing.** The speed cases set the speed as *pixels moved / milliseconds waited*, and that only means something
   if the wait is the wait you asked for: measured here, `await wait(20)` actually took 25-31 ms (Windows timer

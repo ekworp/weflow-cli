@@ -746,37 +746,44 @@ async function openMemory() {
 if (memoryButton) memoryButton.addEventListener('click', () => { void openMemory() })
 const memoryClose = document.getElementById('memory-close')
 if (memoryClose) memoryClose.addEventListener('click', closeMemory)
-
-  // ------------------------------------------ 被拎着的时候"左右晃"（2026-10-04 重做）
+  // ------------------------------------------ 被拎着的时候"左右晃"（2026-10-02，改了两轮）
   //
-  // 用户要的是：**一提起来就开始左右晃**（像挂在手里的挂件），而且**往哪边移动，哪边的摆幅就更大**。
-  // 所以不是"按速度给一个静态倾角"，而是：一个持续的**正弦摆动** + 一个跟着移动方向走的**偏心**。
-  // 往左移动 -> 偏心为负 -> 左半边摆幅 = 摆幅 + |偏心|、右半边 = 摆幅 − |偏心|，于是左边明显更大。
-  // 偏心的**大小**跟着速度走（`DANGLE_FULL_SPEED`）：往左甩得快，就往左偏得多；慢慢往左挪，只偏一点点。
+  // 用户要的三件事，按他的原话：
+  //   1.「提起来的时候就开始左右晃动」—— 摆动在**按下**那刻启动，不必先拖；
+  //   2.「往左边移动往左晃动的幅度更大」—— 移动方向带来一个**同向的倾斜**（往左移就偏左）；
+  //   3.「往左移动速度的快，就往左多晃一点」—— 幅度本身**跟速度走**。第三点是后补的：
+  //     前两轮只有"倾斜量"跟速度走，正弦基础摆幅一直是死值 ±12°，于是慢拖与快甩看起来
+  //     "基本一样晃"—— 大头是常数，用户说的"目前固定的"就是这个。
+  //
+  // 所以这里只有一个**劲头**（`dangleAmp`：0 = 静止拎着，1 = 甩得最狠），它同时决定两者：
+  //     摆幅 = MIN + (MAX − MIN) × 劲头            倾斜 = BIAS × 劲头 × 方向
+  // 劲头缓动到目标（15%/帧），所以速度突变时幅度是"长上去"的，不是跳一下。静止拎着时劲头为 0：
+  // 摆幅留在 MIN、倾斜归零 —— 挂在手里的挂件本来就会自己慢慢晃，"提起来就晃"仍然成立。
   //
   // 幅度**没有几何预算**：绕球心转不改变任何像素到球心的距离，所以晃多大都不会被圆裁掉
   // （这正是当初只转不平移的原因）。相对地，跳跃的上移**是有预算的**（内容 125.25 / 半径 128）。
-  const DANGLE_SWING_DEG = 12        // 正弦摆幅
-  const DANGLE_BIAS_DEG = 10         // 移动带来的偏心上限（同侧最大 ~22°）
+  const DANGLE_SWING_MIN_DEG = 6     // 静止拎着时的摆幅（"一提起来就开始晃"的那个最小幅度）
+  const DANGLE_SWING_MAX_DEG = 16    // 甩得最狠时的摆幅
+  const DANGLE_BIAS_MAX_DEG = 6      // 甩得最狠时的同向倾斜（于是同侧峰值 ≈ 16+6 = 22°）
   const DANGLE_PERIOD_MS = 900       // 一个来回
-  // **450 那版太快吃满，于是速度这一项等于不存在。** 用户 2026-10-02 的原话："往左移动速度的快，
-  // 就往左多晃一点，目前固定的" —— 说的就是这个：450 px/s 比任何一次真实拖动都慢（挪一次窗口轻松
-  // 上千），`amp = min(1, speed / DANGLE_FULL_SPEED)` 恒等于 1，偏心永远是满的。
-  // 1800 是**品味值，不是测量值**：慢拖（~400 px/s）约 2°，正常拖（~900）约 5°，快甩（≥1800）吃满 10°。
-  // 快慢之差落在球顶上约 7px（96px 的球），一眼看得出。想更敏感就调小这个数，想更迟钝就调大。
-  const DANGLE_FULL_SPEED = 1800     // 每秒拖多少像素算"甩得最狠"
   const DANGLE_FRAME_MS = 16
-  // **必须比一个摆动周期(900ms)长**：偏心是在移动时涨上去的（15%/帧，约 250ms 到顶），而正弦要 225ms 才到正峰、
-  // 675ms 才到负峰。240ms 那版实测过 —— 往右拖正峰拿满了偏心(+18.9°)，往左拖的负峰却在偏心衰减之后才来，
-  // 于是只有 −12.6°、和没拖过一样。这就是"往左移动往左晃得更大"只剩一半的原因。
-  // 取值只影响**停手之后**（拖着走时每次移动都重置它），所以 1.2 秒 ≠ 手一停就回正，只是慢慢回正。
-  const DANGLE_BIAS_DECAY_MS = 1200  // 停手 1.2 秒后偏心归零（摆动继续，它本来就一直在摆）
+  // 1800 是**品味值，不是测量值**：慢推（~400 px/s）约 9°，快甩（≥1800）约 22°，快慢之差落在球顶
+  // 上约 10px（96px 的球），一眼看得出。想更敏感就调小，想更迟钝就调大。
+  // **450 那版太快吃满，于是速度这一项等于不存在**（用户原话："往左移动速度的快，就往左多晃一点，
+  // 目前固定的"）：450 px/s 比任何一次真实拖动都慢（挪一次窗口轻松上千），amp 恒等于 1。
+  const DANGLE_FULL_SPEED = 1800     // 每秒拖多少像素算"甩得最狠"
+  // **必须比一个摆动周期(900ms)长**：劲头是移动时涨上去的（15%/帧，约 250ms 到顶），而正弦要 225ms
+  // 才到正峰、675ms 才到负峰。240ms 那版实测过 —— 往右拖正峰拿满了劲头，往左拖的负峰却在劲头衰减
+  // 之后才来，于是只有 −12.6°、和没拖过一样：用户要的"往左移动往左幅度大"只剩了一半。
+  // 它只在**停手之后**起作用（拖着走时每次移动都重置它），所以 1.2 秒 ≠ 手一停就回正。
+  const DANGLE_CALM_MS = 1200        // 停手 1.2 秒后劲头归零（摆动继续，只是回到最小幅度）
   let dangleTimer = null
   let dangleDecay = null
   let danglePhase = 0
   let dangleLast = 0
-  let dangleBias = 0
-  let dangleBiasTarget = 0
+  let dangleAmp = 0
+  let dangleAmpTarget = 0
+  let dangleDir = 1
   let dangleLastX = 0
   let dangleLastY = 0
   let dangleLastT = 0
@@ -785,14 +792,15 @@ if (memoryClose) memoryClose.addEventListener('click', closeMemory)
     return typeof performance === 'object' && performance.now ? performance.now() : Date.now()
   }
 
-  /** 每一帧：正弦摆动 + 偏心（偏心缓动到目标，所以方向切换是滑过去的，不是跳）。 */
+  /** 每一帧：正弦摆动 + 同向倾斜，两者都由**劲头**决定（劲头缓动到目标，所以速度突变是长上去的）。 */
   function dangleTick() {
     const now = dangleNow()
     const dt = dangleLast ? Math.min(80, now - dangleLast) : DANGLE_FRAME_MS
     dangleLast = now
     danglePhase += (dt / DANGLE_PERIOD_MS) * 2 * Math.PI
-    dangleBias += (dangleBiasTarget - dangleBias) * 0.15
-    const deg = Math.sin(danglePhase) * DANGLE_SWING_DEG + dangleBias
+    dangleAmp += (dangleAmpTarget - dangleAmp) * 0.15
+    const swing = DANGLE_SWING_MIN_DEG + (DANGLE_SWING_MAX_DEG - DANGLE_SWING_MIN_DEG) * dangleAmp
+    const deg = Math.sin(danglePhase) * swing + DANGLE_BIAS_MAX_DEG * dangleAmp * dangleDir
     document.body.style.setProperty('--dangle-deg', deg.toFixed(2) + 'deg')
     dangleTimer = setTimeout(dangleTick, DANGLE_FRAME_MS)
   }
@@ -809,8 +817,9 @@ if (memoryClose) memoryClose.addEventListener('click', closeMemory)
     }
     danglePhase = 0
     dangleLast = 0
-    dangleBias = 0
-    dangleBiasTarget = 0
+    dangleAmp = 0
+    dangleAmpTarget = 0
+    dangleDir = 1
     document.body.style.setProperty('--dangle-deg', '0deg')
   }
 
@@ -824,7 +833,7 @@ if (memoryClose) memoryClose.addEventListener('click', closeMemory)
     dangleTick()
   }
 
-  /** 拖动的每一次移动：把**偏心**推向移动的方向（同向 —— 往哪边移，哪边摆得更大）。 */
+  /** 拖动的每一次移动：更新**劲头**（跟速度）与**方向**（跟往哪边移）。 */
   function trackDangle(event) {
     if (prefersReducedMotion() || dangleTimer === null) return
     const now = dangleNow()
@@ -835,13 +844,13 @@ if (memoryClose) memoryClose.addEventListener('click', closeMemory)
     dangleLastY = event.screenY
     dangleLastT = now
     const speed = Math.hypot(dx, dy) / dt * 1000
-    const amp = Math.min(1, speed / DANGLE_FULL_SPEED)
-    if (Math.abs(dx) >= 1) dangleBiasTarget = (dx > 0 ? 1 : -1) * amp * DANGLE_BIAS_DEG
+    dangleAmpTarget = Math.min(1, speed / DANGLE_FULL_SPEED)   // 动得越快，摆得越大
+    if (Math.abs(dx) >= 1) dangleDir = dx > 0 ? 1 : -1          // 往哪边移，就往哪边偏（同向）
     if (dangleDecay !== null) clearTimeout(dangleDecay)
     dangleDecay = setTimeout(() => {
       dangleDecay = null
-      dangleBiasTarget = 0          // 停手后偏心归零，但摆动继续
-    }, DANGLE_BIAS_DECAY_MS)
+      dangleAmpTarget = 0             // 停手后劲头归零：摆幅回到最小、倾斜消失，但摆动继续
+    }, DANGLE_CALM_MS)
   }
 
   // ------------------------------------------ 答完了"高兴一下"（2026-10-04）

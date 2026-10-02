@@ -3,7 +3,9 @@
  *
  * 用户 2026-10-02 的原话：「提起来的时候就开始左右晃动了，只不过往左边移动往左晃动的幅度更大，
  * 往右则是右边幅度大」，随后补了一句「往左移动速度的快，就往左多晃一点，**目前固定的**」。
- * 两次都写进断言里了：方向一条、速度一条。旧版"按速度给静态倾角、方向与拖动**相反**"是照着
+ * 而这里的"多晃一点"指的是**整段摆幅**：只让倾斜量跟速度走、基础摆幅还是常数的话，慢拖与快甩看起来
+ * 仍然是"一样晃"（上一轮就栽在这儿：倾斜 0→10° 跟着速度，正弦却是死的 ±12°，大头是常数）。
+ * 三条都写进断言了：一按下就开始晃、往哪边偏、以及幅度随速度单调上升。旧版"按速度给静态倾角、方向与拖动**相反**"是照着
  * "被拎着的东西会向后滞"写的 —— 物理上对，但不是他要的。顺带删掉了旧版"4px 之内的一次点击不该晃"：
  * 点击本来就是"拎起来又放回去"，机制换了那条就不成立（是**删**，不是反着抄一遍）。
  *
@@ -146,35 +148,47 @@ test('一按下就开始摆（不必先拖）', async () => {
   } finally { app.window.close() }
 })
 
-test('同向偏心：往哪边拖，哪一边就摆得更大（同侧 ~22°，对侧被压到 ~3°）', async () => {
+test('同向偏心：往哪边拖，哪一边就摆得更大（同侧 ~22°，对侧被压到 ~10°）', async () => {
   const app = await boot()
   try {
-    const right = dragAt(app, 1, 60, 12)      // 5000 px/s，偏心吃满
+    const right = dragAt(app, 1, 60, 12)      // 5000 px/s，劲头吃满
     const left = dragAt(app, -1, 60, 12)
-    // 摆动本身是 ±12°；偏心把它抬到 12+10=22° 那一侧、压到 12−10=2° 那一侧。
-    assert.ok(right.max > 19, `往右拖，右侧该摆过摆动本身（12°）——实测 ${right.max.toFixed(1)}°`)
-    assert.ok(right.min > -9, `往右拖，左侧该被压小到摆动本身以下——实测 ${right.min.toFixed(1)}°`)
-    assert.ok(left.min < -19, `往左拖，左侧该摆过摆动本身（12°）——实测 ${left.min.toFixed(1)}°`)
-    assert.ok(left.max < 9, `往左拖，右侧该被压小到摆动本身以下——实测 ${left.max.toFixed(1)}°`)
+    // 甩到最狠时：摆幅 16°、同向倾斜 6° —— 于是往右拖是 +22/−10，往左拖是 +10/−22。
+    // 判据用**不对称度**（max + min）：往右该明显为正、往左该明显为负。只断言"最大值够大"的话，
+    // 一个两边一起放大的实现也能过 —— 那就不叫"往哪边移动哪边更大"了。
+    assert.ok(right.max > 18, `往右拖，右侧该接近 +22°（单次移动约 19°、连续拖到 22°）——实测 ${right.max.toFixed(1)}°`)
+    assert.ok(left.min < -18, `往左拖，左侧该接近 −22°（单次移动约 −19°）——实测 ${left.min.toFixed(1)}°`)
+    assert.ok(right.max + right.min > 7, `往右拖该偏右（向上不对称）——实测 ${(right.max + right.min).toFixed(1)}°`)
+    assert.ok(left.max + left.min < -7, `往左拖该偏左（向下不对称）——实测 ${(left.max + left.min).toFixed(1)}°`)
   } finally { app.window.close() }
 })
 
 test('速度越快摆得越大（慢拖与快甩要拉开，不是固定的）', async () => {
   const app = await boot()
   try {
-    const p100 = dragAt(app, 1, 5, 50)        // 100 px/s：几乎不偏，只有摆动本身
+    const p100 = dragAt(app, 1, 5, 50)        // 100 px/s：几乎只剩静止那个最小晃动
     const p400 = dragAt(app, 1, 20, 50)       // 400 px/s
     const p900 = dragAt(app, 1, 45, 50)       // 900 px/s：吃满速度的一半
     const p1800 = dragAt(app, 1, 90, 50)      // 1800 px/s：正好吃满
-    // **这一条就是拦"目前固定的"的**：速度项被去掉（amp 恒为 1）、或吃满速度调回 450（用户报的那个值），
-    // p400 都会从 ~14° 跳到 ~21°。
-    assert.ok(p400.max < 17, `400 px/s 只该偏一点点（~14°），实测 ${p400.max.toFixed(1)}°`)
-    assert.ok(p1800.max > 19, `1800 px/s 该接近吃满（~22°），实测 ${p1800.max.toFixed(1)}°`)
-    assert.ok(p1800.max - p400.max > 4, `快慢要拉开，实测 快 ${p1800.max.toFixed(1)}° / 慢 ${p400.max.toFixed(1)}°`)
+    // **这一条就是拦"目前固定的"的**：整段摆幅若不跟速度走（MIN 写成与 MAX 相同），或吃满速度调回
+    // 450（用户报的那个值），p400 都会从 ~9° 跳到 ~20°。
+    assert.ok(p400.max < 13, `400 px/s 只该轻轻晃（~9°），实测 ${p400.max.toFixed(1)}°`)
+    assert.ok(p1800.max > 18, `1800 px/s 该接近吃满（单次移动约 19°、连续拖到 22°），实测 ${p1800.max.toFixed(1)}°`)
+    assert.ok(p1800.max - p400.max > 6, `快慢要拉开，实测 快 ${p1800.max.toFixed(1)}° / 慢 ${p400.max.toFixed(1)}°`)
     assert.ok(
       p900.max > p400.max && p400.max > p100.max,
       `幅度该随速度单调上升，实测 100:${p100.max.toFixed(1)} 400:${p400.max.toFixed(1)} 900:${p900.max.toFixed(1)}`,
     )
+  } finally { app.window.close() }
+})
+
+test('静止拎着也有一点点晃（最小摆幅：不然"提起来就晃"会变成"动了才晃"）', async () => {
+  const app = await boot()
+  try {
+    app.press()
+    const seen = app.advance(950)                       // 一个完整周期，全程没移动
+    const peak = Math.max(...seen.map(Math.abs))
+    assert.ok(peak > 4.5 && peak < 7.5, `静止拎着该是 ~6° 的小晃，实测 ${peak.toFixed(2)}°`)
   } finally { app.window.close() }
 })
 
