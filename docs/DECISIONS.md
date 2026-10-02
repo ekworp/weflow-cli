@@ -1407,8 +1407,8 @@ which is what the gate is for.
 
 **Status:** Active
 
-Pressing the floating ball plays a six-frame sequence - three frames up while it is held, three back down on release -
-and the five new frames are produced by the project's image-generation model rather than drawn by hand. Four things are
+Pressing the floating ball plays a twelve-frame sequence - six frames up while it is held, six back down on release -
+and the twelve new frames are produced by the project's image-generation model rather than drawn by hand. Four things are
 decided here.
 
 **The frames may only express the lift through pose.** The ball is `border-radius: 50%` and the art is normalized to the

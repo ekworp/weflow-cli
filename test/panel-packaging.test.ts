@@ -27,8 +27,10 @@ const PANEL_FILES = ['index.html', 'renderer.js', 'panel.css', 'main.cjs', 'prel
   'ball-position.cjs', 'tray-menu.cjs', 'quick-menu.cjs',
   'mascot.png', 'mascot-happy.png', 'mascot-thinking.png', 'mascot-sorry.png',
   'mascot-tired.png', 'mascot-base.png', 'mascot-iris.png', 'mascot-peek.png',
-  'mascot-lift-start.png', 'mascot-lift-rise.png', 'mascot-lift-held.png',
-  'mascot-lift-down.png', 'mascot-lift-settle.png',
+  'mascot-lift-up-1.png', 'mascot-lift-up-2.png', 'mascot-lift-up-3.png',
+  'mascot-lift-up-4.png', 'mascot-lift-up-5.png', 'mascot-lift-up-6.png',
+  'mascot-lift-down-1.png', 'mascot-lift-down-2.png', 'mascot-lift-down-3.png',
+  'mascot-lift-down-4.png', 'mascot-lift-down-5.png', 'mascot-lift-down-6.png',
   'tray.png', 'package.json']
 
 function read(name: string): string {

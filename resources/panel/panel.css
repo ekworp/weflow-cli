@@ -262,11 +262,18 @@ body.ball-happy #ball .face {
    4. **切帧只换 `background-image`**：不动尺寸、不动位置，所以不会跳。 */
 body.ball-lift #ball { transform: none; }
 body.ball-lift #ball .iris { display: none; }
-body.ball-lift-start #ball .face { background-image: url('/panel/mascot-lift-start.png'); }
-body.ball-lift-rise #ball .face { background-image: url('/panel/mascot-lift-rise.png'); }
-body.ball-lift-held #ball .face { background-image: url('/panel/mascot-lift-held.png'); }
-body.ball-lift-down #ball .face { background-image: url('/panel/mascot-lift-down.png'); }
-body.ball-lift-settle #ball .face { background-image: url('/panel/mascot-lift-settle.png'); }
+body.ball-lift-up-1 #ball .face { background-image: url('/panel/mascot-lift-up-1.png'); }
+body.ball-lift-up-2 #ball .face { background-image: url('/panel/mascot-lift-up-2.png'); }
+body.ball-lift-up-3 #ball .face { background-image: url('/panel/mascot-lift-up-3.png'); }
+body.ball-lift-up-4 #ball .face { background-image: url('/panel/mascot-lift-up-4.png'); }
+body.ball-lift-up-5 #ball .face { background-image: url('/panel/mascot-lift-up-5.png'); }
+body.ball-lift-up-6 #ball .face { background-image: url('/panel/mascot-lift-up-6.png'); }
+body.ball-lift-down-1 #ball .face { background-image: url('/panel/mascot-lift-down-1.png'); }
+body.ball-lift-down-2 #ball .face { background-image: url('/panel/mascot-lift-down-2.png'); }
+body.ball-lift-down-3 #ball .face { background-image: url('/panel/mascot-lift-down-3.png'); }
+body.ball-lift-down-4 #ball .face { background-image: url('/panel/mascot-lift-down-4.png'); }
+body.ball-lift-down-5 #ball .face { background-image: url('/panel/mascot-lift-down-5.png'); }
+body.ball-lift-down-6 #ball .face { background-image: url('/panel/mascot-lift-down-6.png'); }
 
 /* ---------------------------------------------------------------- 状态 */
 

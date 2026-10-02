@@ -458,12 +458,13 @@ const PEEK_CLASSES = ['ball-peek', 'ball-peek-right']
 //
 // 帧图**必须在页面加载时就全部预取**：从守护进程取一张脸实测约 15ms（≈60Hz 一帧），
 // 按下那一刻才开始取，第一帧就是空的 —— 那正是当初"点一下会闪一下"的成因。
-const LIFT_STEP_MS = 70
-const LIFT_CLASSES = ['ball-lift-start', 'ball-lift-rise', 'ball-lift-held',
-                      'ball-lift-down', 'ball-lift-settle']
-const LIFT_RISE = LIFT_CLASSES.slice(0, 3)     // 起势 → 上升 → 悬空（按住期间停在这帧）
-const LIFT_FALL = LIFT_CLASSES.slice(3)        // 落下 → 触地 → 归位
-let liftTimer = null
+  // 12 帧：6 帧拎起来 + 6 帧落回去（再加静止帧，共 13 个状态）。
+  // 每帧 60ms：半边 360ms，全程约 0.7 秒 —— 比 5 帧那版慢一点，但帧多了之后观感反而更连贯。
+  const LIFT_STEP_MS = 60
+  const LIFT_RISE = [1, 2, 3, 4, 5, 6].map((n) => 'ball-lift-up-' + n)
+  const LIFT_FALL = [1, 2, 3, 4, 5, 6].map((n) => 'ball-lift-down-' + n)
+  const LIFT_CLASSES = LIFT_RISE.concat(LIFT_FALL)
+  let liftTimer = null
 let liftAtPeak = false
 
 /** 换帧的**唯一入口**：五个类先清干净再加一个。散着写迟早有一条分支忘了摘，
@@ -593,8 +594,8 @@ if (hasShell) {
   // **动作帧也要在这里预取。** 按下才开始取的话，第一帧就是空的（见下面那段的说明）。
   for (const face of ['mascot.png', 'mascot-happy.png', 'mascot-thinking.png',
                       'mascot-sorry.png', 'mascot-tired.png',
-                      'mascot-lift-start.png', 'mascot-lift-rise.png', 'mascot-lift-held.png',
-                      'mascot-lift-down.png', 'mascot-lift-settle.png']) {
+                      'mascot-lift-up-1.png', 'mascot-lift-up-2.png', 'mascot-lift-up-3.png', 'mascot-lift-up-4.png', 'mascot-lift-up-5.png', 'mascot-lift-up-6.png',
+                      'mascot-lift-down-1.png', 'mascot-lift-down-2.png', 'mascot-lift-down-3.png', 'mascot-lift-down-4.png', 'mascot-lift-down-5.png', 'mascot-lift-down-6.png']) {
     const img = new Image()
     img.src = '/panel/' + face
   }

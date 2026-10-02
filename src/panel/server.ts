@@ -77,14 +77,21 @@ const STATIC_FILES: Record<string, string> = {
   // 它的左边**必须是一条笔直的切边**（内容贴着画布 x=0），贴上去才跟屏幕边严丝合缝——
   // 所以半隐时球的 `border-radius` 也要去掉（圆会把那条切边剪成弧）。
   '/panel/mascot-peek.png': 'mascot-peek.png',
-  // 被拎起来那套动作里的五张（2026-10-02）：起势 / 上升 / 悬空 / 落下 / 触地。
+  // 被拎起来那套动作的 12 张（2026-10-02）：6 帧拎起来 + 6 帧落回去。
   // 静止帧就是 `mascot-base.png`，不新增。同上：**漏一张，那一段动作里球会闪成空图**，
   // 而 PANEL_ASSET_MISSING 只写在响应体里、页面上看不到。
-  '/panel/mascot-lift-start.png': 'mascot-lift-start.png',
-  '/panel/mascot-lift-rise.png': 'mascot-lift-rise.png',
-  '/panel/mascot-lift-held.png': 'mascot-lift-held.png',
-  '/panel/mascot-lift-down.png': 'mascot-lift-down.png',
-  '/panel/mascot-lift-settle.png': 'mascot-lift-settle.png',
+  '/panel/mascot-lift-up-1.png': 'mascot-lift-up-1.png',
+  '/panel/mascot-lift-up-2.png': 'mascot-lift-up-2.png',
+  '/panel/mascot-lift-up-3.png': 'mascot-lift-up-3.png',
+  '/panel/mascot-lift-up-4.png': 'mascot-lift-up-4.png',
+  '/panel/mascot-lift-up-5.png': 'mascot-lift-up-5.png',
+  '/panel/mascot-lift-up-6.png': 'mascot-lift-up-6.png',
+  '/panel/mascot-lift-down-1.png': 'mascot-lift-down-1.png',
+  '/panel/mascot-lift-down-2.png': 'mascot-lift-down-2.png',
+  '/panel/mascot-lift-down-3.png': 'mascot-lift-down-3.png',
+  '/panel/mascot-lift-down-4.png': 'mascot-lift-down-4.png',
+  '/panel/mascot-lift-down-5.png': 'mascot-lift-down-5.png',
+  '/panel/mascot-lift-down-6.png': 'mascot-lift-down-6.png',
 }
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

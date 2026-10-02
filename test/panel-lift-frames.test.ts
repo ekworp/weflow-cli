@@ -1,14 +1,14 @@
 /**
- * "被拎起来"那五帧的**像素断言**，外加三处接线。
+ * "被拎起来"那十二帧的**像素断言**，外加三处接线。
  *
  * 为什么值得再解一次 PNG（本仓第二处解像素，第一处是 `panel-tray-pixels.test.ts`）：
- * 这五张图是**生图模型逐帧出的**，最容易翻的车恰恰是"什么都不报错"的那一类 ——
+ * 这十二张图是**生图模型逐帧出的**，最容易翻的车恰恰是"什么都不报错"的那一类 ——
  *
  *   1. **轮廓被悄悄改了**。第一版里 "held" 那张把猫画成了尖顶斗篷、耳朵也没了：尺寸照旧
  *      256×256、白名单也登记了、圆外像素 0，所有几何断言全绿，而它贴到球上已经不是同一只猫。
  *      实测猫的 bbox 长宽比从 0.794 掉到 0.650（−18%）。所以下面按**最大连通域**（= 猫本身，
  *      不含旁白气泡与惊叹号）钉住长宽比与宽度。
- *   2. **五帧其实是同一张图**（或者忘了换）。所以有"相邻帧必须真的不一样"那条。
+ *   2. **十二帧其实是同一张图**（或者忘了换）。所以有"相邻帧必须真的不一样"那条。
  *   3. **缩放没落进图里**。动作靠逐帧收小读出来，而那件事在文件名、白名单、CSS 里都看不出来。
  *
  * 口径与 `scripts/panel_frames.py` 一致（两处漂了就会对不上）：
@@ -34,11 +34,18 @@ const ASPECT_TOL = 0.06
 
 /** 文件 -> 相对静止帧的缩放。**与 `scripts/panel_frames.py` 的 SCALES 是一份契约。 */
 const FRAMES: [string, number][] = [
-  ['mascot-lift-start.png', 0.975],
-  ['mascot-lift-rise.png', 0.945],
-  ['mascot-lift-held.png', 0.920],
-  ['mascot-lift-down.png', 0.945],
-  ['mascot-lift-settle.png', 0.975],
+  ['mascot-lift-up-1.png', 0.992],
+  ['mascot-lift-up-2.png', 0.980],
+  ['mascot-lift-up-3.png', 0.965],
+  ['mascot-lift-up-4.png', 0.948],
+  ['mascot-lift-up-5.png', 0.933],
+  ['mascot-lift-up-6.png', 0.920],
+  ['mascot-lift-down-1.png', 0.928],
+  ['mascot-lift-down-2.png', 0.940],
+  ['mascot-lift-down-3.png', 0.955],
+  ['mascot-lift-down-4.png', 0.968],
+  ['mascot-lift-down-5.png', 0.982],
+  ['mascot-lift-down-6.png', 0.992],
 ]
 const BASE = 'mascot-base.png'
 
@@ -203,7 +210,7 @@ test('动作帧都在、都在目录清单与静态白名单里（漏一处线�
   }
 })
 
-test('五帧都落在圆里、且都还在球的那个尺寸上', () => {
+test('十二帧都落在圆里、且都还在球的那个尺寸上', () => {
   for (const [name] of FRAMES) {
     const m = measure(name)
     assert.ok(m.solid > 1000, `${name} 只有 ${m.solid} 个实心像素，像是空的`)
@@ -213,7 +220,7 @@ test('五帧都落在圆里、且都还在球的那个尺寸上', () => {
   }
 })
 
-test('逐帧收小：缩放落在**猫的宽度**上，五帧按设计递减再回来', () => {
+test('逐帧收小：缩放落在**猫的宽度**上，十二帧按设计递减再回来', () => {
   // **别用"到画布中心的距离"来判缩放。** 静止帧 125.25、held 只有 115.23 × 缩放…… 实际上
   // held 量的距离反而更大（124.20），因为头顶锚定把内容往上挪了：距离被"位置"主导，
   // 不反映"缩了多少"。真正承诺给视觉的是**猫的宽度**，所以断言它。
@@ -224,9 +231,26 @@ test('逐帧收小：缩放落在**猫的宽度**上，五帧按设计递减再�
       `${name} 的猫宽 ${m.cat.w} 偏离目标 ${target.toFixed(1)}（±4）—— 缩放没落进图里`)
   }
   const widths = FRAMES.map(([name]) => measure(name).cat.w)
-  assert.ok(widths[2] < widths[1] && widths[1] < widths[0],
-    `三帧应当逐级收小，实际 ${widths.slice(0, 3).join(' > ')}`)
-  assert.ok(Math.abs(widths[4] - widths[0]) <= 3, '落回那帧应当回到与起势帧相当的宽度')
+  // 六帧上升必须**逐级**收小、六帧落回必须逐级变大 —— 这就是"动作"本身。
+  // 只看头三帧的写法在 12 帧下会漏掉中间几帧，所以整段都比。
+  for (let i = 1; i < 6; i++) {
+    assert.ok(widths[i] < widths[i - 1],
+      `上升第 ${i + 1} 帧没有比第 ${i} 帧更小：${widths.slice(0, 6).join(' > ')}`)
+  }
+  for (let i = 7; i < 12; i++) {
+    assert.ok(widths[i] > widths[i - 1],
+      `落回第 ${i - 5} 帧没有比上一帧更大：${widths.slice(6).join(' > ')}`)
+  }
+  assert.ok(Math.abs(widths[11] - widths[0]) <= 3, '最后一帧应当回到与起势帧相当的宽度')
+  // **逐帧之间的比例也不许跳**：与静止帧的偏差只是"还是不是同一只猫"，而动画里看得见的是
+  // 相邻两帧的落差 —— 实测下降段一度出现 0.780 -> 0.838 -> 0.823 -> 0.870 这种抖动，
+  // 那在动画里就是"猫忽然胖一下再瘦回来"。阈值 4% 是按实测取的（修好之后最大 3.3%）。
+  for (let i = 1; i < FRAMES.length; i++) {
+    const a = measure(FRAMES[i - 1][0]).cat.aspect
+    const b = measure(FRAMES[i][0]).cat.aspect
+    assert.ok(Math.abs(b / a - 1) <= 0.04,
+      `${FRAMES[i - 1][0]} -> ${FRAMES[i][0]} 的长宽比跳了 ${((b / a - 1) * 100).toFixed(1)}%`)
+  }
 })
 
 test('轮廓不许被生图模型改掉：猫的长宽比与静止帧一致，头顶对齐', () => {
@@ -239,12 +263,15 @@ test('轮廓不许被生图模型改掉：猫的长宽比与静止帧一致，�
       `${name} 的猫长宽比 ${m.cat.aspect.toFixed(3)} 相对静止帧漂了 ${(drift * 100).toFixed(1)}%（上限 ±${ASPECT_TOL * 100}%）`)
     assert.ok(Math.abs(m.apexY - base.apexY) <= 2,
       `${name} 头顶在第 ${m.apexY} 行，静止帧在 ${base.apexY} —— 超过 2 像素就会看着跳`)
+    // ±2 是量出来的：12 帧实测都在 −1.5..−0.5 之间（每帧猫的比例略不同，bbox 中心自然会飘
+    // 一点点），所以容差必须盖住这个散布。代价是 3px 以内的错位测不出来 —— 那在 96px 的球上
+    // 不到 1 个屏幕像素，而 5px 的错位会被这条抓住（变异检查验过）。
     assert.ok(Math.abs(m.cx - base.cx) <= 2,
       `${name} 水平中心 ${m.cx}，静止帧 ${base.cx}`)
   }
 })
 
-test('五帧两两都不是同一张图（否则"动作"是假的，而上面每条都会过）', () => {
+test('十二帧两两都不是同一张图（否则"动作"是假的，而上面每条都会过）', () => {
   // **两两比，不是只比相邻。** 第一版只比相邻，于是"把 rise 复制成 down"这个变异**全绿通过**
   // —— 它俩在列表里不相邻，从来没被比过。是变异检查把这条空洞查出来的。
   // 阈值 10% 是量出来的，不是拍的：实测最接近的一对是 rise vs held = 27.1%，留足余量。
@@ -258,7 +285,7 @@ test('五帧两两都不是同一张图（否则"动作"是假的，而上面每
   }
 })
 
-test('接线：CSS 指向这五张、且排在 ball-happy 之后；预取列表里有它们', () => {
+test('接线：CSS 指向这十二张、且排在 ball-happy 之后；预取列表里有它们', () => {
   const css = readFileSync(CSS, 'utf8')
   const renderer = readFileSync(RENDERER, 'utf8')
   const happyAt = css.indexOf('body.ball-happy #ball .face')
@@ -275,7 +302,7 @@ test('接线：CSS 指向这五张、且排在 ball-happy 之后；预取列表�
     assert.ok(at > happyAt, `${cls} 要写在 ball-happy 之后，否则按下时看不到动作`)
     assert.ok(renderer.includes(`'${name}'`), `预取列表里要有 ${name} —— 不然第一帧是空的`)
   }
-  // 动作期间虹膜层必须藏掉：这五帧的眼睛是画死的，叠上会动的虹膜就是两个瞳仁
+  // 动作期间虹膜层必须藏掉：这十二帧的眼睛是画死的，叠上会动的虹膜就是两个瞳仁
   assert.ok(/body\.ball-lift #ball \.iris \{\s*display: none/.test(css),
     '动作期间要把虹膜层藏掉')
 })

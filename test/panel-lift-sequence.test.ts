@@ -20,12 +20,12 @@ import { join } from 'node:path'
 import { JSDOM } from 'jsdom'
 
 const RENDERER = readFileSync(join(process.cwd(), 'resources', 'panel', 'renderer.js'), 'utf8')
-const LIFT_CLASSES = ['ball-lift-start', 'ball-lift-rise', 'ball-lift-held',
-  'ball-lift-down', 'ball-lift-settle']
-const STEP_MS = 70
+const LIFT_CLASSES = [...[1, 2, 3, 4, 5, 6].map((n) => 'ball-lift-up-' + n),
+  ...[1, 2, 3, 4, 5, 6].map((n) => 'ball-lift-down-' + n)]
+const STEP_MS = 60                   // 与 renderer.js 的 LIFT_STEP_MS 一致
 /** 升到悬空要走 3 帧、落回也要 3 帧，各留一帧余量 */
-const RISE_MS = STEP_MS * 4
-const FALL_MS = STEP_MS * 4
+const RISE_MS = STEP_MS * 7          // 6 帧 + 一帧余量
+const FALL_MS = STEP_MS * 7
 
 const HTML = `<!doctype html><html><body>
   <button id="ball" hidden><span class="face"></span><span class="iris"></span></button>
@@ -97,12 +97,12 @@ test('按下逐帧升到悬空，松手落回原样、不留尾巴', async () =>
   try {
     app.press()
     // 第一帧必须**同步**就挂上：等一个定时器才出第一帧的话，按下的瞬间球是空的
-    assert.equal(app.bodyHas('ball-lift-start'), true, '按下那一帧应当立刻出')
+    assert.equal(app.bodyHas('ball-lift-up-1'), true, '按下那一帧应当立刻出')
     assert.ok(app.bodyHas('ball-lift'), '动作期间要有总开关类（虹膜层与形变都指着它）')
 
     await wait(RISE_MS)
-    assert.equal(app.bodyHas('ball-lift-held'), true, '按住一会儿之后应当停在"悬空"那帧')
-    assert.deepEqual(app.liftClasses(), ['ball-lift-held'], '同时只该挂一帧')
+    assert.equal(app.bodyHas('ball-lift-up-6'), true, '按住一会儿之后应当停在"悬空"那帧')
+    assert.deepEqual(app.liftClasses(), ['ball-lift-up-6'], '同时只该挂一帧')
 
     app.release()
     await wait(FALL_MS)
@@ -131,7 +131,7 @@ test('拖动那条路也要落回（endLift 必须在 dragging 那条 return 之
     app.press()
     app.move(1060, 830)          // 动了 60px：这是拖，不是点
     await wait(RISE_MS)
-    assert.equal(app.bodyHas('ball-lift-held'), true, '拖动中也在播动作（"被拎着"跟着鼠标）')
+    assert.equal(app.bodyHas('ball-lift-up-6'), true, '拖动中也在播动作（"被拎着"跟着鼠标）')
     app.release(1060, 830)
     await wait(FALL_MS)
     assert.deepEqual(app.liftClasses(), [], '拖完松手也要落回')
@@ -169,7 +169,7 @@ test('形态一变就把动作清干净（托盘/快捷键也能直接改形态�
   try {
     app.press()
     await wait(RISE_MS)
-    assert.equal(app.bodyHas('ball-lift-held'), true, '前提：此刻确实停在悬空那帧')
+    assert.equal(app.bodyHas('ball-lift-up-6'), true, '前提：此刻确实停在悬空那帧')
 
     app.notifyMode({ mode: 'chat', side: 'left', anchorY: 'bottom', bubbleHeight: 560 })
     assert.deepEqual(app.liftClasses(), [], '换形态之后不该再挂着任何一帧')

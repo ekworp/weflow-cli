@@ -47,20 +47,35 @@ RAW_DIR = os.path.join('output', 'mascot-lift', 'raw')
 
 # 文件名 -> (相对静止帧的缩放, 姿势)
 #
+# 12 帧：6 帧拎起来 + 6 帧落回去（再加静止帧，共 13 个状态）。缩放不是线性的，走的是一条
+# 缓入缓出的弧线 —— 起步慢、中段快、接近悬空时收敛，看着才像被"提"起来而不是匀速缩放。
+#
 # 姿势全部**收敛**写：只让四肢与表情动，不许改轮廓。第一版把"被拎起来"写得太用力，模型
 # 于是把猫画成了尖顶斗篷 + 细长身子（实测猫的 bbox 长宽比从 0.794 掉到 0.650，差 18%），
 # 耳朵也一起没了 —— 那已经不是同一只猫，贴上球也不再是"那颗球"。
 SCALES = [
-    ('mascot-lift-start.png', 0.975, 'eyes wide and startled, the two cat ears still upright and '
-     'unchanged, front paws just beginning to lift off the body'),
-    ('mascot-lift-rise.png', 0.945, 'front paws lifted and hanging loose, hind paws still tucked '
-     'under the body, the two cat ears tilted slightly back but clearly still two ears'),
-    ('mascot-lift-held.png', 0.920, 'front paws hanging straight down and hind paws tucked, the two '
-     'cat ears pressed back, eyes wide, small round mouth'),
-    ('mascot-lift-down.png', 0.945, 'front paws reaching slightly downward, the two cat ears coming '
-     'back up, eyes wide'),
-    ('mascot-lift-settle.png', 0.975, 'a slight squash at the base of the body, the two cat ears '
-     'back to normal, wide open eyes'),
+    ('mascot-lift-up-1.png', 0.992, 'eyes wide and startled, the two cat ears pricked up, front paws '
+     'just beginning to lift off the ground'),
+    ('mascot-lift-up-2.png', 0.980, 'the two cat ears still upright, front paws off the ground, head '
+     'tilted slightly up, body still round'),
+    ('mascot-lift-up-3.png', 0.965, 'front paws hanging loose, hind paws curling under the body, the two '
+     'cat ears tilting back but clearly still two ears'),
+    ('mascot-lift-up-4.png', 0.948, 'body clearly lifted with all four paws off the ground, the two cat '
+     'ears pressed further back, eyes wide'),
+    ('mascot-lift-up-5.png', 0.933, 'hanging with the front paws straight down, the two cat ears almost '
+     'flat, eyes wide, small mouth'),
+    ('mascot-lift-up-6.png', 0.920, 'held up at the highest point by the scruff, front paws dangling '
+     'straight down, hind paws tucked, the two cat ears pressed back but still clearly TWO triangular '
+     'ears, tiny round mouth, and the hood still perfectly round like a ball'),
+    ('mascot-lift-down-1.png', 0.928, 'still hanging but the two cat ears starting to lift back up, eyes wide'),
+    ('mascot-lift-down-2.png', 0.940, 'front paws reaching slightly downward as the body starts to come '
+     'down, the two cat ears half back, the body keeps exactly the same width and height as the reference image, only the limbs move'),
+    ('mascot-lift-down-3.png', 0.955, 'body descending, hind paws reaching for the ground, the two cat '
+     'ears coming back up, the body keeps exactly the same width and height as the reference image, only the limbs move'),
+    ('mascot-lift-down-4.png', 0.968, 'nearly landed, paws touching the ground, the two cat ears back to normal'),
+    ('mascot-lift-down-5.png', 0.982, 'just landed, body back to its normal round shape with no squash at '
+     'all, eyes wide, the body keeps exactly the same width and height as the reference image, only the limbs move'),
+    ('mascot-lift-down-6.png', 0.992, 'almost back to the resting pose, eyes still a little wide'),
 ]
 FRAME_FILES = [f for f, _, _ in SCALES]
 REFERENCE_FILES = [BASE, 'mascot-happy.png', 'mascot-sorry.png', 'mascot-tired.png']
@@ -358,10 +373,11 @@ def cmd_gen(only):
 def cmd_normalize(panel_dir, raw_dir):
     """按**猫自己**（最大连通域）的 bbox 宽缩放，头顶对齐静止帧，水平居中。
 
-    不再迭代求"到画布中心的距离"：那个量与契约量的不是同一个东西 —— 头顶锚定本来就把
-    内容挪离了画布中心，于是迭代收敛到的目标与校验量出来的值差着那个偏移（实测想 115.23、
-    落成 124.20）。改成按猫的宽度缩放之后：一致性由**猫的宽度**保证（每帧都是 170 x s），
-    "落在圆里"由归一化之后的硬校验保证。两端各自只做一件事，就不会互相扯。
+    缩放基准是猫的宽度而不是整张内容：画布上还有旁白气泡与惊叹号，按整张缩放会让装饰件
+    决定角色的比例，逐帧就跳。但**硬契约优先** —— 某帧整体更宽时，按猫宽缩放会把整张内容
+    顶出圆（实测 down-5 的 maxDist 到过 127.88，上限 125.44）。那种情况就**回退这一帧的
+    缩放**直到不出圆；猫宽那 ±4 的余量足够吸收（实测回退约 2%）。宁可让这一帧比设计值小一点点，
+    也不能让球被圆裁掉一块 —— 后者是看得见的坏。
     """
     try:
         from PIL import Image
@@ -397,17 +413,27 @@ def cmd_normalize(panel_dir, raw_dir):
             continue
         crop = im.crop(box)
         k = target_w / float(cat['w'])        # 猫是内容的一部分，所以同一个 k 也缩放了猫
-        new_w = max(1, int(round(crop.width * k)))
-        new_h = max(1, int(round(crop.height * k)))
-        resized = crop.resize((new_w, new_h), Image.LANCZOS)
-        canvas = Image.new('RGBA', (CANVAS, CANVAS), (0, 0, 0, 0))
-        apex_row = _apex_row(resized)
-        left = int(round(CANVAS / 2.0 - new_w / 2.0))
-        top = int(round(baseline['apex_y'] - apex_row))
-        canvas.paste(resized, (left, top), resized)
         out = os.path.join(panel_dir, name)
-        canvas.save(out)
-        m2 = metrics(out)
+        m2 = None
+        for attempt in range(10):
+            new_w = max(1, int(round(crop.width * k)))
+            new_h = max(1, int(round(crop.height * k)))
+            resized = crop.resize((new_w, new_h), Image.LANCZOS)
+            canvas = Image.new('RGBA', (CANVAS, CANVAS), (0, 0, 0, 0))
+            apex_row = _apex_row(resized)
+            left = int(round(CANVAS / 2.0 - new_w / 2.0))
+            top = int(round(baseline['apex_y'] - apex_row))
+            canvas.paste(resized, (left, top), resized)
+            canvas.save(out)
+            m2 = metrics(out)
+            if m2 is None or m2['maxd'] <= CAP - 0.2:
+                break
+            if attempt == 5:
+                break
+            print('  note: %s would exceed the cap (maxDist %.2f) -- backing the scale off'
+                  % (name, m2['maxd']))
+            # 固定比例回退（用 maxDist 反推时收敛太慢：实测每步只掉 0.6%）
+            k *= 0.94
         cat2 = main_component(out)
         bad = problems(m2, cat2, ref_cat, target_w)
         if m2 is not None:
