@@ -290,6 +290,7 @@ async function ask(text, display = null) {
 
     if (res.ok && body.ok) {
       const turn = addTurn('it', body.reply)
+      hopAfterTurn = true          // 答复成功：busy 收掉之后高兴一下
       addThinking(turn, body.trace)
       // 配额用尽时服务端回的是一句**回答**（不是错误），所以上面照常显示；
       // 这里只是把状态条上的数字刷新一下
@@ -304,6 +305,10 @@ async function ask(text, display = null) {
     input.disabled = false
     send.disabled = false
     setBallState(null)
+    if (hopAfterTurn) {
+      hopAfterTurn = false
+      startHop()
+    }
     void refreshStatus()      // 顺手把用量与配额状态刷新（额度用尽会换成琥珀色）
     input.focus()
   }
@@ -789,6 +794,115 @@ if (memoryClose) memoryClose.addEventListener('click', closeMemory)
     setDangle(dangleDir * amp * DANGLE_MAX_DEG)
   }
 
+  // ------------------------------------------ 答完了"高兴一下"（2026-10-04）
+  //
+  // 球收起来时看不出"它答完了"：busy 那张脸管的是"正在答"，这半边一直空着。
+  //
+  // **没有生图帧，是刻意的**：模型画"蹲下去"一定会把身体压扁（实测轮廓 +9.2% / +8.0%，换个轻一点的
+  // 措辞也一样），连着放就是 270 毫秒里胖瘦四回。而跳本来就只是位移 —— 跳起来的是那只猫，它没变形。
+  // 所以：位移 + 轻微缩放 + 复用现有的眯眼笑脸（`mascot-happy.png`）。
+  //
+  // 位移的余量是算出来的：静止帧内容到球心 125.25、圆半径 128，所以空中那步缩到 0.96（内容 → 120.2）
+  // 之后才抬得起那 7 像素（120.2 + 7 = 127.2 < 128）。改这几个数之前先把这条算式重算一遍。
+  const HOP_STEPS = [
+    { y: -7, scale: 0.96, ms: 95 },
+    { y: -2, scale: 0.985, ms: 95 },
+    { y: 0, scale: 1, ms: 110 },
+  ]
+  let hopTimer = null
+  let hopAfterTurn = false
+
+  function showHop(step) {
+    document.body.classList.toggle('ball-hop', !!step)
+    document.body.classList.toggle('ball-hop-happy', !!step)
+    if (step) {
+      document.body.style.setProperty('--hop-y', step.y + 'px')
+      document.body.style.setProperty('--hop-scale', String(step.scale))
+    } else {
+      document.body.style.setProperty('--hop-y', '0px')
+      document.body.style.setProperty('--hop-scale', '1')
+    }
+  }
+
+  function stopHop() {
+    if (hopTimer !== null) {
+      clearTimeout(hopTimer)
+      hopTimer = null
+    }
+    showHop(null)
+  }
+
+  /** 答复成功、且不忙了之后才播（失败时球不该跳）。 */
+  function startHop() {
+    if (prefersReducedMotion()) return
+    stopHop()
+    let i = 0
+    const step = () => {
+      if (i >= HOP_STEPS.length) {
+        showHop(null)
+        hopTimer = null
+        return
+      }
+      showHop(HOP_STEPS[i])
+      const ms = HOP_STEPS[i].ms
+      i += 1
+      hopTimer = setTimeout(step, ms)
+    }
+    step()
+  }
+
+  // ------------------------------------------ 偶尔眨一下眼（2026-10-04）
+  //
+  // **只在"没有别的脸在场"时播**：busy/offline/quota 那三张脸的眼睛是画死的，半隐那张是另一幅构图，
+  // 正在被拎着/挠着/跳着时也不该眨。间隔随机（7-13 秒），否则像节拍器。
+  //
+  // 这 2 帧**眼睛以外与静止帧逐像素相同**（归一化时由 `panel_frames.py` 只把眼睛带贴回来），所以
+  // 必须藏虹膜层 —— 否则会看到一层睁着的瞳孔浮在闭着的眼皮上。
+  const BLINK_FRAMES = [1, 2].map((n) => 'ball-blink-' + n)
+  const BLINK_MS = [70, 110]
+  const BLINK_MIN_MS = 7000
+  const BLINK_MAX_MS = 13000
+  let blinkTimer = null
+  let blinkStepTimer = null
+
+  function showBlinkFrame(name) {
+    for (const cls of BLINK_FRAMES) document.body.classList.remove(cls)
+    document.body.classList.toggle('ball-blink', !!name)
+    if (name) document.body.classList.add(name)
+  }
+
+  /** 什么时候**不**眨眼：少动效、页面不可见、有别的脸/别的动作在场。 */
+  function canBlink() {
+    if (prefersReducedMotion()) return false
+    if (typeof document.hidden === 'boolean' && document.hidden) return false
+    for (const cls of ['busy', 'offline', 'quota', 'ball-happy', 'ball-peek',
+                       'ball-lift', 'ball-tickle', 'ball-hop']) {
+      if (document.body.classList.contains(cls)) return false
+    }
+    return true
+  }
+
+  function blinkOnce() {
+    if (!canBlink()) return
+    showBlinkFrame(BLINK_FRAMES[0])
+    blinkStepTimer = setTimeout(() => {
+      showBlinkFrame(BLINK_FRAMES[1])
+      blinkStepTimer = setTimeout(() => {
+        showBlinkFrame(null)
+        blinkStepTimer = null
+      }, BLINK_MS[1])
+    }, BLINK_MS[0])
+  }
+
+  function scheduleBlink() {
+    if (blinkTimer !== null) clearTimeout(blinkTimer)
+    const wait = BLINK_MIN_MS + Math.floor(Math.random() * (BLINK_MAX_MS - BLINK_MIN_MS))
+    blinkTimer = setTimeout(() => {
+      blinkOnce()
+      scheduleBlink()
+    }, wait)
+  }
+
 if (hasShell) {
   // `shell` 这个类决定球在不在场（见 panel.css）：浏览器降级那条路永远不该看见球
 
@@ -808,7 +922,8 @@ if (hasShell) {
                       'mascot-sorry.png', 'mascot-tired.png',
                       'mascot-lift-up-1.png', 'mascot-lift-up-2.png', 'mascot-lift-up-3.png', 'mascot-lift-up-4.png', 'mascot-lift-up-5.png', 'mascot-lift-up-6.png',
                       'mascot-lift-down-1.png', 'mascot-lift-down-2.png', 'mascot-lift-down-3.png', 'mascot-lift-down-4.png', 'mascot-lift-down-5.png', 'mascot-lift-down-6.png',
-                      'mascot-tickle-1.png', 'mascot-tickle-2.png', 'mascot-tickle-3.png', 'mascot-tickle-4.png']) {
+                      'mascot-tickle-1.png', 'mascot-tickle-2.png', 'mascot-tickle-3.png', 'mascot-tickle-4.png',
+                      'mascot-blink-1.png', 'mascot-blink-2.png']) {
     const img = new Image()
     img.src = '/panel/' + face
   }
@@ -935,6 +1050,7 @@ if (hasShell) {
 }
 
 renderEmptyState()
+if (hasShell) scheduleBlink()
 void refreshStatus()
 // 每 30 秒刷一次状态：守护进程可能被停掉，界面不该一直显示旧数字
 setInterval(refreshStatus, 30000)

@@ -368,3 +368,42 @@ test('接线：CSS 指向这十二张、且排在 ball-happy 之后；预取列�
   assert.ok(/body\.ball-lift #ball \.iris \{\s*display: none/.test(css),
     '动作期间要把虹膜层藏掉')
 })
+
+
+test('眨眼那 2 帧：眼睛带以外与静止帧逐像素相同（否则整颗球会闪一下）', () => {
+  // 余量与 `scripts/panel_frames.py` 的 `blink_band` 一致：虹膜的不透明范围各边 +15/+12。
+  const iris = decodePng(join(PANEL, 'mascot-iris.png'))
+  let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1
+  for (let y = 0; y < iris.height; y++) {
+    for (let x = 0; x < iris.width; x++) {
+      if (iris.at(x, y).a >= 8) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+  const x0 = Math.max(0, minX - 15)
+  const y0 = Math.max(0, minY - 12)
+  const x1 = Math.min(CANVAS, maxX + 16)
+  const y1 = Math.min(CANVAS, maxY + 13)
+  const base = decodePng(join(PANEL, BASE))
+  for (const name of ['mascot-blink-1.png', 'mascot-blink-2.png']) {
+    const frame = decodePng(join(PANEL, name))
+    let outside = 0
+    let inside = 0
+    for (let y = 0; y < CANVAS; y++) {
+      for (let x = 0; x < CANVAS; x++) {
+        const a = base.at(x, y)
+        const b = frame.at(x, y)
+        if (a.r === b.r && a.g === b.g && a.b === b.b && a.a === b.a) continue
+        if (x >= x0 && x < x1 && y >= y0 && y < y1) inside++
+        else outside++
+      }
+    }
+    assert.equal(outside, 0, `${name} 在眼睛带以外动了 ${outside} 个像素 —— 那会让整颗球闪一下`)
+    // 反向：带子里得真的变了，否则这条对"两张一模一样的图"也会过
+    assert.ok(inside > 200, `${name} 眼睛带里只变了 ${inside} 个像素 —— 那不叫眨眼`)
+  }
+})

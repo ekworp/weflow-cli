@@ -544,3 +544,20 @@ footer .warn { color: var(--warn); }
 .memlist .fact p { margin: 0; }
 .memlist .muted { color: var(--dim); font-size: 12px; }
 .memlist .fact .muted { margin-top: 4px; }
+
+/* ---- 答完了高兴一下 + 偶尔眨一下眼（2026-10-04） ----
+
+   两条都由 `renderer.js` 判"什么时候不播"，这里只管长什么样。
+
+   跳：**没有生图帧**，是位移 + 轻微缩放 + 现有的眯眼笑脸 —— 模型画"蹲下去"一定会把身体压扁，
+   而跳本来就只是位移。空中那步的 0.96 不是随手取的：内容到球心 125.25 / 圆半径 128，
+   缩到 0.96 之后才抬得起那 7 像素（120.2 + 7 = 127.2 < 128）。改数之前先重算这条。
+
+   眨眼：2 帧，**眼睛以外与静止帧逐像素相同**（出图后只把眼睛带贴回来），所以藏虹膜层就够，
+   不会整颗球闪一下。 */
+body.ball-hop #ball { transform: translateY(var(--hop-y, 0px)) scale(var(--hop-scale, 1)); transition: transform 95ms ease-out; }
+body.ball-hop-happy #ball .face { background-image: url('/panel/mascot-happy.png'); }
+body.ball-hop #ball .iris { display: none; }
+body.ball-blink #ball .iris { display: none; }
+body.ball-blink-1 #ball .face { background-image: url('/panel/mascot-blink-1.png'); }
+body.ball-blink-2 #ball .face { background-image: url('/panel/mascot-blink-2.png'); }

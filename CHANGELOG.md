@@ -34,6 +34,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Added
 
+- **The ball now reacts twice more on its own: a hop when a reply lands, and a blink every 7-13 seconds.** The hop
+  answers the half `busy` never did - a collapsed ball told you it was *thinking* but never that it was *done*. It
+  has **no generated frames, deliberately**: asked for a crouch, the model reliably squashes the body (measured
+  +9.2% / +8.0% on the outline metric, and milder wording did not help), and over three frames that meant the ball
+  visibly fattening and thinning four times in 270 ms. A hop is a *motion* - the character does not change shape
+  when it jumps - so it is a transform, with the rise **budgeted** rather than guessed: the art already uses 125.25
+  of the circle's 128 radius, so the airborne step shrinks to 0.96 (content to 120.2) and only then rises 7 px
+  (127.2 < 128). It plays only when the turn succeeded (a failure must not make the ball jump) and after the busy
+  face is cleared. The blink adds two frames - and **those are composited, not used as generated**: the model
+  repaints the whole face, and even a one-pixel difference is the entire ball flickering at 96 px, so the pipeline
+  pastes back only the eye band (the iris layer's bounds plus a margin, which stops just above the mouth).
+  Measured after compositing: **0 pixels differ outside that band**, asserted in `test/panel-lift-frames.test.ts`
+  together with a reverse check that the band itself did change. Both are skipped under `prefers-reduced-motion`;
+  the blink also waits until no other face is showing (the state faces have their eyes painted on), the ball is not
+  being carried or tickled, and the page is visible.
+
 - **The ball now swings while you drag it.** Holding it already played the "picked up" sequence, but the carry
   itself was stiff. The tilt is **computed from the drag speed** (up to 6 degrees at 700 px/s) and leans **against**
   the direction of travel, the way something carried lags behind, then settles when you let go. Same geometry as the

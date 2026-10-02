@@ -93,17 +93,6 @@ TICKLE = [
 ]
 
 
-# "答完了高兴一下"那 3 帧：起跳 -> 空中 -> 落地。缩放各不相同（跳起来那帧最小），
-# 所以带缩放值。**缩放留了余量是有用的**：渲染进程还会给它叠一个几像素的上移（"跳"的位移），
-# 而球是圆形裁切的，位移的余量只能从"这一帧本身更小"里省出来。
-HOP = [
-    ('mascot-hop-1.png', 0.965, 'a small crouch just before hopping: the body compressed slightly downward, '
-     'the two cat ears up, eyes bright and happy'),
-    ('mascot-hop-2.png', 0.955, 'in the air at the top of a small happy hop, the two cat ears swept back, '
-     'eyes bright, a small open smile'),
-    ('mascot-hop-3.png', 0.975, 'just landed from a small hop, a slight squash at the base of the body, the '
-     'two cat ears up, eyes bright'),
-]
 
 # "偶尔眨一下眼"那 2 帧：半闭 -> 闭。**缩放固定 1.0**（眨眼不该改大小）。
 # 收回来之后要**只把眼睛那块贴回静止帧**（见 README/脚本里的 normalize_blink），因为生图模型
@@ -118,12 +107,12 @@ BLINK = [
 def all_frames():
     """两族帧合起来：被拎起来那套（有序、逐帧收小）+ 挠痒痒那族（同尺寸）。"""
     return (list(SCALES) + [(n, TICKLE_SCALE, p) for n, p in TICKLE]
-            + list(HOP) + [(n, 1.0, p) for n, p in BLINK])
+            + [(n, 1.0, p) for n, p in BLINK])
 
 
 FRAME_FILES = [f for f, _, _ in SCALES]
 TICKLE_FILES = [f for f, _ in TICKLE]
-HOP_FILES = [f for f, _, _ in HOP]
+
 BLINK_FILES = [f for f, _ in BLINK]
 REFERENCE_FILES = [BASE, 'mascot-happy.png', 'mascot-sorry.png', 'mascot-tired.png']
 
@@ -296,7 +285,7 @@ def cmd_check(panel_dir, sample, include_reference):
         targets += [os.path.join(panel_dir, f) for f in REFERENCE_FILES]
     targets += [os.path.join(panel_dir, f) for f in FRAME_FILES]
     targets += [os.path.join(panel_dir, f) for f in TICKLE_FILES]
-    targets += [os.path.join(panel_dir, f) for f in HOP_FILES]
+
     targets += [os.path.join(panel_dir, f) for f in BLINK_FILES]
     if sample:
         targets = targets[:sample]
@@ -420,6 +409,46 @@ def cmd_gen(only):
 
 # ---------------------------------------------------------------- 归一化
 
+def blink_band(panel_dir):
+    """眨眼带：虹膜层的不透明范围 + 一圈余量。用它把生成的眨眼帧"只取眼睛那块"。"""
+    w, h, buf = decode_png(os.path.join(panel_dir, 'mascot-iris.png'))
+    xs, ys = [], []
+    for y in range(h):
+        for x in range(w):
+            if buf[(y * w + x) * 4 + 3] >= 8:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    # 余量取得不大：带子越大，把生成帧"顺手重画"的部分带进来的越多（那正是要避免的）
+    return (max(0, min(xs) - 15), max(0, min(ys) - 12), min(w, max(xs) + 16), min(h, max(ys) + 13))
+
+
+def composite_blink(blink_path, base_path, band):
+    """把眨眼帧的眼睛带贴到静止帧的副本上，写回 blink_path。返回带外不同的像素数（必须是 0）。"""
+    from PIL import Image
+    band_img = Image.open(blink_path).convert('RGBA')
+    base = Image.open(base_path).convert('RGBA')
+    patch = band_img.crop(band)
+    base.paste(patch, (band[0], band[1]), patch)
+    base.save(blink_path)
+    a = Image.open(blink_path).convert('RGBA')
+    b = Image.open(base_path).convert('RGBA')
+    pa, pb = a.load(), b.load()
+    outside = 0
+    for y in range(a.size[1]):
+        if band[1] <= y < band[3]:
+            continue
+        for x in range(a.size[0]):
+            if pa[x, y] != pb[x, y]:
+                outside += 1
+    for y in range(band[1], band[3]):
+        for x in range(a.size[0]):
+            if not (band[0] <= x < band[2]) and pa[x, y] != pb[x, y]:
+                outside += 1
+    return outside
+
+
 def cmd_normalize(panel_dir, raw_dir):
     """按**猫自己**（最大连通域）的 bbox 宽缩放，头顶对齐静止帧，水平居中。
 
@@ -484,6 +513,17 @@ def cmd_normalize(panel_dir, raw_dir):
                   % (name, m2['maxd']))
             # 固定比例回退（用 maxDist 反推时收敛太慢：实测每步只掉 0.6%）
             k *= 0.94
+        if name in BLINK_FILES:
+            # 眨眼帧只取眼睛那块，其余用静止帧（见 composite_blink 的说明）
+            band = blink_band(panel_dir)
+            if band is None:
+                print('  note: cannot find the eye band; leaving %s as generated' % name)
+            else:
+                stray = composite_blink(out, base_path, band)
+                print('  note: %s -> eye band %s, %d pixel(s) differ outside it' % (name, band, stray))
+                if stray:
+                    print('  !! %s 的眼睛带之外动了 %d 个像素 —— 那会让整颗球闪一下' % (name, stray))
+
         cat2 = main_component(out)
         bad = problems(m2, cat2, ref_cat, target_w)
         if m2 is not None:

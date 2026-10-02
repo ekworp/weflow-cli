@@ -92,6 +92,9 @@ const STATIC_FILES: Record<string, string> = {
   '/panel/mascot-lift-down-4.png': 'mascot-lift-down-4.png',
   '/panel/mascot-lift-down-5.png': 'mascot-lift-down-5.png',
   '/panel/mascot-lift-down-6.png': 'mascot-lift-down-6.png',
+  // 眨眼那 2 帧（2026-10-04）：眼睛以外与静止帧逐像素相同，只把眼睛带贴回来。
+  '/panel/mascot-blink-1.png': 'mascot-blink-1.png',
+  '/panel/mascot-blink-2.png': 'mascot-blink-2.png',
   // 挠痒痒那 4 张（2026-10-02）：鼠标在球身上晃过时循环的姿势帧。同上：漏一张就闪空图。
   '/panel/mascot-tickle-1.png': 'mascot-tickle-1.png',
   '/panel/mascot-tickle-2.png': 'mascot-tickle-2.png',
