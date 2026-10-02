@@ -50,13 +50,26 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   the blink also waits until no other face is showing (the state faces have their eyes painted on), the ball is not
   being carried or tickled, and the page is visible.
 
-- **The ball now swings while you drag it.** Holding it already played the "picked up" sequence, but the carry
-  itself was stiff. The tilt is **computed from the drag speed** (up to 6 degrees at 700 px/s) and leans **against**
-  the direction of travel, the way something carried lags behind, then settles when you let go. Same geometry as the
-  tickle: rotation about the ball's centre preserves every pixel's distance from it, so it needs none of the
-  circle's budget. It rides on the lift's own state, so it is skipped under `prefers-reduced-motion` and cleared by
-  a release or a mode change. `test/panel-dangle.test.ts` pins the sign (opposite the drag), the 4-pixel click
-  threshold, the settle, and the reduced-motion skip.
+- **The ball now swings while you carry it - and it swings from the moment you pick it up.** Holding it already
+  played the "picked up" sequence, but the carry itself was stiff. The first version derived a static tilt from the
+  drag speed and leaned **against** the direction of travel, the way something carried lags behind; the user asked
+  for something more specific - it should start swinging **when picked up**, and the side it leans towards should be
+  the side you are moving towards. So it is now a continuous sine (a 900 ms period, +/-12 degrees) with a **bias
+  towards the direction of travel** of up to 9 degrees on top of it: drag right and the rightward swings reach
+  about 21 degrees while the leftward ones are pressed down to about 3, and the reverse for a leftward drag. A
+  click sways too, since a click *is* a pick-up - the 4-pixel threshold only decides whether the gesture counts as a
+  drag, which is why the old "a click must not tilt" assertion is **removed rather than inverted**. Rotation about
+  the ball's centre preserves every pixel's distance from it, so the amplitude is **a matter of taste, not of
+  budget** (a translation would have had to fit inside the circle's remaining 2%). The bias decays after 1.2 s of
+  stillness, **deliberately longer than the 900 ms period**: the 240 ms tried first expired before the second peak
+  arrived, so a leftward drag merely damped the rightward swing (measured -12.6 degrees, indistinguishable from not
+  dragging at all) instead of amplifying the leftward one - half of the request. The CSS transition was shortened
+  from 90 ms to 45 ms for the same reason: at a 16 ms frame interval a 90 ms first-order lag eats about 15% of the
+  amplitude and delays what you see by ~90 ms, and **no test can see that**, because the tests read the
+  `--dangle-deg` property rather than the rendered transform. `test/panel-dangle.test.ts` now samples a **whole
+  swing period** and asserts both extremes; an earlier version sampled only the first 300 ms, which mutation
+  testing showed could not fail on the decay bug above, the negative peak it depends on never falling in that
+  window.
 
 - **The panel can show you what the assistant remembers about you.** Those long-term facts were previously visible
   only by opening `~/.weflow-cli/assistant_memory.json` by hand, so the assistant could act on a belief the user had

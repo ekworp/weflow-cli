@@ -250,7 +250,10 @@ body.ball-happy #ball .face {
    按下球时它像被拎住后颈提起、松手落回。**硬切，不做淡入** —— 同上面 ball-happy 那条的理由：
    换帧本来就是一帧的事，淡入反而像"图片正在加载"。
 
-   四条规矩，每条都对应一处会静默出错的地方：
+   按住期间它同时**在被拎着左右摆**（摆动幅度与朝哪一侧偏由 JS 算，见 `renderer.js` 里那一节；
+   晃起来从**按下那一刻**就开始，不必先拖动），松手才停。下面第 1 条同时也是"摆多大都不会被裁"的依据。
+
+   五条规矩，每条都对应一处会静默出错的地方：
 
    1. **必须写在 `body.ball-happy` 之后**：同特异性时后写的赢，而"正在被拎"比"被捏了一下"
       更该被看见（按下那一下这两个类同时挂着）。
@@ -259,8 +262,12 @@ body.ball-happy #ball .face {
    3. **动画期间连悬停放大与按下压扁一起停**：帧本身已在逐帧收小（最小那帧比静止帧小 8%），
       再叠 `scale(1.02)` 与 `:active` 的 `scale(.92)` 就成了缩两回，看起来是"躲开"而不是
       "被提起来"。这条的选择器特异性高于那两条，所以能压住它们。
-   4. **切帧只换 `background-image`**：不动尺寸、不动位置，所以不会跳。 */
-body.ball-lift #ball { transform: rotate(var(--dangle-deg, 0deg)); transition: transform 90ms linear; }
+   4. **切帧只换 `background-image`**：不动尺寸、不动位置，所以不会跳。
+   5. **过渡要短（45ms）**：这条 transform 现在不只是"按下那一下的姿势" —— 按住期间它一直在**左右摆**
+      （`dangleTick` 每 16ms 写一个新角度）。90ms 那版是照着"一次性倾斜"写的：一阶滞后在 900ms 的
+      周期上会吃掉约 15% 的幅度、再把画面拖后约 90ms，也就是**看到的比算出来的小一圈**，
+      而这条测试看不见（测试读的是 `--dangle-deg` 这个属性，不是渲染结果）。 */
+body.ball-lift #ball { transform: rotate(var(--dangle-deg, 0deg)); transition: transform 45ms linear; }
 body.ball-lift #ball .iris { display: none; }
 body.ball-lift-up-1 #ball .face { background-image: url('/panel/mascot-lift-up-1.png'); }
 body.ball-lift-up-2 #ball .face { background-image: url('/panel/mascot-lift-up-2.png'); }

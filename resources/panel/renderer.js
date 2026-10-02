@@ -747,41 +747,81 @@ if (memoryButton) memoryButton.addEventListener('click', () => { void openMemory
 const memoryClose = document.getElementById('memory-close')
 if (memoryClose) memoryClose.addEventListener('click', closeMemory)
 
-  // ------------------------------------------ 拖着走的时候"垂着晃"（2026-10-04）
+  // ------------------------------------------ 被拎着的时候"左右晃"（2026-10-04 重做）
   //
-  // 按住会播"被拎起来"，但**拖着移动**时它是僵的。这里按拖动速度给一个倾斜，方向与拖动相反
-  // （被拎着走的东西会向后滞一下），和挠痒同一套：绕球心转、纯程序算、不占圆的余量。
+  // 用户要的是：**一提起来就开始左右晃**（像挂在手里的挂件），而且**往哪边移动，哪边的摆幅就更大**。
+  // 所以不是"按速度给一个静态倾角"，而是：一个持续的**正弦摆动** + 一个跟着移动方向走的**偏心**。
+  // 往左移动 -> 偏心为负 -> 左半边摆幅 = 摆幅 + |偏心|、右半边 = 摆幅 − |偏心|，于是左边明显更大。
   //
-  // 角度经 body 上的自定义属性交给 CSS（`body.ball-lift #ball` 那条读它）—— 与 `--tickle-deg`
-  // 同一个理由：自定义属性会继承，顶层的 applyMode 也能清。
-  const DANGLE_MAX_DEG = 14         // **品味值，不是预算**：绕球心转不占圆的余量，想大就大
-  const DANGLE_FULL_SPEED = 450      // 每秒拖多少像素算"甩得最狠"（700 太快，正常拖动只晃出一两度）
+  // 幅度**没有几何预算**：绕球心转不改变任何像素到球心的距离，所以晃多大都不会被圆裁掉
+  // （这正是当初只转不平移的原因）。相对地，跳跃的上移**是有预算的**（内容 125.25 / 半径 128）。
+  const DANGLE_SWING_DEG = 12        // 正弦摆幅
+  const DANGLE_BIAS_DEG = 9          // 移动带来的偏心上限（同侧最大 ~21°）
+  const DANGLE_PERIOD_MS = 900       // 一个来回
+  const DANGLE_FULL_SPEED = 450      // 每秒拖多少像素算"甩得最狠"
+  const DANGLE_FRAME_MS = 16
+  // **必须比一个摆动周期(900ms)长**：偏心是在移动时涨上去的（15%/帧，约 250ms 到顶），而正弦要 225ms 才到正峰、
+  // 675ms 才到负峰。240ms 那版实测过 —— 往右拖正峰拿满了偏心(+18.9°)，往左拖的负峰却在偏心衰减之后才来，
+  // 于是只有 −12.6°、和没拖过一样。这就是"往左移动往左晃得更大"只剩一半的原因。
+  // 取值只影响**停手之后**（拖着走时每次移动都重置它），所以 1.2 秒 ≠ 手一停就回正，只是慢慢回正。
+  const DANGLE_BIAS_DECAY_MS = 1200  // 停手 1.2 秒后偏心归零（摆动继续，它本来就一直在摆）
+  let dangleTimer = null
+  let dangleDecay = null
+  let danglePhase = 0
+  let dangleLast = 0
+  let dangleBias = 0
+  let dangleBiasTarget = 0
   let dangleLastX = 0
   let dangleLastY = 0
   let dangleLastT = 0
-  let dangleDir = 1
 
-  function setDangle(deg) {
+  function dangleNow() {
+    return typeof performance === 'object' && performance.now ? performance.now() : Date.now()
+  }
+
+  /** 每一帧：正弦摆动 + 偏心（偏心缓动到目标，所以方向切换是滑过去的，不是跳）。 */
+  function dangleTick() {
+    const now = dangleNow()
+    const dt = dangleLast ? Math.min(80, now - dangleLast) : DANGLE_FRAME_MS
+    dangleLast = now
+    danglePhase += (dt / DANGLE_PERIOD_MS) * 2 * Math.PI
+    dangleBias += (dangleBiasTarget - dangleBias) * 0.15
+    const deg = Math.sin(danglePhase) * DANGLE_SWING_DEG + dangleBias
     document.body.style.setProperty('--dangle-deg', deg.toFixed(2) + 'deg')
+    dangleTimer = setTimeout(dangleTick, DANGLE_FRAME_MS)
   }
 
-  /** 松手/换形态时回正。 */
+  /** 松手/换形态：停掉摆动并回正。 */
   function settleDangle() {
-    dangleDir = 1
-    setDangle(0)
+    if (dangleTimer !== null) {
+      clearTimeout(dangleTimer)
+      dangleTimer = null
+    }
+    if (dangleDecay !== null) {
+      clearTimeout(dangleDecay)
+      dangleDecay = null
+    }
+    danglePhase = 0
+    dangleLast = 0
+    dangleBias = 0
+    dangleBiasTarget = 0
+    document.body.style.setProperty('--dangle-deg', '0deg')
   }
 
-  /** 按下时记下起点：不然第一次移动的 dt 会是"上次拖动到这次"的间隔，算出来的速度没意义。 */
+  /** **按下**（被拎起来那一下）：摆动从这里就开始，不必等拖动。少动效时不摆。 */
   function startDangle(x, y) {
+    settleDangle()
+    if (prefersReducedMotion()) return
     dangleLastX = x
     dangleLastY = y
-    dangleLastT = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
+    dangleLastT = dangleNow()
+    dangleTick()
   }
 
-  /** 拖动的每一次移动：按水平速度给倾斜（往哪边拖，就往反方向滞）。 */
+  /** 拖动的每一次移动：把**偏心**推向移动的方向（同向 —— 往哪边移，哪边摆得更大）。 */
   function trackDangle(event) {
-    if (prefersReducedMotion()) return
-    const now = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
+    if (prefersReducedMotion() || dangleTimer === null) return
+    const now = dangleNow()
     const dx = event.screenX - dangleLastX
     const dy = event.screenY - dangleLastY
     const dt = Math.max(1, now - dangleLastT)
@@ -790,8 +830,12 @@ if (memoryClose) memoryClose.addEventListener('click', closeMemory)
     dangleLastT = now
     const speed = Math.hypot(dx, dy) / dt * 1000
     const amp = Math.min(1, speed / DANGLE_FULL_SPEED)
-    if (Math.abs(dx) >= 1) dangleDir = dx > 0 ? -1 : 1
-    setDangle(dangleDir * amp * DANGLE_MAX_DEG)
+    if (Math.abs(dx) >= 1) dangleBiasTarget = (dx > 0 ? 1 : -1) * amp * DANGLE_BIAS_DEG
+    if (dangleDecay !== null) clearTimeout(dangleDecay)
+    dangleDecay = setTimeout(() => {
+      dangleDecay = null
+      dangleBiasTarget = 0          // 停手后偏心归零，但摆动继续
+    }, DANGLE_BIAS_DECAY_MS)
   }
 
   // ------------------------------------------ 答完了"高兴一下"（2026-10-04）
