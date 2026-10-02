@@ -20,10 +20,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 ## Unreleased
 
 - **Running the pointer across the floating ball makes it squirm as if tickled.** Four generated poses (eyes
-  squeezed shut, paws up, open laugh) cycle every 110 ms while the pointer moves over it, and the **tilt is
-  computed from the pointer's speed and direction** rather than baked into the frames - a fixed frame set cannot
-  express "the harder you tickle, the more it wriggles". It leans away from the direction you sweep, reaches its
-  4-degree maximum at 900 px/s, and settles back after 260 ms without movement. The rotation is about the ball's
+  squeezed shut, paws up, open laugh) cycle every 110 ms while the pointer moves over it, and settle back after
+  260 ms without movement. It **no longer tilts** - see the next entry; the 4-degree rotation computed from the
+  pointer's speed and direction was removed on 2026-10-02. Why it was computed rather than drawn is still worth
+  recording: a fixed frame set cannot express "the harder you tickle, the more it wriggles". That rotation was
+  about the ball's
   **centre**, which is what keeps it safe under the circular clip: rotating about the centre preserves every
   pixel's distance from it, so the ears cannot be turned out of the circle - translating them would. The four
   poses are normalized at **scale 1.0** (a tickle must not change the ball's size, unlike the lift sequence),
@@ -31,6 +32,15 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   ordered lift sequence. Skipped under `prefers-reduced-motion`, skipped while the ball is peek-hidden (that
   artwork's straight cut edge would open into a seam when rotated), and a press settles it so the lift owns the
   ball.
+
+- **The tickle no longer tilts the ball - rotation belongs to the lift alone.** It used to add up to 4 degrees of
+  rotation on top of the four poses, and both features wanted the same channel (a `rotate` on `#ball`), so running
+  the pointer across the ball looked like a small version of the take-off. The user asked exactly that - "why does
+  it sway when I move the mouse across it, instead of only swaying in the lift state" - and it is also why the code
+  had to keep the two mutually exclusive in JS (`canTickle()` excludes `ball-lift`, and a press settles the tickle
+  first). `--tickle-deg` is no longer written and its CSS rule is gone, so the tickle is now only the pose frames.
+  Two guards keep it from creeping back: `test/panel-tickle.test.ts` asserts the tickle writes **no** angle at all,
+  and `test/panel-lift-frames.test.ts` asserts that no `body.ball-tickle #ball` rule carries a `transform`.
 
 ### Added
 
@@ -79,7 +89,8 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   - the part you actually see was fixed, and the speed only moved a 10-degree lean on top of it. The user said so
   twice ("move it left quickly and it should sway further left... currently fixed"), and the second time named the
   gesture explicitly, which is what separated it from the tickle: the swing is the one that renders only while the
-  ball is held (`body.ball-lift`), the tickle is the 4-degree tilt you get by running the pointer across it, and
+  ball is held (`body.ball-lift`), the tickle is the four poses you get by running the pointer across it (its 4-degree tilt was removed on
+  2026-10-02, precisely because that distinction was too easy to miss), and
   the two cannot co-occur (`canTickle()` excludes `ball-lift`). Both quantities now come from the single energy
   value described above, and the curve is pinned on a **virtual clock** (see below): hanging still is 6.0 degrees,
   100 px/s 6.7, 400 px/s 8.9, 900 px/s 12.6, and 1800 px/s 19.3 for a single move - a continuous drag reaches

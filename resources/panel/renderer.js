@@ -545,26 +545,21 @@ function endLift() {
 function canPlayLift() {
   return !prefersReducedMotion() && !document.body.classList.contains('ball-peek')
 }
-
-  // ---------------------------------------------- 挠痒痒（2026-10-02）
+  // ---------------------------------------------- 挠痒痒（2026-10-02，倾斜已去掉）
   //
-  // 鼠标在球身上晃过 = 挠它。**分工**：生图的 4 帧只负责表情与爪子的小动作，**倾斜由这里算**，
-  // 幅度跟着移动快慢走、停下 260ms 回正 —— 固定帧做不出"挠得越狠扭得越厉害"。
+  // 鼠标在球身上划过 = 挠它：播 4 张姿势帧（表情与爪子的小动作），停下 260ms 收。
   //
-  // 倾斜是**绕球心**旋转：球是圆形裁切的，绕圆心转的每个像素到圆心的距离不变，所以耳朵不会
-  // 被转出圆外裁掉（平移会，旋转不会）。默认 transform-origin 就是 50% 50%，正合这个前提。
+  // **它曾经还带一个 4° 的倾斜**（按划动速度给、方向与划动相反），2026-10-02 去掉了。用户的理由很直接：
+  // 「为什么鼠标划动也会晃，而不是在起飞状态才会晃」—— 倾斜与"被拎起来"那条走的是**同一个视觉通道**
+  // （都是 `#ball` 上的 rotate），于是随手扫过看起来像一次小号起飞。现在**旋转只归被拎那条**：划过只有帧、
+  // 不转动。这条也进了测试（`test/panel-lift-frames.test.ts` 里有反向断言：挠痒痒那块 CSS 不许再出现
+  // rotate），免得哪天又被加回来。
   const TICKLE_FRAMES = [1, 2, 3, 4].map((n) => 'ball-tickle-' + n)
   const TICKLE_STEP_MS = 110      // 换姿势的间隔（比动作帧慢：挠痒痒是持续的小扭，不是急抖）
-  const TICKLE_DECAY_MS = 260     // 停止移动多久后回正
-  const TICKLE_MAX_DEG = 4        // 最大倾斜角
-  const TICKLE_FULL_SPEED = 900   // 每秒移动多少像素算"挠得最狠"
+  const TICKLE_DECAY_MS = 260     // 停止移动多久后收
   let tickleTimer = null
   let tickleSettle = null
   let tickleIndex = 0
-  let tickleDir = 1
-  let tickleLastX = 0
-  let tickleLastY = 0
-  let tickleLastT = 0
 
   /** 换姿势的**唯一入口**（同 showLift / setBallFace 的理由：散着写迟早有一条分支忘了摘）。 */
   function showTickleFrame(name) {
@@ -573,7 +568,7 @@ function canPlayLift() {
     if (name) document.body.classList.add(name)
   }
 
-  /** 回正：清帧、清角度、清定时器。**按下**与**换形态**都会调它（见下面两处）。 */
+  /** 收：清帧、清定时器。**按下**与**换形态**都会调它（见下面两处）。 */
   function settleTickle() {
     if (tickleTimer !== null) {
       clearTimeout(tickleTimer)
@@ -584,32 +579,19 @@ function canPlayLift() {
       tickleSettle = null
     }
     tickleIndex = 0
-    document.body.style.setProperty('--tickle-deg', '0deg')
     showTickleFrame(null)
   }
 
-  /** 什么时候**不**挠：系统要求少动效；球半隐在屏幕边（那张图有一条直切边，转一下就露缝）；
-   *  正在被拎起来（那是更强的交互，先按下的那个赢）。 */
+  /** 什么时候**不**挠：系统要求少动效；球半隐在屏幕边；正在被拎起来（那是更强的交互，先按下的那个赢）。 */
   function canTickle() {
     return !prefersReducedMotion()
       && !document.body.classList.contains('ball-peek')
       && !document.body.classList.contains('ball-lift')
   }
 
-  /** 在球身上移动一次：按水平方向给倾斜、按速度给幅度，并推进姿势帧。 */
-  function onTickleMove(event) {
+  /** 在球身上移动一次：只推进姿势帧，**不写任何角度** —— 旋转只归"被拎起来"那条（见本节开头）。 */
+  function onTickleMove() {
     if (!canTickle()) return
-    const now = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
-    const dx = event.screenX - tickleLastX
-    const dy = event.screenY - tickleLastY
-    const dt = Math.max(1, now - tickleLastT)        // 除以 0 会把速度算成无穷大
-    tickleLastX = event.screenX
-    tickleLastY = event.screenY
-    tickleLastT = now
-    const speed = Math.hypot(dx, dy) / dt * 1000
-    const amp = Math.min(1, speed / TICKLE_FULL_SPEED)
-    if (Math.abs(dx) >= 1) tickleDir = dx > 0 ? -1 : 1   // 往哪边推，就往反方向倒
-    document.body.style.setProperty('--tickle-deg', (tickleDir * amp * TICKLE_MAX_DEG).toFixed(2) + 'deg')
     if (!document.body.classList.contains('ball-tickle')) {
       tickleIndex = 0
       showTickleFrame(TICKLE_FRAMES[0])

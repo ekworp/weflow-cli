@@ -235,9 +235,13 @@ test('挠痒痒那 4 张：文件、清单、白名单、CSS 与预取都在', (
   }
   // 挠痒痒期间也要藏虹膜层（这 4 帧的眼睛是画死的）
   assert.ok(/body\.ball-tickle #ball \.iris \{\s*display: none/.test(css), '挠痒痒期间要藏掉虹膜层')
-  // 倾斜角经 `--tickle-deg` 传进来，且**必须绕球心转**（默认 transform-origin）
-  assert.ok(/body\.ball-tickle #ball \{[^}]*rotate\(var\(--tickle-deg/.test(css),
-    '挠痒痒的倾斜要读 --tickle-deg')
+  // **挠痒痒那块 CSS 不许再给 #ball 加 transform**（那条 4° 倾斜 2026-10-02 去掉了）：
+  // 它和被拎起来那条共用 `#ball` 上的 rotate，随手扫过就像一次小号起飞 —— 用户的原话是
+  // 「为什么鼠标划动也会晃，而不是在起飞状态才会晃」。这条是**反向**断言：谁把它加回来就会红。
+  assert.ok(
+    !/body\.ball-tickle #ball \{[^}]*transform/.test(css),
+    '挠痒痒不给 #ball 加 transform 了 —— 旋转只归"被拎起来"那条',
+  )
   // **这条是承重的**（D-065）：倾斜之所以不会被圆裁掉，全靠它是**绕球心**转的 —— 绕圆心旋转
   // 不改变任何像素到圆心的距离。这个前提来自 `transform-origin` 的**默认值** 50% 50%：哪天有人
   // 给 #ball 写上 `transform-origin: top left`，球就会在倾斜时甩出圆外被裁，而**其它断言一条都不会红**。

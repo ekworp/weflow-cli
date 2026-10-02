@@ -282,19 +282,19 @@ body.ball-lift-down-4 #ball .face { background-image: url('/panel/mascot-lift-do
 body.ball-lift-down-5 #ball .face { background-image: url('/panel/mascot-lift-down-5.png'); }
 body.ball-lift-down-6 #ball .face { background-image: url('/panel/mascot-lift-down-6.png'); }
 
-/* ---- 挠痒痒（2026-10-02） ----
+/* ---- 挠痒痒（2026-10-02，倾斜已去掉） ----
 
-   鼠标在球身上晃过就扭：4 张生图姿势帧循环（只负责表情与爪子的小动作），**倾斜由 JS 算**
-   （`renderer.js` 的 `onTickleMove`，幅度跟着移动快慢走、停下 260ms 回正），角度经 body 上的
-   `--tickle-deg` 传进来。四条规矩：
+   鼠标在球身上划过就扭：4 张生图姿势帧循环（只负责表情与爪子的小动作），停下 260ms 收。
 
-   1. **旋转是绕球心**（transform-origin 默认 50% 50%）：圆形裁切下，绕圆心转不改变任何像素到
-      圆心的距离，所以耳朵不会被转出圆外。换成平移就会，这也是这里只转不平移的原因。
-   2. **过渡要短且线性**（80ms）：沿用 `#ball` 那条 160ms 回弹曲线的话，倾斜会慢半拍，
-      读起来像"慢镜头"而不是"被挠"。
-   3. **必须写在这四条脸规则之后**：同特异性时后写的赢，挠痒痒的姿势要压过空闲脸。
-   4. **藏掉虹膜层**：这 4 帧的眼睛是画死的，叠上会动的虹膜就是两个瞳仁。 */
-body.ball-tickle #ball { transform: rotate(var(--tickle-deg, 0deg)); transition: transform 80ms linear; }
+   **这里曾经还有一条 `transform: rotate(var(--tickle-deg))`，2026-10-02 去掉了。** 倾斜与"被拎起来"
+   走的是同一个视觉通道（都是 `#ball` 上的 rotate），于是随手扫过看起来像一次小号起飞。用户的报告：
+   「为什么鼠标划动也会晃，而不是在起飞状态才会晃」—— 现在**旋转只归被拎那条**，划过只有帧、不转动。
+   两条规矩：
+
+   1. **必须写在这四条脸规则之后**：同特异性时后写的赢，挠痒痒的姿势要压过空闲脸。
+   2. **藏掉虹膜层**：这 4 帧的眼睛是画死的，叠上会动的虹膜就是两个瞳仁。
+
+   （反向断言在 `test/panel-lift-frames.test.ts`：挠痒痒那块 CSS 里不许再出现 rotate。） */
 body.ball-tickle #ball .iris { display: none; }
 body.ball-tickle-1 #ball .face { background-image: url('/panel/mascot-tickle-1.png'); }
 body.ball-tickle-2 #ball .face { background-image: url('/panel/mascot-tickle-2.png'); }

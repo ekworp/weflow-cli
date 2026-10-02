@@ -1403,9 +1403,30 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-066: The tickle no longer tilts - rotation belongs to the lift alone
+
+**Status:** Active (supersedes the computed-tilt half of D-065)
+
+The tickle used to do two things at once: cycle four generated poses, and rotate the ball by up to 4 degrees
+computed from the pointer's speed, leaning away from the direction you swept. The rotation is **gone** as of
+2026-10-02; the four poses stay.
+
+**Why:** the tilt and the lift share one visual channel - both are a `rotate` on `#ball` - so a pointer merely
+crossing the ball produced a small version of the take-off. The user read it exactly that way: "why does it sway
+when I move the mouse across it, instead of only swaying in the lift state". Two features competing for one
+transform is also why the older code had to keep them mutually exclusive in JS (`canTickle()` excludes
+`ball-lift`, and a press settles the tickle first).
+
+**Consequences:** `--tickle-deg` is no longer written and its CSS rule is gone, so `body.ball-tickle` now only
+carries the pose frames and the hidden iris layer. The rest of the behaviour is unchanged: a pose every 110 ms,
+settled 260 ms after movement stops, skipped under `prefers-reduced-motion`, while peek-hidden, and while the
+ball is lifted. Two guards keep it from creeping back: `test/panel-tickle.test.ts` asserts the tickle writes
+**no** angle at all, and `test/panel-lift-frames.test.ts` asserts that no `body.ball-tickle #ball` rule carries a
+`transform`. **Not yet verified live** - as with D-065, nobody has watched it on a real window.
+
 ## D-065: The tickle is a computed tilt plus four poses, and it rotates about the centre because that is what the circular clip allows
 
-**Status:** Active
+**Status:** Superseded by D-066 (the computed tilt was removed on 2026-10-02; the four poses stay)
 
 Running the pointer across the floating ball makes it squirm. Two things are decided here.
 

@@ -1,17 +1,20 @@
 /**
- * 挠痒痒：**在球身上晃过它就扭，停下就回正**。
+ * 挠痒痒：**在球身上划过它就扭，停下就收**（4 张生图姿势帧，只管表情与爪子的小动作）。
  *
- * 为什么会有这一条（用户 2026-10-02 要的）：鼠标从它身上划过时像被挠到。分工是刻意的 ——
- * 4 张生图帧只负责表情与爪子的小动作，**倾斜由渲染进程按鼠标速度算**，因为固定帧做不出
- * "挠得越狠扭得越厉害"。
+ * 为什么会有这一条（用户 2026-10-02 要的）：鼠标从它身上划过时像被挠到。
  *
- * jsdom 里 CSS 不跑，所以这里验的是**类名与那个自定义属性**（倾斜角经 `--tickle-deg` 传给 CSS），
- * 不是"看起来像不像被挠" —— 好看只能人看（而且这个透明窗口截图会假阴性，仓库有记录）。
+ * **曾经它还带一个 4° 的倾斜，同一天去掉了。** 用户的报告是「为什么鼠标划动也会晃，而不是在起飞
+ * 状态才会晃」—— 倾斜与被拎起来那条共用 `#ball` 上的 rotate，随手扫过看起来像一次小号起飞。
+ * 所以这里除了"有没有挂帧"，还盯住**它一个角度都不许写**：`--tickle-deg` 现在应该始终是空的。
+ * （"谁把它加回来"还有一条反向断言在 `panel-lift-frames.test.ts` 里。）
+ *
+ * jsdom 里 CSS 不跑，所以这里验的是**类名与那个自定义属性**，不是"看起来像不像被挠" ——
+ * 好看只能人看（而且这个透明窗口截图会假阴性，仓库有记录）。
  *
  * 三条容易静默写错的：
- *   1. **停下要回正**（不是"扭一次就挂着"）：回正的定时器漏了，球会歪着不动。
+ *   1. **停下要收**（不是"扭一次就挂着"）：收尾的定时器漏了，球会一直扭。
  *   2. **按下要立刻让位**给"被拎起来"那套 —— 两个动作同时挂类会互相打架。
- *   3. **reduced-motion 下一动都不许动**，半隐在屏幕边时也不许（那张图的直切边转一下就露缝）。
+ *   3. **reduced-motion 下一动都不许动**，半隐在屏幕边时也不许。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -81,22 +84,19 @@ async function boot(options: { reducedMotion?: boolean } = {}): Promise<Booted> 
   }
 }
 
-test('在它身上晃过就扭：挂上姿势帧 + 一个非零倾斜角', async () => {
+test('在它身上划过就扭：挂上姿势帧，但**一个角度都不写**（旋转只归被拎那条）', async () => {
   const app = await boot()
   try {
     app.move(1000, 800)
-    await wait(12)                       // 留一点真实时间，速度才不是无穷大
+    await wait(12)
     app.move(1040, 802)                  // 往右划 40px
     assert.equal(app.bodyHas('ball-tickle'), true, '划过之后应当进入挠痒痒状态')
     assert.equal(app.tickleClasses().length, 1, '同时只该挂一帧姿势')
-    const deg = Number.parseFloat(app.deg())
-    assert.ok(Number.isFinite(deg) && deg !== 0, `倾斜角应当非零，实际 ${app.deg()}`)
-    // 往右划 → 往反方向（左）倒，所以是负角
-    assert.ok(deg < 0, `往右划应当往左倒（负角），实际 ${deg}`)
+    assert.equal(app.deg(), '', `划过不该写倾斜角，实际 ${JSON.stringify(app.deg())}`)
   } finally { app.window.close() }
 })
 
-test('停下就回正：不再移动一段时间之后类与角度都清干净', async () => {
+test('停下就收：不再移动一段时间之后类与姿势帧都清干净', async () => {
   const app = await boot()
   try {
     app.move(1000, 800)
@@ -104,9 +104,9 @@ test('停下就回正：不再移动一段时间之后类与角度都清干净',
     app.move(1050, 800)
     assert.equal(app.bodyHas('ball-tickle'), true)
     await wait(DECAY_MS + 300)   // 余量给足：满负载下定时器会晚
-    assert.equal(app.bodyHas('ball-tickle'), false, '停下之后应当回正')
+    assert.equal(app.bodyHas('ball-tickle'), false, '停下之后应当收')
     assert.deepEqual(app.tickleClasses(), [], '姿势帧也要摘掉')
-    assert.equal(app.deg(), '0deg', `角度应当归零，实际 ${app.deg()}`)
+    assert.equal(app.deg(), '', '角度从头到尾就没写过（"旋转只归被拎那条"）')
   } finally { app.window.close() }
 })
 
