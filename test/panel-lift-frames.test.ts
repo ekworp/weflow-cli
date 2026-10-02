@@ -238,6 +238,13 @@ test('挠痒痒那 4 张：文件、清单、白名单、CSS 与预取都在', (
   // 倾斜角经 `--tickle-deg` 传进来，且**必须绕球心转**（默认 transform-origin）
   assert.ok(/body\.ball-tickle #ball \{[^}]*rotate\(var\(--tickle-deg/.test(css),
     '挠痒痒的倾斜要读 --tickle-deg')
+  // **这条是承重的**（D-065）：倾斜之所以不会被圆裁掉，全靠它是**绕球心**转的 —— 绕圆心旋转
+  // 不改变任何像素到圆心的距离。这个前提来自 `transform-origin` 的**默认值** 50% 50%：哪天有人
+  // 给 #ball 写上 `transform-origin: top left`，球就会在倾斜时甩出圆外被裁，而**其它断言一条都不会红**。
+  // 只检查规则体 —— 选择器那半可能含提到 transform-origin 的注释（panel.css 里就有），那不是设定。
+  for (const rule of css.matchAll(/([^{}]*#ball[^{}]*)\{([^{}]*)\}/g)) {
+    assert.ok(!/transform-origin/.test(rule[2]), `${rule[1].trim()} 里不许设 transform-origin`)
+  }
 })
 
 test('挠痒痒那族的几何：同尺寸、同注册位、四张各不相同', () => {
