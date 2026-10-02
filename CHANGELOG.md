@@ -42,6 +42,27 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   Two guards keep it from creeping back: `test/panel-tickle.test.ts` asserts the tickle writes **no** angle at all,
   and `test/panel-lift-frames.test.ts` asserts that no `body.ball-tickle #ball` rule carries a `transform`.
 
+- **`weflow-cli wiki graph` exports the concept graph as a self-contained 3D page.** `output/knowledge-graph-3d.html`
+  (9.05 MB for this machine's 49,956 concepts / 145,794 links) opens by double-click with no server: the libraries,
+  the graph and the layout coordinates are all inlined, because a `file://` page cannot `fetch` its data and a CDN
+  reference would make a local-first feature depend on the network. The generator used to live in a gitignored
+  `output/_3d/`, so on any other machine it simply did not exist - and its Node layout helper carried **this
+  machine's absolute path** in the source. Both now live in the repository (`scripts/graph_3d.py`, and the helper
+  beside the libraries it loads under `resources/js/graph3d/`, with versions and licences in `NOTICE.txt`). The
+  layout is the slow part, so it is computed once and cached under `output/.graph3d-cache/`; `--dry-run` reports the
+  counts and writes nothing. `test/graph-3d-cli.test.ts` pins the parts that break silently: the page must carry
+  **no** external reference, the two library lists must agree, `--dry-run` must not write, and a hand-run without the
+  CLI's `PYTHONIOENCODING` must still print readable UTF-8 (this machine's console is GBK, and that trap has bitten
+  the repository before).
+
+- **`chat-notes --transcribe-voice` was documented but unreachable.** The Python script has supported it since the
+  local-whisper path landed, and `docs/PROJECT_STATE.md` told readers to add the flag to fill missing transcripts -
+  but the CLI command forwarded only `--days`, `--limit`, `--yes`, `--json` and `--dry-run`, so the flag came back as
+  an unknown option. It is now declared and forwarded; combined with `--dry-run` it fills the local cache and prints
+  the counts **without calling any model** (zero cost, zero egress). Run on this machine it took the 30-day window to
+  **130 voice messages with transcripts, 0 without**. `test/chat-notes-cli.test.ts` pins both halves (declared *and*
+  forwarded) - either one alone leaves the switch dead, which is exactly the state it was in.
+
 ### Added
 
 - **The ball now reacts twice more on its own: a hop when a reply lands, and a blink every 7-13 seconds.** The hop

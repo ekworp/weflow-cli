@@ -105,6 +105,16 @@ prints JSON). Three rules that this project has been bitten by:
   "extraction has never been run".
 - **State goes in over stdin, not argv.** Command lines are visible in the process list; the drafting tool passes the
   conversation over stdin for exactly that reason, and `semantic_search.py` takes the query through the environment.
+- **A generator whose output must open without a server has to carry its own libraries.** `scripts/graph_3d.py`
+  inlines three.js and six d3 modules into the page, because a `file://` page cannot `fetch` its data (CORS) and a CDN
+  reference would make a local-first feature need the network. Those files live in `resources/js/graph3d/` (shipped
+  via the `resources/` entry in package.json's `files`), the Node layout helper that loads **the same** UMDs sits
+  beside them, and `NOTICE.txt` there records versions and licences. Rename or upgrade one and you must change the
+  list in **two** places - `graph_3d.py`'s `LIB_D3` and `layout.mjs`'s `LIBS` - which is why
+  `test/graph-3d-cli.test.ts` asserts the two agree and that the emitted page contains no external reference at all.
+  That script is also the one to copy if your generator's cache is big: `--cache` exists so tests can point it at a
+  temporary directory instead of overwriting the real one (the first version of the test did exactly that, on top of a
+  background run).
 
 Tests for Python live in `test/*_test.py` and run on the same filesystem as everything else (`npm test` covers
 TypeScript; `python -m unittest discover -s test -p '*_test.py'` covers these).

@@ -1,0 +1,30 @@
+随包发出去的第三方 JS（3D 图谱页面用）
+=====================================
+
+这些文件**不是本仓库写的**，是原样收进来的上游产物。放进仓库的原因只有一个：
+`weflow-cli wiki graph` 要把页面做成**自包含**的（库内联进 HTML，`file://` 双击就能开、
+不联网、不依赖 CDN）。所以它们随 npm 包一起发，各自的许可证照旧约束各自的使用。
+
+  three.min.js            three.js r147        MIT
+                          Copyright 2010-2022 Three.js Authors（许可头在该文件里）
+                          https://github.com/mrdoob/three.js
+  d3-dispatch.min.js      d3-dispatch         ISC
+  d3-quadtree.min.js      d3-quadtree         ISC
+  d3-timer.min.js         d3-timer            ISC
+                          https://d3js.org（Mike Bostock 等）
+  d3-force-3d.min.js      d3-force-3d v3.0.6  MIT
+  d3-octree.min.js        d3-octree           MIT
+  d3-binarytree.min.js    d3-binarytree       MIT
+                          https://github.com/vasturiano（来源写在每个文件第一行）
+
+d3-force-3d 的 UMD **不带依赖**：它从全局 `d3` 命名空间取 dispatch / timer / quadtree /
+octree / binarytree，所以上面五个必须按这个顺序先引（`layout.mjs` 与 `graph_3d.py` 里
+都按这个顺序读）。少一个的报错是 "u.timer is not a function"，看着像库坏了，其实只是缺件。
+
+注意事项：
+  - **升级这些文件要一起改两处**：`scripts/graph_3d.py` 的 `LIB_D3` 与
+    `resources/js/graph3d/layout.mjs` 的 `LIBS`。两处都要有，因为页面与布局用的是同一套 UMD。
+  - `test/graph-3d-cli.test.ts` 会断言这些文件都在、且页面里**没有外部 http 引用** ——
+    换库时别把 CDN 引回来。
+  - 3d-force-graph 曾经用过（第一版，2.2 fps），后来换成自己拼 three + d3-force-3d
+    （每帧 3~4 次 draw call）。那个 692KB 的捆绑包**没有**收进仓库。

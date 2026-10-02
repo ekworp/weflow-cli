@@ -94,7 +94,7 @@ Automatic initialization on Linux depends on the WeChat distribution, the Python
 | --- | --- |
 | Chat history | Query sessions, contacts, and messages; export to JSON, TXT, HTML, Excel. An HTML export also writes a media coverage report saying which images and stickers could not be embedded, and why. |
 | Official-account digest | Crawl articles, AI summarization and classification, generate a local reading page, keep favorites and read states. |
-| Personal knowledge base | Sync WeRead notes, build an Obsidian vault, semantic search, RAG Q&A, and a concept wiki. |
+| Personal knowledge base | Sync WeRead notes, build an Obsidian vault, semantic search, RAG Q&A, a concept wiki, and a **self-contained 3D graph page** you can open by double-clicking (`weflow-cli wiki graph --open` - no server, no network). |
 | AI collaboration | Expose article crawling, knowledge-base retrieval, digests, and selected local-data tools to MCP-compatible clients. The inventory follows the current code and `docs/MCP.md`. |
 | Personal review | Monthly chat reports, annual reports, todo extraction, and local Moments cache queries. |
 | WeChat favorites | Read WeChat "Favorites" (official-account articles, text, images, videos, chat records) with type filters, keyword search, and Markdown/JSON export. |

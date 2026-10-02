@@ -5511,6 +5511,58 @@ program
       }
     })
 
+  // wiki graph：把概念图谱导成一张**自包含**的 3D 页面（全本地：只读 Vault、不联网、不调用模型）
+  //
+  // 自包含是硬要求，不是顺手：页面用 `file://` 双击打开，那时 `fetch` 会被 CORS 挡死，
+  // 所以库、数据、坐标全部内联进去 —— 也因此三个库随 npm 包发（见 resources/js/graph3d/NOTICE.txt）。
+  // 布局（250 tick 实测 55 秒）在构建期用 Node 算完并缓存，打开页面即用。
+  program.commands.find(c => c.name() === 'wiki')?.addCommand(
+    new Command('graph')
+      .description('把概念图谱导成一张自包含的 3D 页面（只读本地、不联网；生成的 HTML 双击就能逛）')
+      .option('--vault <dir>', 'Vault 根目录（默认 output/wechat-vault）')
+      .option('-o, --out <file>', '页面写到哪（默认 output/knowledge-graph-3d.html）')
+      .option('--ticks <n>', '力导向迭代次数（默认 250，越多越舒展也越慢）')
+      .option('--dry-run', '只报概念与链接数：不写文件、也不算布局（本地，零改动）')
+      .option('--open', '生成后用默认浏览器打开它')
+      .option('--json', '输出机器可读结果')
+      .action(async (opts) => {
+        const { execFile } = await import('child_process')
+        const { promisify } = await import('util')
+        const execFileAsync = promisify(execFile)
+        const script = join(resolvePackageRoot(), 'scripts', 'graph_3d.py')
+        const ticks = opts.ticks === undefined ? undefined : parseCliInteger(opts.ticks, 'ticks', 1, 100000, !!opts.json)
+        // `--json` 一律要：CLI 要拿到 out 路径与计数，才决定怎么印。开关只决定**给谁看**。
+        const args = [script,
+                      ...(opts.vault ? ['--vault', opts.vault] : []),
+                      ...(opts.out ? ['--out', opts.out] : []),
+                      ...(ticks === undefined ? [] : ['--ticks', String(ticks)]),
+                      ...(opts.dryRun ? ['--dry-run'] : []),
+                      '--json']
+        try {
+          const { stdout } = await execFileAsync(getPythonCommand(), args, {
+            timeout: 900_000, maxBuffer: 64 * 1024 * 1024, env: pythonProcessEnv(),
+          })
+          const body = JSON.parse(stdout.slice(stdout.indexOf('{')))
+          if (opts.json) {
+            console.log(JSON.stringify(body))
+          } else if (body.dryRun) {
+            console.log(`概念 ${body.nodes} 个、链接 ${body.links} 条（--dry-run：没有写文件）`)
+          } else {
+            console.log(chalk.green(`✓ 已生成 ${body.out}`))
+            console.log(chalk.gray(`  概念 ${body.nodes} / 链接 ${body.links} / ${body.mb} MB · 双击就能逛，不需要服务器`))
+          }
+          if (!opts.dryRun && opts.open && body.out) await openLocalUrl(body.out)
+        } catch (error) {
+          if (opts.json) {
+            console.log(JSON.stringify({ success: false, code: 'GRAPH_FAILED', action: 'graph-3d', error: safeSubprocessError(error) }))
+          } else {
+            console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
+          }
+          process.exit(1)
+        }
+      })
+  )
+
   // wiki lint：知识库体检（全本地：不联网、不调用模型）
   program.commands.find(c => c.name() === 'wiki')?.addCommand(
     new Command('lint')
@@ -5544,6 +5596,8 @@ program
     .option('--limit <n>', '最多处理几个会话', '40')
     .option('--dry-run', '仅预览：几个会话、多少字符会发给生成模型（只读本地，零出境）')
     .option('--yes', '确认把对话发送给生成模型')
+    .option('--transcribe-voice',
+            '把缺转写的语音**本机**识别掉再产卡（本地 whisper，慢、吃 CPU、不出网；配合 --dry-run 就是只补转写、不调模型）')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (opts) => {
       const { execFile } = await import('child_process')
@@ -5579,6 +5633,7 @@ program
       }
       const args = [script, '--days', String(days), '--limit', String(limit),
                     ...(confirmed ? ['--yes'] : []),
+                    ...(opts.transcribeVoice ? ['--transcribe-voice'] : []),
                     ...(opts.json ? ['--json'] : []),
                     ...(opts.dryRun ? ['--dry-run'] : [])]
       try {
