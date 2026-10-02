@@ -5518,10 +5518,12 @@ program
   // 布局（250 tick 实测 55 秒）在构建期用 Node 算完并缓存，打开页面即用。
   program.commands.find(c => c.name() === 'wiki')?.addCommand(
     new Command('graph')
-      .description('把概念图谱导成一张自包含的 3D 页面（只读本地、不联网；生成的 HTML 双击就能逛）')
+      .description('把概念图谱导成一张自包含的图谱页面（只读本地、不联网；生成的 HTML 双击就能逛）。--flat 出 2D 版')
       .option('--vault <dir>', 'Vault 根目录（默认 output/wechat-vault）')
       .option('-o, --out <file>', '页面写到哪（默认 output/knowledge-graph-3d.html）')
       .option('--ticks <n>', '力导向迭代次数（默认 250，越多越舒展也越慢）')
+      .option('--cache <dir>', '布局缓存目录（派生数据；测试/多份图分开放时用）')
+      .option('--flat', '2D 版：平面图（更像 Obsidian 那种），canvas 渲染，输出默认 knowledge-graph-2d.html')
       .option('--min-degree <n>', '只画在原图里连接数 ≥N 的概念（去掉细枝看骨架；0 = 全画）')
       .option('--line <which>', '只画一条线：all / wiki / chat')
       .option('--dry-run', '只报概念与链接数：不写文件、也不算布局（本地，零改动）')
@@ -5531,7 +5533,9 @@ program
         const { execFile } = await import('child_process')
         const { promisify } = await import('util')
         const execFileAsync = promisify(execFile)
-        const script = join(resolvePackageRoot(), 'scripts', 'graph_3d.py')
+        // 2D 与 3D 是**两个入口脚本**：图怎么建共用（graph_2d 直接 import graph_3d），
+        // 换的是布局维度与渲染器 —— 两套渲染器塞一个文件就没人看得完了。
+        const script = join(resolvePackageRoot(), 'scripts', opts.flat ? 'graph_2d.py' : 'graph_3d.py')
         const ticks = opts.ticks === undefined ? undefined : parseCliInteger(opts.ticks, 'ticks', 1, 100000, !!opts.json)
         // `--json` 一律要：CLI 要拿到 out 路径与计数，才决定怎么印。开关只决定**给谁看**。
         const minDegree = opts.minDegree === undefined
@@ -5539,6 +5543,7 @@ program
         const args = [script,
                       ...(opts.vault ? ['--vault', opts.vault] : []),
                       ...(opts.out ? ['--out', opts.out] : []),
+                      ...(opts.cache ? ['--cache', opts.cache] : []),
                       ...(ticks === undefined ? [] : ['--ticks', String(ticks)]),
                       ...(minDegree === undefined || minDegree === 0 ? [] : ['--min-degree', String(minDegree)]),
                       ...(opts.line ? ['--line', opts.line] : []),
@@ -5555,7 +5560,7 @@ program
             console.log(`概念 ${body.nodes} 个、链接 ${body.links} 条（--dry-run：没有写文件）`)
           } else {
             console.log(chalk.green(`✓ 已生成 ${body.out}`))
-            console.log(chalk.gray(`  概念 ${body.nodes} / 链接 ${body.links} / ${body.mb} MB · 双击就能逛，不需要服务器`))
+            console.log(chalk.gray(`  概念 ${body.nodes} / 链接 ${body.links} / ${body.mb} MB · ${opts.flat ? '2D' : '3D'} · 双击就能逛，不需要服务器`))
           }
           if (!opts.dryRun && opts.open && body.out) await openLocalUrl(body.out)
         } catch (error) {

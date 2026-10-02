@@ -21,6 +21,11 @@ d3-force-3d 的 UMD **不带依赖**：它从全局 `d3` 命名空间取 dispatc
 octree / binarytree，所以上面五个必须按这个顺序先引（`layout.mjs` 与 `graph_3d.py` 里
 都按这个顺序读）。少一个的报错是 "u.timer is not a function"，看着像库坏了，其实只是缺件。
 
+本目录里另外两个文件是**本项目自己的**，不是第三方：`layout.mjs`（构建期算布局的 Node 助手）与
+`viewer2d.js`（2D 版的 canvas 渲染器，会被 `graph_2d.py` 内联进页面）。它们与上面这些库放在一起，
+是因为布局助手 `new Function` 跑的就是这套 UMD —— 一个在包外、一个在包里最容易漏。2D 页面本身
+**不需要任何库**（布局在构建期做完，渲染是裸 canvas），所以 `graph_2d.py` 只检查 d3 那几个 + 这两个文件。
+
 注意事项：
   - **升级这些文件要一起改两处**：`scripts/graph_3d.py` 的 `LIB_D3` 与
     `resources/js/graph3d/layout.mjs` 的 `LIBS`。两处都要有，因为页面与布局用的是同一套 UMD。

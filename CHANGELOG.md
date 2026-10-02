@@ -76,6 +76,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   mutations confirm the guards bite - keeping dangling links, skipping the node filter, and ignoring `--line` each
   turn the suite red.
 
+- **`wiki graph --flat` draws the same graph as a 2D canvas page.** The 2D layout is a *separate* build-time solve,
+  not a flattening of the 3D coordinates: the z axis carries structure, so dropping it stacks clusters that have
+  nothing to do with each other on top of one another. 2D is also far cheaper - 3,825 nodes took **2.4 s** for 250
+  ticks where the 3D solve at 25k took 55 s - so the page is **0.71 MB** against the 3D page's 1.34 MB, and it needs
+  **no libraries at all**: the layout is precomputed, the renderer is plain canvas, and unlike the 3D page there is
+  not even three.js to inline (a test asserts the page contains no `Three.js Authors` and no external reference).
+  Interaction is the Obsidian-like set - drag to pan, wheel to zoom, hover for a name, click a concept to dim
+  everything except it and its neighbours, and a search box to jump - with labels only for the highest-degree nodes,
+  because 5,000 names on screen is a smear rather than a graph. `--min-degree` / `--line` apply unchanged, and 2D and
+  3D coordinates are cached separately (the digest includes the dimension), so switching between the four
+  combinations never recomputes anything. `test/graph-2d-cli.test.ts` includes a **render smoke test**: it feeds the
+  built data to the viewer over a fake canvas context and counts the `arc` / `lineTo` / `fillText` calls, because a
+  JS error in a viewer yields a blank page with **no failing assertion anywhere** - and the page cannot be eyeballed
+  from here.
+
 ### Added
 
 - **The ball now reacts twice more on its own: a hop when a reply lands, and a blink every 7-13 seconds.** The hop
