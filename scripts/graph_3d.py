@@ -17,6 +17,7 @@
 就等于消失了）；布局算完即冻结，逛的时候不再吃 CPU；不再依赖 5.8 MB 的捆绑包。
 """
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -48,10 +49,19 @@ LIB_D3 = ['d3-dispatch.min.js', 'd3-timer.min.js', 'd3-quadtree.min.js',
           'd3-binarytree.min.js', 'd3-octree.min.js', 'd3-force-3d.min.js']
 
 
-def build_graph(vault):
+def build_graph(vault, min_degree=0, line='all'):
+    """`min_degree` / `line` 只在**产出**这一步过滤，改动的是给页面看的点集。
+
+    `min_degree` 用的是**原图里**的度数（"它总共连了 ≥N 个概念"），不是子图里重算的 ——
+    否则每放大一次门槛，度数就变一次，同一个数在不同页面上含义不同。
+    """
     pages = []
-    for d in (vault / 'Wiki' / 'Concepts', vault / 'Chat' / 'Concepts'):
-        pages += wl.collect(str(d), wl.CARD_DIRS)
+    for label, d in (('wiki', vault / 'Wiki' / 'Concepts'), ('chat', vault / 'Chat' / 'Concepts')):
+        if line != 'all' and label != line:
+            continue
+        for p in wl.collect(str(d), wl.CARD_DIRS):
+            p['line'] = label
+            pages.append(p)
     names = {p['stem'] for p in pages}
     edges = set()
     for p in pages:
@@ -67,9 +77,15 @@ def build_graph(vault):
     for a, b in edges:
         degree[a] += 1
         degree[b] += 1
-    nodes = [{'id': p['stem'], 'deg': degree[p['stem']]} for p in pages]
+    nodes = [{'id': p['stem'], 'deg': degree[p['stem']], 'line': p['line']} for p in pages]
     # 边写成二元数组而不是 {source,target} 对象：7 万条边能省掉 1 MB 的重复键名
     links = [[a, b] for a, b in sorted(edges)]
+    if min_degree > 0:
+        keep = {n['id'] for n in nodes if n['deg'] >= min_degree}
+        # **删点必须连边一起删**：布局按 id 连边，留着指向已删点的边，力导向会直接报错
+        # （error: node not found），而且只在跑布局时才炸 —— 页面那边看着像"库坏了"。
+        links = [pair for pair in links if pair[0] in keep and pair[1] in keep]
+        nodes = [n for n in nodes if n['id'] in keep]
     return nodes, links
 
 
@@ -430,6 +446,12 @@ def _parse_args(argv):
     ap = argparse.ArgumentParser(description='把知识库导成一张自包含的 3D 图谱页面（只读本地、不联网）')
     ap.add_argument('--vault', default=str(DEFAULT_VAULT), help='Vault 根目录（默认 output/wechat-vault）')
     ap.add_argument('--out', default=str(DEFAULT_OUT), help='页面写到哪（默认 output/knowledge-graph-3d.html）')
+    # argparse 的短名要写在 metavar 里（写成 '--min-degree <n>' 是 commander 的语法，
+    # dest 会变成别的名字，运行时报 AttributeError）
+    ap.add_argument('--min-degree', dest='min_degree', metavar='N', type=int, default=0,
+                    help='只画在原图里连接数 ≥N 的概念（去掉细枝，看骨架）；0 = 全画')
+    ap.add_argument('--line', dest='line', metavar='WHICH', choices=['all', 'wiki', 'chat'], default='all',
+                    help='只画某一条线：文章线的概念页 / 聊天线的概念页 / 两条都画')
     ap.add_argument('--ticks', type=int, default=250, help='力导向迭代次数（默认 250，越多越舒展也越慢）')
     ap.add_argument('--dry-run', action='store_true', help='只报概念与链接数：不写文件、也不算布局')
     ap.add_argument('--cache', default=str(CACHE_DIR),
@@ -461,13 +483,14 @@ def main(argv=None):
     if not (vault / 'Wiki' / 'Concepts').is_dir() and not (vault / 'Chat' / 'Concepts').is_dir():
         return _fail('Vault 里没有概念目录：%s（先跑 `wiki compile`，或用 --vault 指定）' % vault, args.json)
 
-    nodes, links = build_graph(vault)
+    nodes, links = build_graph(vault, min_degree=args.min_degree, line=args.line)
     if args.dry_run:
         # 只报数：不写文件、也不算布局（布局是最慢的一步，预览不该等它）。
         # 库的存在性检查也放在这之后 —— 预览不内联任何库，缺库不该挡住"先看看有多少个点"。
         if args.json:
             print(json.dumps({'success': True, 'action': 'graph-3d', 'dryRun': True,
                               'nodes': len(nodes), 'links': len(links), 'vault': str(vault),
+                              'minDegree': args.min_degree, 'line': args.line,
                               'readsLocalData': True, 'invokesAI': False, 'sendsNothing': True},
                              ensure_ascii=False))
         else:
@@ -484,14 +507,17 @@ def main(argv=None):
     # 图没变就沿用缓存 —— 只改渲染的时候不该每次都等一分钟。
     cache = Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
-    graph_file = cache / 'graph.json'
-    pos_file = cache / 'positions.json'
+    # **按图的内容分槽**：核心图与全量图是两张不同的图，坐标不通用。共用一份文件名的话，
+    # 建完核心图就把 5 万点的坐标挤掉了，切回去要重算 55 秒。
+    digest = hashlib.sha1(data.encode('utf-8')).hexdigest()[:12]
+    graph_file = cache / ('graph-%s.json' % digest)
+    pos_file = cache / ('positions-%s.json' % digest)
     same = graph_file.exists() and graph_file.read_text(encoding='utf-8') == data
     if same and pos_file.exists():
         print('图没变，沿用已有布局')
     else:
         graph_file.write_text(data, encoding='utf-8')
-        subprocess.run(['node', str(LIB_DIR / 'layout.mjs'), str(cache), str(LIB_DIR), str(args.ticks)],
+        subprocess.run(['node', str(LIB_DIR / 'layout.mjs'), str(cache), str(LIB_DIR), str(args.ticks), digest],
                        check=True)
     pos = pos_file.read_text(encoding='utf-8')
     page = f"""<!doctype html>
@@ -536,6 +562,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps({'success': True, 'action': 'graph-3d', 'nodes': len(nodes), 'links': len(links),
                           'out': str(out), 'vault': str(vault), 'mb': round(mb, 2),
+                          'minDegree': args.min_degree, 'line': args.line,
                           'selfContained': True, 'readsLocalData': True, 'invokesAI': False,
                           'sendsNothing': True}, ensure_ascii=False))
     else:

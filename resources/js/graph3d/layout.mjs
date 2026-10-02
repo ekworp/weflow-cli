@@ -11,13 +11,15 @@
 // 搬进仓库时一并改掉 —— 仓库里的代码不许出现用户的真实路径。
 import { readFileSync, writeFileSync } from 'node:fs'
 
-const [cacheDir, libDir, ticksArg] = process.argv.slice(2)
+const [cacheDir, libDir, ticksArg, digest] = process.argv.slice(2)
 if (!cacheDir || !libDir) {
-  console.error('用法：node layout.mjs <缓存目录> <库目录> [tick]')
+  console.error('用法：node layout.mjs <缓存目录> <库目录> [tick] [digest]')
   process.exit(2)
 }
-const IN = `${cacheDir}/graph.json`
-const OUT = `${cacheDir}/positions.json`
+// digest 是图内容的哈希：核心图与全量图各存一份坐标（见 graph_3d.py 里那段注释）
+const suffix = digest ? `-${digest}` : ''
+const IN = `${cacheDir}/graph${suffix}.json`
+const OUT = `${cacheDir}/positions${suffix}.json`
 const TICKS = Number(ticksArg || 250)
 
 const LIBS = ['d3-dispatch.min.js', 'd3-timer.min.js', 'd3-quadtree.min.js',

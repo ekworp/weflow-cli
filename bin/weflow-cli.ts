@@ -5522,6 +5522,8 @@ program
       .option('--vault <dir>', 'Vault 根目录（默认 output/wechat-vault）')
       .option('-o, --out <file>', '页面写到哪（默认 output/knowledge-graph-3d.html）')
       .option('--ticks <n>', '力导向迭代次数（默认 250，越多越舒展也越慢）')
+      .option('--min-degree <n>', '只画在原图里连接数 ≥N 的概念（去掉细枝看骨架；0 = 全画）')
+      .option('--line <which>', '只画一条线：all / wiki / chat')
       .option('--dry-run', '只报概念与链接数：不写文件、也不算布局（本地，零改动）')
       .option('--open', '生成后用默认浏览器打开它')
       .option('--json', '输出机器可读结果')
@@ -5532,10 +5534,14 @@ program
         const script = join(resolvePackageRoot(), 'scripts', 'graph_3d.py')
         const ticks = opts.ticks === undefined ? undefined : parseCliInteger(opts.ticks, 'ticks', 1, 100000, !!opts.json)
         // `--json` 一律要：CLI 要拿到 out 路径与计数，才决定怎么印。开关只决定**给谁看**。
+        const minDegree = opts.minDegree === undefined
+          ? undefined : parseCliInteger(opts.minDegree, 'min-degree', 0, 100000, !!opts.json)
         const args = [script,
                       ...(opts.vault ? ['--vault', opts.vault] : []),
                       ...(opts.out ? ['--out', opts.out] : []),
                       ...(ticks === undefined ? [] : ['--ticks', String(ticks)]),
+                      ...(minDegree === undefined || minDegree === 0 ? [] : ['--min-degree', String(minDegree)]),
+                      ...(opts.line ? ['--line', opts.line] : []),
                       ...(opts.dryRun ? ['--dry-run'] : []),
                       '--json']
         try {

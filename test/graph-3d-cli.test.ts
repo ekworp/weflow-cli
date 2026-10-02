@@ -19,7 +19,7 @@
  * 却在函数体里没用过），所以"换个目录跑答案一样"是一条**不可能红**的断言，没写。）
  */
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -91,6 +91,23 @@ test('三张互链的概念页 → 3 点 3 边，且页面完全自包含（没�
   })
 })
 
+test('接线：--min-degree / --line 既被声明、也被透传（少了任一半，开关在命令行里就是死的）', () => {
+  // 这条是吃过亏学的：`chat-notes --transcribe-voice` 曾经只有 python 侧支持、CLI 没透传，
+  // 文档写着能用、命令行报 unknown option。`wiki graph` 的这两个开关这次一起加，也一起钉住。
+  const src = readFileSync(join(ROOT, 'bin', 'weflow-cli.ts'), 'utf8')
+  const at = src.indexOf("new Command('graph')")
+  assert.ok(at > 0, '找不到 wiki graph 命令（改名了？那这条要跟着改）')
+  const declared = src.slice(at, src.indexOf('.action(', at))
+  for (const opt of ['--min-degree', '--line']) {
+    // commander 把 metavar 写在选项串里（`'--min-degree <n>'`），所以只匹配开关名本身
+    assert.ok(declared.includes(opt), `命令要声明 ${opt}`)
+  }
+  const argsAt = src.indexOf('const args = [script,', at)
+  const argsBlock = src.slice(argsAt, argsAt + 900)
+  assert.ok(argsBlock.includes("['--min-degree', String(minDegree)]"), '参数数组要透传 --min-degree')
+  assert.ok(argsBlock.includes("['--line', opts.line]"), '参数数组要透传 --line')
+})
+
 test('库齐全，且两份清单一致（页面与布局用的是同一套 UMD）', () => {
   for (const name of LIBS) {
     assert.ok(existsSync(join(GRAPH_DIR, name)), `缺库：${name}（页面会在 new Function 里炸）`)
@@ -120,6 +137,56 @@ test('--dry-run 真的不写文件（只报数）', () => {
   })
 })
 
+test('--min-degree 按**原图**里的连接数筛点，并把指向被删点的边一起删掉', () => {
+  withTemp((tmp) => {
+    // **单向**链接，度数才好数（`[[x]]` 是有向边，互链会让两端各加一度、把差别抹平）：
+    //   甲 → 乙 / 丙 / 丁        戊 → 甲 / 乙
+    //   度数：甲 = 3+1(戊)=4，乙 = 1(甲)+1(戊)=2，戊 = 2，丙 = 1，丁 = 1
+    const vault = join(tmp, 'vault')
+    const wiki = join(vault, 'Wiki', 'Concepts')
+    mkdirSync(wiki, { recursive: true })
+    writeFileSync(join(wiki, '甲.md'), concept('甲', '见 [[乙]] [[丙]] [[丁]]。'), 'utf8')
+    writeFileSync(join(wiki, '乙.md'), concept('乙', '不引用别人。'), 'utf8')
+    writeFileSync(join(wiki, '丙.md'), concept('丙', '不引用别人。'), 'utf8')
+    writeFileSync(join(wiki, '丁.md'), concept('丁', '不引用别人。'), 'utf8')
+    writeFileSync(join(wiki, '戊.md'), concept('戊', '见 [[甲]] [[乙]]。'), 'utf8')
+
+    const all = payload(runGraph(tmp, ['--vault', vault, '--dry-run', '--json']).stdout)
+    assert.equal(all.nodes, 5)
+    assert.equal(all.links, 5)
+
+    const core = payload(runGraph(tmp, ['--vault', vault, '--min-degree', '2', '--dry-run', '--json']).stdout)
+    assert.equal(core.nodes, 3, `甲(4)、乙(2)、戊(2) 留下，丙(1)、丁(1) 走：${JSON.stringify(core)}`)
+    assert.equal(core.links, 3, '留下的边只有 甲→乙、戊→甲、戊→乙；甲→丙、甲→丁 要跟着点一起删')
+
+    // 真跑一次：布局必须成功 —— 忘了删悬空边的话，这一步会以 "node not found" 失败
+    const out = join(tmp, 'core.html')
+    const built = runGraph(tmp, ['--vault', vault, '--min-degree', '2', '--out', out, '--json'])
+    assert.equal(built.status, 0, `布局该成功：${built.stderr.slice(0, 300)}`)
+    assert.equal(payload(built.stdout).nodes, 3)
+    const html = readFileSync(out, 'utf8')
+    assert.ok(/"deg":4/.test(html), '留下的点该带着原图里的度数')
+  })
+})
+
+test('--line 只画一条线（文章线 / 聊天线两张图口径不同，混在一起看不出结构）', () => {
+  withTemp((tmp) => {
+    const vault = join(tmp, 'vault')
+    mkdirSync(join(vault, 'Wiki', 'Concepts'), { recursive: true })
+    mkdirSync(join(vault, 'Chat', 'Concepts'), { recursive: true })
+    writeFileSync(join(vault, 'Wiki', 'Concepts', '甲.md'), concept('甲', '见 [[乙]]。'), 'utf8')
+    writeFileSync(join(vault, 'Wiki', 'Concepts', '乙.md'), concept('乙', '见 [[甲]]。'), 'utf8')
+    writeFileSync(join(vault, 'Chat', 'Concepts', '话.md'), concept('话', '见 [[题]]。'), 'utf8')
+    writeFileSync(join(vault, 'Chat', 'Concepts', '题.md'), concept('题', '见 [[话]]。'), 'utf8')
+
+    const both = payload(runGraph(tmp, ['--vault', vault, '--dry-run', '--json']).stdout)
+    assert.equal(both.nodes, 4)
+    const wiki = payload(runGraph(tmp, ['--vault', vault, '--line', 'wiki', '--dry-run', '--json']).stdout)
+    assert.equal(wiki.nodes, 2, `只该剩文章线那两张：${JSON.stringify(wiki)}`)
+    assert.equal(wiki.links, 2)
+  })
+})
+
 test('手跑（没有 CLI 的 PYTHONIOENCODING）时中文也不会崩，也不该是乱码', () => {
   withTemp((tmp) => {
     const vault = fixtureVault(join(tmp, 'vault'))
@@ -146,7 +213,8 @@ test('布局缓存在用：同一个缓存跑第二次沿用，换一个空缓�
     const outOf = (dir: string) => join(dir, 'graph.html')
     const first = runGraph(a, ['--vault', vault, '--out', outOf(a), '--json'])
     assert.ok(!/图没变/.test(first.stdout), '空缓存不该说"图没变"')
-    assert.ok(existsSync(join(a, 'cache', 'graph.json')), '缓存要落到 --cache 指的目录里（而不是真实那份）')
+    const cached = readdirSync(join(a, 'cache'))
+    assert.ok(cached.some((f) => /^graph-.*\.json$/.test(f)), '缓存要落到 --cache 指的目录里（而不是真实那份）')
     const again = runGraph(a, ['--vault', vault, '--out', outOf(a), '--json'])
     assert.ok(/图没变/.test(again.stdout), '同一个缓存跑第二次该沿用已有布局')
     const fresh = runGraph(b, ['--vault', vault, '--out', outOf(b), '--json'])

@@ -63,6 +63,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   **130 voice messages with transcripts, 0 without**. `test/chat-notes-cli.test.ts` pins both halves (declared *and*
   forwarded) - either one alone leaves the switch dead, which is exactly the state it was in.
 
+- **The 3D graph page can be filtered down to a size you can actually read.** On this machine the concept graph is
+  49,956 nodes / 145,794 links / 9.05 MB, and at that size a force layout in a browser is a smear - the measured
+  answer is that only **3,825** of those concepts have ten or more links, so `--min-degree 10` produces a 1.09 MB
+  page that shows the structure. Degree is taken from the **whole** graph rather than recomputed inside the subset,
+  otherwise the same threshold would mean something different on every page, and links pointing at removed nodes are
+  dropped with them: keeping them makes the layout fail with "node not found" at build time, which is where the test
+  catches it. `--line wiki|chat` draws one corpus at a time (48,430 article concepts against 1,527 chat ones - the
+  vocabularies differ enough that merging them hides the structure of both). A filtered graph is a *different* graph,
+  so the layout cache is now keyed by a hash of the data (`graph-<hash>.json`) instead of one fixed name: before this,
+  building the small page evicted the 50k-node coordinates and switching back cost a 55-second relayout. Three
+  mutations confirm the guards bite - keeping dangling links, skipping the node filter, and ignoring `--line` each
+  turn the suite red.
+
 ### Added
 
 - **The ball now reacts twice more on its own: a hop when a reply lands, and a blink every 7-13 seconds.** The hop
