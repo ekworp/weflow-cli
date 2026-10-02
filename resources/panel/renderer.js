@@ -529,11 +529,95 @@ function canPlayLift() {
   return !prefersReducedMotion() && !document.body.classList.contains('ball-peek')
 }
 
+  // ---------------------------------------------- 挠痒痒（2026-10-02）
+  //
+  // 鼠标在球身上晃过 = 挠它。**分工**：生图的 4 帧只负责表情与爪子的小动作，**倾斜由这里算**，
+  // 幅度跟着移动快慢走、停下 260ms 回正 —— 固定帧做不出"挠得越狠扭得越厉害"。
+  //
+  // 倾斜是**绕球心**旋转：球是圆形裁切的，绕圆心转的每个像素到圆心的距离不变，所以耳朵不会
+  // 被转出圆外裁掉（平移会，旋转不会）。默认 transform-origin 就是 50% 50%，正合这个前提。
+  const TICKLE_FRAMES = [1, 2, 3, 4].map((n) => 'ball-tickle-' + n)
+  const TICKLE_STEP_MS = 110      // 换姿势的间隔（比动作帧慢：挠痒痒是持续的小扭，不是急抖）
+  const TICKLE_DECAY_MS = 260     // 停止移动多久后回正
+  const TICKLE_MAX_DEG = 4        // 最大倾斜角
+  const TICKLE_FULL_SPEED = 900   // 每秒移动多少像素算"挠得最狠"
+  let tickleTimer = null
+  let tickleSettle = null
+  let tickleIndex = 0
+  let tickleDir = 1
+  let tickleLastX = 0
+  let tickleLastY = 0
+  let tickleLastT = 0
+
+  /** 换姿势的**唯一入口**（同 showLift / setBallFace 的理由：散着写迟早有一条分支忘了摘）。 */
+  function showTickleFrame(name) {
+    for (const cls of TICKLE_FRAMES) document.body.classList.remove(cls)
+    document.body.classList.toggle('ball-tickle', !!name)
+    if (name) document.body.classList.add(name)
+  }
+
+  /** 回正：清帧、清角度、清定时器。**按下**与**换形态**都会调它（见下面两处）。 */
+  function settleTickle() {
+    if (tickleTimer !== null) {
+      clearTimeout(tickleTimer)
+      tickleTimer = null
+    }
+    if (tickleSettle !== null) {
+      clearTimeout(tickleSettle)
+      tickleSettle = null
+    }
+    tickleIndex = 0
+    document.body.style.setProperty('--tickle-deg', '0deg')
+    showTickleFrame(null)
+  }
+
+  /** 什么时候**不**挠：系统要求少动效；球半隐在屏幕边（那张图有一条直切边，转一下就露缝）；
+   *  正在被拎起来（那是更强的交互，先按下的那个赢）。 */
+  function canTickle() {
+    return !prefersReducedMotion()
+      && !document.body.classList.contains('ball-peek')
+      && !document.body.classList.contains('ball-lift')
+  }
+
+  /** 在球身上移动一次：按水平方向给倾斜、按速度给幅度，并推进姿势帧。 */
+  function onTickleMove(event) {
+    if (!canTickle()) return
+    const now = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
+    const dx = event.screenX - tickleLastX
+    const dy = event.screenY - tickleLastY
+    const dt = Math.max(1, now - tickleLastT)        // 除以 0 会把速度算成无穷大
+    tickleLastX = event.screenX
+    tickleLastY = event.screenY
+    tickleLastT = now
+    const speed = Math.hypot(dx, dy) / dt * 1000
+    const amp = Math.min(1, speed / TICKLE_FULL_SPEED)
+    if (Math.abs(dx) >= 1) tickleDir = dx > 0 ? -1 : 1   // 往哪边推，就往反方向倒
+    document.body.style.setProperty('--tickle-deg', (tickleDir * amp * TICKLE_MAX_DEG).toFixed(2) + 'deg')
+    if (!document.body.classList.contains('ball-tickle')) {
+      tickleIndex = 0
+      showTickleFrame(TICKLE_FRAMES[0])
+    }
+    if (tickleTimer === null) {
+      const step = () => {
+        tickleIndex = (tickleIndex + 1) % TICKLE_FRAMES.length
+        showTickleFrame(TICKLE_FRAMES[tickleIndex])
+        tickleTimer = setTimeout(step, TICKLE_STEP_MS)
+      }
+      tickleTimer = setTimeout(step, TICKLE_STEP_MS)
+    }
+    if (tickleSettle !== null) clearTimeout(tickleSettle)
+    tickleSettle = setTimeout(() => {
+      tickleSettle = null
+      settleTickle()
+    }, TICKLE_DECAY_MS)
+  }
+
 function applyMode(payload) {
   // 形态一变就把动作清干净：托盘与全局快捷键都能直接改形态，停在第 3 帧上等它回来
   // 就是一张"永远悬在半空"的脸。这里只清类与定时器，形态本身仍由下面那段决定。
   stopLift()
   showLift(null)
+  settleTickle()
   const mode = payload && payload.mode === 'ball' ? 'ball' : 'chat'
   const side = payload && payload.side === 'right' ? 'right' : 'left'
   // **只摆锚、不切形态**（`anchorOnly`）：展开分两步走，见 `main.cjs` 里"先摆锚、等页面
@@ -595,7 +679,8 @@ if (hasShell) {
   for (const face of ['mascot.png', 'mascot-happy.png', 'mascot-thinking.png',
                       'mascot-sorry.png', 'mascot-tired.png',
                       'mascot-lift-up-1.png', 'mascot-lift-up-2.png', 'mascot-lift-up-3.png', 'mascot-lift-up-4.png', 'mascot-lift-up-5.png', 'mascot-lift-up-6.png',
-                      'mascot-lift-down-1.png', 'mascot-lift-down-2.png', 'mascot-lift-down-3.png', 'mascot-lift-down-4.png', 'mascot-lift-down-5.png', 'mascot-lift-down-6.png']) {
+                      'mascot-lift-down-1.png', 'mascot-lift-down-2.png', 'mascot-lift-down-3.png', 'mascot-lift-down-4.png', 'mascot-lift-down-5.png', 'mascot-lift-down-6.png',
+                      'mascot-tickle-1.png', 'mascot-tickle-2.png', 'mascot-tickle-3.png', 'mascot-tickle-4.png']) {
     const img = new Image()
     img.src = '/panel/' + face
   }
@@ -621,10 +706,14 @@ if (hasShell) {
   }
 
   const DRAG_THRESHOLD_PX = 4
+  // 挠痒痒：只在球身上移动时才扭（停下由 onTickleMove 里的回正定时器负责）
+  ball.addEventListener('pointermove', onTickleMove)
+
   ball.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return
     setBallFace(true)
     if (canPlayLift()) startLift()
+    settleTickle()                       // 按下了就先别扭了，动作帧优先
     const startX = event.screenX
     const startY = event.screenY
     let dragging = false

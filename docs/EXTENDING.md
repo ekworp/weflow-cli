@@ -169,7 +169,7 @@ whitelist, not `dist/`). Adding one is four wiring points plus a contract, and *
 past r=128, farthest solid distance under 0.98 x 128 measured **from the canvas centre** with solid = alpha >= 128), the
 apex anchored to the resting frame, and the scale taken from **the character's own bounding box** rather than the canvas,
 which also carries the speech bubble and any markings. `scripts/panel_frames.py --check` enforces it, `--normalize` applies
-it, and `--check-raw` compares a raw generation's silhouette against the resting frame before you accept it. Re-run all
+it, and `--check-raw` compares a raw generation's silhouette against the resting frame before you accept it. Frames that form an ordered animation go in `SCALES` (the contract also asserts the shrink is monotonic); a family of poses that share one size goes in `TICKLE` - `all_frames()` is what the generator, the normalizer and the gates iterate. Re-run all
 three after any regeneration: a frame that is no longer the same character passes every other assertion in the suite, which
 is exactly what happened with the first attempt.
 

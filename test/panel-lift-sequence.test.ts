@@ -24,8 +24,8 @@ const LIFT_CLASSES = [...[1, 2, 3, 4, 5, 6].map((n) => 'ball-lift-up-' + n),
   ...[1, 2, 3, 4, 5, 6].map((n) => 'ball-lift-down-' + n)]
 const STEP_MS = 60                   // 与 renderer.js 的 LIFT_STEP_MS 一致
 /** 升到悬空要走 3 帧、落回也要 3 帧，各留一帧余量 */
-const RISE_MS = STEP_MS * 7          // 6 帧 + 一帧余量
-const FALL_MS = STEP_MS * 7
+const RISE_MS = STEP_MS * 10         // 6 帧 + 四帧余量：满负载跑时定时器会晚，余量不够会偶发红
+const FALL_MS = STEP_MS * 10         // 同上：宁可多等，也别让时序测试偶发红
 
 const HTML = `<!doctype html><html><body>
   <button id="ball" hidden><span class="face"></span><span class="iris"></span></button>

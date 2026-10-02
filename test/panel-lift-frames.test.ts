@@ -47,6 +47,14 @@ const FRAMES: [string, number][] = [
   ['mascot-lift-down-5.png', 0.982],
   ['mascot-lift-down-6.png', 0.992],
 ]
+
+/** 挠痒痒那一族：4 张姿势帧，**缩放固定 1.0**（扭动不该让球变大变小，与上面那套正相反）。 */
+const TICKLES: [string, number][] = [
+  ['mascot-tickle-1.png', 1.0],
+  ['mascot-tickle-2.png', 1.0],
+  ['mascot-tickle-3.png', 1.0],
+  ['mascot-tickle-4.png', 1.0],
+]
 const BASE = 'mascot-base.png'
 
 /** 最小 PNG 解码：只处理 8 位 RGBA、非隔行（与 tray 那份同一手法，见那边的说明）。 */
@@ -207,6 +215,53 @@ test('动作帧都在、都在目录清单与静态白名单里（漏一处线�
     assert.ok(packaging.includes(`'${name}'`), `PANEL_FILES 里要登记 ${name}`)
     assert.ok(server.includes(`'/panel/${name}': '${name}'`),
       `静态白名单里要有 ${name} —— 漏了它，那一段动作里球会闪成空图`)
+  }
+})
+
+test('挠痒痒那 4 张：文件、清单、白名单、CSS 与预取都在', () => {
+  const packaging = readFileSync(join(ROOT, 'test', 'panel-packaging.test.ts'), 'utf8')
+  const server = readFileSync(SERVER, 'utf8')
+  const css = readFileSync(CSS, 'utf8')
+  const renderer = readFileSync(RENDERER, 'utf8')
+  for (const [name] of TICKLES) {
+    assert.ok(existsSync(join(PANEL, name)), `缺文件 resources/panel/${name}`)
+    assert.ok(packaging.includes(`'${name}'`), `PANEL_FILES 里要登记 ${name}`)
+    assert.ok(server.includes(`'/panel/${name}': '${name}'`), `静态白名单里要有 ${name}`)
+    const cls = 'body.' + name.replace(/^mascot-/, 'ball-').replace(/\.png$/, '')
+    const at = css.indexOf(cls + ' #ball .face')
+    assert.ok(at > 0, `panel.css 里要有 ${cls} 那条规则`)
+    assert.ok(css.slice(at, css.indexOf('}', at)).includes(`/panel/${name}`), `${cls} 要指向 ${name}`)
+    assert.ok(renderer.includes(`'${name}'`), `预取列表里要有 ${name}`)
+  }
+  // 挠痒痒期间也要藏虹膜层（这 4 帧的眼睛是画死的）
+  assert.ok(/body\.ball-tickle #ball \.iris \{\s*display: none/.test(css), '挠痒痒期间要藏掉虹膜层')
+  // 倾斜角经 `--tickle-deg` 传进来，且**必须绕球心转**（默认 transform-origin）
+  assert.ok(/body\.ball-tickle #ball \{[^}]*rotate\(var\(--tickle-deg/.test(css),
+    '挠痒痒的倾斜要读 --tickle-deg')
+})
+
+test('挠痒痒那族的几何：同尺寸、同注册位、四张各不相同', () => {
+  const names = TICKLES.map(([n]) => n)
+  for (const [name] of TICKLES) {
+    const m = measure(name)
+    assert.ok(m.solid > 1000, `${name} 只有 ${m.solid} 个实心像素`)
+    assert.ok(m.maxDist <= CAP, `${name} 到中心 ${m.maxDist.toFixed(2)} 超过 ${CAP.toFixed(2)}`)
+    assert.equal(m.outsideCircle, 0, `${name} 有 ${m.outsideCircle} 个实心像素落在圆外`)
+    // 缩放固定 1.0：猫宽应当与静止帧一致（扭动不该让球变大变小）
+    assert.ok(Math.abs(m.cat.w - base.cat.w) <= 4,
+      `${name} 的猫宽 ${m.cat.w} 与静止帧 ${base.cat.w} 差了 ${Math.abs(m.cat.w - base.cat.w)}（上限 4）`)
+    const drift = m.cat.aspect / base.cat.aspect - 1
+    assert.ok(Math.abs(drift) <= ASPECT_TOL,
+      `${name} 的猫长宽比漂了 ${(drift * 100).toFixed(1)}%（上限 ±${ASPECT_TOL * 100}%）`)
+    assert.ok(Math.abs(m.apexY - base.apexY) <= 2, `${name} 头顶偏移超过 2 像素`)
+  }
+  // 四张两两都要不一样（复制一份充数的话，上面每条都会过）
+  const all = [BASE, ...names]
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const r = diffRatio(all[i], all[j])
+      assert.ok(r >= 0.10, `${all[i]} 与 ${all[j]} 只有 ${(r * 100).toFixed(1)}% 的像素不同`)
+    }
   }
 })
 

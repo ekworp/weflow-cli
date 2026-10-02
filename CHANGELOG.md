@@ -19,6 +19,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Running the pointer across the floating ball makes it squirm as if tickled.** Four generated poses (eyes
+  squeezed shut, paws up, open laugh) cycle every 110 ms while the pointer moves over it, and the **tilt is
+  computed from the pointer's speed and direction** rather than baked into the frames - a fixed frame set cannot
+  express "the harder you tickle, the more it wriggles". It leans away from the direction you sweep, reaches its
+  4-degree maximum at 900 px/s, and settles back after 260 ms without movement. The rotation is about the ball's
+  **centre**, which is what keeps it safe under the circular clip: rotating about the centre preserves every
+  pixel's distance from it, so the ears cannot be turned out of the circle - translating them would. The four
+  poses are normalized at **scale 1.0** (a tickle must not change the ball's size, unlike the lift sequence),
+  which is also why they live in their own table (`TICKLE` in `scripts/panel_frames.py`) instead of joining the
+  ordered lift sequence. Skipped under `prefers-reduced-motion`, skipped while the ball is peek-hidden (that
+  artwork's straight cut edge would open into a seam when rotated), and a press settles it so the lift owns the
+  ball.
+
 ### Added
 
 - **Pressing the floating ball now plays a twelve-frame "picked up" animation.** The hard half already existed - a press

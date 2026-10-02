@@ -31,6 +31,7 @@ const PANEL_FILES = ['index.html', 'renderer.js', 'panel.css', 'main.cjs', 'prel
   'mascot-lift-up-4.png', 'mascot-lift-up-5.png', 'mascot-lift-up-6.png',
   'mascot-lift-down-1.png', 'mascot-lift-down-2.png', 'mascot-lift-down-3.png',
   'mascot-lift-down-4.png', 'mascot-lift-down-5.png', 'mascot-lift-down-6.png',
+  'mascot-tickle-1.png', 'mascot-tickle-2.png', 'mascot-tickle-3.png', 'mascot-tickle-4.png',
   'tray.png', 'package.json']
 
 function read(name: string): string {

@@ -77,7 +77,29 @@ SCALES = [
      'all, eyes wide, the body keeps exactly the same width and height as the reference image, only the limbs move'),
     ('mascot-lift-down-6.png', 0.992, 'almost back to the resting pose, eyes still a little wide'),
 ]
+# 挠痒痒那一族：4 张姿势帧，**缩放固定 1.0** —— 扭动不该让球变大变小（与"被拎起来"那套的
+# 逐帧收小正相反）。它们只负责表情与爪子的小动作；倾斜由渲染进程的程序化旋转负责。
+TICKLE_SCALE = 0.985   # 留一点点余量：静止帧已经用掉 125.25/125.44，
+                       # 同尺寸的姿势帧只要稍宽一点就会顶出圆（实测 tickle-2 就是这样），
+                       # 而回退缩放会让它在循环里比别的帧小一圈、看得出跳。
+TICKLE = [
+    ('mascot-tickle-1.png', 'eyes squeezed shut in a giggle, one front paw raised as if warding the '
+     'tickle off, the two cat ears flicked slightly outward'),
+    ('mascot-tickle-2.png', 'mouth open laughing, front paws pulled in close to the chest, the two cat '
+     'ears tilted back a little'),
+    ('mascot-tickle-3.png', 'eyes squeezed shut with a small tongue sticking out, one paw up near the '
+     'cheek, the two cat ears flicked outward'),
+    ('mascot-tickle-4.png', 'a big open laugh, both front paws up, the two cat ears flicked back'),
+]
+
+
+def all_frames():
+    """两族帧合起来：被拎起来那套（有序、逐帧收小）+ 挠痒痒那族（同尺寸）。"""
+    return list(SCALES) + [(n, TICKLE_SCALE, p) for n, p in TICKLE]
+
+
 FRAME_FILES = [f for f, _, _ in SCALES]
+TICKLE_FILES = [f for f, _ in TICKLE]
 REFERENCE_FILES = [BASE, 'mascot-happy.png', 'mascot-sorry.png', 'mascot-tired.png']
 
 # 不变式：每帧都带同样这段话，只换姿势那一句。生图模型最容易"顺手"改的就是比例与构图。
@@ -248,6 +270,7 @@ def cmd_check(panel_dir, sample, include_reference):
     if include_reference:
         targets += [os.path.join(panel_dir, f) for f in REFERENCE_FILES]
     targets += [os.path.join(panel_dir, f) for f in FRAME_FILES]
+    targets += [os.path.join(panel_dir, f) for f in TICKLE_FILES]
     if sample:
         targets = targets[:sample]
     failed = 0
@@ -302,7 +325,7 @@ def cmd_gen(only):
         os.makedirs(RAW_DIR)
     url = base_url.rstrip('/') + '/images/edits'
     rc = 0
-    for name, _scale, pose in SCALES:
+    for name, _scale, pose in all_frames():
         if only and name not in only:
             continue
         out = os.path.join(RAW_DIR, name)
@@ -392,7 +415,7 @@ def cmd_normalize(panel_dir, raw_dir):
         print('cannot measure the resting cat')
         return 1
     rc = 0
-    for name, scale, _pose in SCALES:
+    for name, scale, _pose in all_frames():
         raw = os.path.join(raw_dir, name)
         if not os.path.exists(raw):
             print('MISSING  %s (run --gen first)' % raw)
@@ -541,7 +564,7 @@ def cmd_check_raw(panel_dir, raw_dir):
         return 1
     print('baseline %s: cat %dx%d aspect %.3f' % (BASE, ref['w'], ref['h'], ref['aspect']))
     failed = 0
-    for name, _s, _p in SCALES:
+    for name, _s, _p in all_frames():
         raw = os.path.join(raw_dir, name)
         if not os.path.exists(raw):
             print('MISSING  %s' % name)

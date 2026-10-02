@@ -1403,6 +1403,32 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-065: The tickle is a computed tilt plus four poses, and it rotates about the centre because that is what the circular clip allows
+
+**Status:** Active
+
+Running the pointer across the floating ball makes it squirm. Two things are decided here.
+
+**The motion is computed, the poses are drawn.** Four generated poses (`mascot-tickle-1..4.png`) carry the
+expression and the paw detail, but the **tilt is computed in the renderer** from the pointer's horizontal
+direction and its speed (maximum 4 degrees at 900 px/s, settling 260 ms after movement stops). The split is
+forced: a fixed set of frames can only replay one amplitude, and the whole point of a tickle is that it answers
+how much you are moving. The direction is inverted on purpose - sweeping right makes it lean left, the way being
+pushed would.
+
+**Rotation, not translation, and about the centre.** The ball is clipped to a circle, and its art already uses
+125.2 of the available 125.44 radius (the remaining 2% is reserved for the hover `scale(1.02)`). Rotating about
+the centre preserves every pixel's distance from that centre, so no pixel can be pushed past the clip - a
+translation of the same visual magnitude would immediately clip the ears. `transform-origin` defaults to the
+centre, so this holds without extra CSS, and **that default is now load-bearing**: changing it would silently
+start cutting the ball. The four poses stay at scale 1.0 so the ball does not change size while being tickled.
+
+**Consequences:** the tickle is skipped under `prefers-reduced-motion` and while the ball is peek-hidden (that
+artwork has a straight cut edge, which a rotation turns into a visible seam), and a press settles it first so the
+lift owns the ball. The IRIS layer is hidden while a tickle pose is showing, for the same reason as the other
+painted-eye faces. No new IPC. **Not yet verified live** - the geometry, the wiring and the settle-on-stop
+behaviour are covered by `test/panel-lift-frames.test.ts` and `test/panel-tickle.test.ts`, but nobody has watched
+it on a real window yet.
 ## D-064: The ball's lift animation is generated art, and the contract that keeps its frames registered is now executable
 
 **Status:** Active

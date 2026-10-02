@@ -92,6 +92,11 @@ const STATIC_FILES: Record<string, string> = {
   '/panel/mascot-lift-down-4.png': 'mascot-lift-down-4.png',
   '/panel/mascot-lift-down-5.png': 'mascot-lift-down-5.png',
   '/panel/mascot-lift-down-6.png': 'mascot-lift-down-6.png',
+  // 挠痒痒那 4 张（2026-10-02）：鼠标在球身上晃过时循环的姿势帧。同上：漏一张就闪空图。
+  '/panel/mascot-tickle-1.png': 'mascot-tickle-1.png',
+  '/panel/mascot-tickle-2.png': 'mascot-tickle-2.png',
+  '/panel/mascot-tickle-3.png': 'mascot-tickle-3.png',
+  '/panel/mascot-tickle-4.png': 'mascot-tickle-4.png',
 }
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
