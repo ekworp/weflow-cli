@@ -31,8 +31,8 @@ class PipelineSecretTests(unittest.TestCase):
             return True
 
         argv = [
-            'pipeline.py', '--api-key', secret, '--skip-classify', '--skip-wiki',
-            '--skip-vault', '--skip-html', '--skip-ai-report',
+            'pipeline.py', '--api-key', secret, '--skip-classify',
+            '--skip-html', '--skip-ai-report',
         ]
         # main() reads the config through _utils.load_config(), which resolves
         # CONFIG_PATH at call time - so pointing it at a throwaway file keeps

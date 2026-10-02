@@ -43,8 +43,11 @@ def main():
     parser.add_argument('--interest', default='AI', help='兴趣主题（默认 AI）')
     parser.add_argument('--wiki-limit', type=int, default=20, help='概念编译数量（默认 20）')
     parser.add_argument('--skip-classify', action='store_true', help='跳过后处理')
-    parser.add_argument('--skip-wiki', action='store_true', help='跳过概念编译')
-    parser.add_argument('--skip-vault', action='store_true', help='跳过 Vault 同步')
+    parser.add_argument('--with-wiki', action='store_true',
+                        help='把概念页写进 Obsidian Vault。**默认不做** —— Obsidian 自带的图谱\n'
+                             '视图是实时的，写一次 vault 图谱就重画一次，所以只有你明确要它重建时才写')
+    parser.add_argument('--with-vault', action='store_true',
+                        help='把当天的内容副本同步进 Obsidian Vault（Sources/WeChat/<日期>/）。**默认不做**')
     parser.add_argument('--skip-html', action='store_true', help='跳过 HTML 生成')
     parser.add_argument('--skip-ai-report', action='store_true', help='跳过 AI 深度阅读报告')
     parser.add_argument('--no-ai', action='store_true', help='关闭所有 AI 调用，但保留抓取和本地输出')
@@ -52,7 +55,7 @@ def main():
                         help='biz_daily 只做判断不做生成（不调 LLM 写摘要/标签/简报，'
                              '主题与相关度仍由 Jev 判断），因此**不需要 DeepSeek key**。'
                              '注意：下游步骤（行动建议/概念编译/AI 报告）仍会用 LLM，'
-                             '要全关请再加 --skip-classify --skip-wiki --skip-ai-report')
+                             '要全关请再加 --skip-classify --skip-ai-report')
     parser.add_argument('--ai-report-range', type=int, default=1, help='AI 报告覆盖最近 N 天（默认 1=仅当天）')
     parser.add_argument('--source', action='append', default=[], metavar='NAME',
                         help='仅处理指定公众号，可重复或用逗号分隔')
@@ -71,10 +74,10 @@ def main():
     #
     # **只算真的会调 LLM 的那两步**（行动建议、概念编译）：`generate_ai_report.py` 虽然
     # 叫 AI 报告，但一次 LLM 都不调（它读已落盘的概率与判断），把它算进来会让
-    # `--no-summary --skip-classify --skip-wiki` 仍然索要 DeepSeek key——那正是这条
+    # `--no-summary --skip-classify` 仍然索要 DeepSeek key——那正是这条
     # 路要摆脱的东西。
     api_key = args.api_key or ''
-    downstream_ai = not (args.skip_classify and args.skip_wiki)
+    downstream_ai = (not args.skip_classify) or args.with_wiki
     needs_key = args.engine in ('deepseek', 'claude') and not args.no_ai and (
         not args.no_summary or downstream_ai)
     if needs_key and not api_key:
@@ -104,7 +107,7 @@ def main():
             print('  [提示] --no-summary 只关掉本步骤的 LLM 生成；下游仍会调 LLM 的步骤：'
                   '%s。要全关请补上对应 --skip-*'
                   % '、'.join(n for n, skipped in (('classify_daily（行动建议）', args.skip_classify),
-                                                   ('compile_wiki（概念编译）', args.skip_wiki))
+                                                   ('compile_wiki（概念编译）', not args.with_wiki))
                               if not skipped))
     if not run_step('biz_daily — 抓取+摘要', step1_args):
         sys.exit(1)
@@ -121,8 +124,8 @@ def main():
         if not run_step('classify_daily — 后处理', step2_args):
             print('[WARN] classify_daily 失败，继续后续步骤')
 
-    # Step 3: Vault sync（可选）
-    if not args.skip_vault:
+    # Step 3: Vault sync（**默认不做**，见 --help）
+    if args.with_vault:
         date_str = args.date or time.strftime('%Y-%m-%d')
         source_dir = os.path.join(SOURCE_ROOT, date_str)
         vault_dir = os.path.join(os.path.dirname(SCRIPTS_DIR), 'output', 'wechat-vault',
@@ -134,13 +137,21 @@ def main():
             file_count = sum(1 for _ in Path(vault_dir).rglob('*.md'))
             print(f'\n  Vault 同步: {file_count} 个文件 → {vault_dir}')
 
-    # Step 4: wiki compile（可选）
-    if not args.skip_wiki and not args.no_ai:
+    # Step 4: wiki compile（**默认不做**，见 --help）
+    if args.with_wiki and not args.no_ai:
         step3_args = [
             os.path.join(SCRIPTS_DIR, 'compile_wiki.py'),
             '--limit', str(args.wiki_limit),
         ]
         run_step('wiki compile — 概念编译', step3_args)
+
+    # 默认不写 Vault：**Obsidian 自带的图谱视图是实时的** —— 它盯着 vault 里的文件，文件一变
+    # 就重画，所以"内容一更新图谱就重建"只在"自动改 vault"时发生。要它变，显式加那两个开关。
+    if not args.with_vault or not args.with_wiki:
+        missing = [name for name, on in (('--with-vault（当天内容副本）', args.with_vault),
+                                        ('--with-wiki（概念页）', args.with_wiki)) if not on]
+        print('\n  Obsidian 那边没有动：%s。要写进去就显式加上 —— 图谱只在你要它重建时才变。'
+              % '、'.join(missing))
 
     # Step 5: HTML 生成（可选）
     if not args.skip_html:

@@ -3864,8 +3864,9 @@ program
         .option('--wiki-limit <n>', '概念编译数', '20')
         .option('--source <name>', '仅处理指定公众号，可重复使用', (value: string, previous: string[]) => [...previous, value], [] as string[])
         .option('--skip-classify', '跳过 AI 后处理')
-        .option('--skip-wiki', '跳过概念编译')
-        .option('--skip-vault', '跳过 Vault 副本同步')
+        // 这两个**默认不做**：Obsidian 自带的图谱视图是实时的，写一次 vault 图谱就重画一次。
+        .option('--with-wiki', '把概念页写进 Obsidian Vault（默认不写：图谱只在你说了才变）')
+        .option('--with-vault', '把当天内容副本同步进 Obsidian Vault（默认不写）')
         .option('--skip-html', '跳过 HTML 阅读器生成')
         .option('--skip-ai-report', '跳过 AI 深度阅读报告')
         .option('--no-ai', '关闭全部 AI 调用，保留抓取和本地输出')
@@ -3947,8 +3948,8 @@ program
           if (opts.date) args.push('--date', opts.date)
           for (const source of sources) args.push('--source', source)
           if (opts.skipClassify) args.push('--skip-classify')
-          if (opts.skipWiki) args.push('--skip-wiki')
-          if (opts.skipVault) args.push('--skip-vault')
+          if (opts.withWiki) args.push('--with-wiki')
+          if (opts.withVault) args.push('--with-vault')
           if (opts.skipHtml) args.push('--skip-html')
           if (opts.skipAiReport) args.push('--skip-ai-report')
           if (noAi) args.push('--no-ai')
@@ -5951,7 +5952,7 @@ program
     const isComplete = (targetDate: string): boolean => Object.values(artifactStatus(targetDate)).every(Boolean)
 
     const runPipeline = (targetDate: string): Promise<number> => new Promise((resolve) => {
-      const args = [pipeline, '--date', targetDate, '--engine', noAi ? 'local' : 'deepseek', '--interest', 'AI', '--skip-wiki']
+      const args = [pipeline, '--date', targetDate, '--engine', noAi ? 'local' : 'deepseek', '--interest', 'AI']
       if (noAi) args.push('--no-ai')
       // 与 --no-ai 不同：这一条保留判断（Jev），只关掉 LLM 的文字生成。
       if (opts.noSummary && !noAi) args.push('--no-summary')
@@ -7491,7 +7492,7 @@ async function showInteractiveMenu() {
       const { spawn } = await import('child_process')
       const pipeline = join(resolvePackageRoot(), 'scripts', 'pipeline.py')
       console.log(chalk.cyan(`\n📰 正在生成 ${dateStr} 公众号日报...\n`))
-      const child = spawn(getPythonCommand(), [pipeline, '--date', dateStr, '--interest', 'AI', '--skip-wiki'], {
+      const child = spawn(getPythonCommand(), [pipeline, '--date', dateStr, '--interest', 'AI'], {
         windowsHide: true,
         stdio: 'inherit',
         env: pythonProcessEnv(apiKey),

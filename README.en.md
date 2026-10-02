@@ -317,6 +317,11 @@ Main Python workflows:
 # Article crawling -> AI classification -> HTML reading page -> Wiki / learning digest
 python scripts/pipeline.py --date YYYY-MM-DD --api-key "Your API Key" --engine deepseek
 
+# Note: this does **not** write your Obsidian Vault by default (no Sources/WeChat copy, no concept pages).
+# Obsidian's own graph view is live - it watches the vault's files and re-renders when one changes.
+# To make the graph follow the content, ask for it explicitly (either flag works alone too):
+python scripts/pipeline.py --date YYYY-MM-DD --api-key "Your API Key" --with-vault --with-wiki
+
 # Run step by step
 python scripts/biz_daily.py --date YYYY-MM-DD --api-key "Your API Key"
 python scripts/generate_html.py --date YYYY-MM-DD

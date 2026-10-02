@@ -62,6 +62,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   (`--gen` / `--normalize` / `--check` / `--check-raw`); `--check` uses only the standard library, because the test
   suite runs it.
 
+### Changed
+
+- **The digest pipeline no longer writes your Obsidian Vault unless you ask.** `pipeline` used to copy the day's
+  content into `Sources/WeChat/<date>/` and compile concept pages as part of every run. **Obsidian's own graph view
+  is live** - it watches the vault's files and re-renders the moment one changes - so "the content updates and the
+  graph rebuilds itself" was the vault being rewritten, not the graph being rebuilt. Both steps are now opt-in
+  (`--with-vault` / `--with-wiki`), the run prints which ones it skipped and how to ask for them, and
+  `test/pipeline-vault-default.test.ts` pins the default: writing the vault succeeds silently, so a flip back to
+  "do it every time" would otherwise have gone unnoticed.
+
 ## 1.9.0
 
 ### Added

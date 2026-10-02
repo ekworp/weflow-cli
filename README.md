@@ -314,6 +314,11 @@ npm run dev -- init
 # 文章抓取 -> AI 分类 -> HTML 阅读页 -> Wiki / 学习日报
 python scripts/pipeline.py --date YYYY-MM-DD --api-key "你的 API Key" --engine deepseek
 
+# 注意：这条**默认不写 Obsidian Vault**（不拷 Sources/WeChat，也不编译概念页）。
+# 原因：Obsidian 自带的图谱视图是**实时**的 —— 它盯着 vault 里的文件，文件一变就重画。
+# 想让图谱跟着变，显式加上这两个开关（也可以分开用）：
+python scripts/pipeline.py --date YYYY-MM-DD --api-key "你的 API Key" --with-vault --with-wiki
+
 # 分步运行
 python scripts/biz_daily.py --date YYYY-MM-DD --api-key "你的 API Key"
 python scripts/generate_html.py --date YYYY-MM-DD
