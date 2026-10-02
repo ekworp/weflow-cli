@@ -93,13 +93,38 @@ TICKLE = [
 ]
 
 
+# "答完了高兴一下"那 3 帧：起跳 -> 空中 -> 落地。缩放各不相同（跳起来那帧最小），
+# 所以带缩放值。**缩放留了余量是有用的**：渲染进程还会给它叠一个几像素的上移（"跳"的位移），
+# 而球是圆形裁切的，位移的余量只能从"这一帧本身更小"里省出来。
+HOP = [
+    ('mascot-hop-1.png', 0.965, 'a small crouch just before hopping: the body compressed slightly downward, '
+     'the two cat ears up, eyes bright and happy'),
+    ('mascot-hop-2.png', 0.955, 'in the air at the top of a small happy hop, the two cat ears swept back, '
+     'eyes bright, a small open smile'),
+    ('mascot-hop-3.png', 0.975, 'just landed from a small hop, a slight squash at the base of the body, the '
+     'two cat ears up, eyes bright'),
+]
+
+# "偶尔眨一下眼"那 2 帧：半闭 -> 闭。**缩放固定 1.0**（眨眼不该改大小）。
+# 收回来之后要**只把眼睛那块贴回静止帧**（见 README/脚本里的 normalize_blink），因为生图模型
+# 会把整张脸重画一遍，那点像素差在动画里就是"整颗球闪一下"。
+BLINK = [
+    ('mascot-blink-1.png', 'eyes half closed, mid blink, everything else in the drawing identical to the reference'),
+    ('mascot-blink-2.png', 'eyes fully closed, a calm contented expression, everything else in the drawing '
+     'identical to the reference'),
+]
+
+
 def all_frames():
     """两族帧合起来：被拎起来那套（有序、逐帧收小）+ 挠痒痒那族（同尺寸）。"""
-    return list(SCALES) + [(n, TICKLE_SCALE, p) for n, p in TICKLE]
+    return (list(SCALES) + [(n, TICKLE_SCALE, p) for n, p in TICKLE]
+            + list(HOP) + [(n, 1.0, p) for n, p in BLINK])
 
 
 FRAME_FILES = [f for f, _, _ in SCALES]
 TICKLE_FILES = [f for f, _ in TICKLE]
+HOP_FILES = [f for f, _, _ in HOP]
+BLINK_FILES = [f for f, _ in BLINK]
 REFERENCE_FILES = [BASE, 'mascot-happy.png', 'mascot-sorry.png', 'mascot-tired.png']
 
 # 不变式：每帧都带同样这段话，只换姿势那一句。生图模型最容易"顺手"改的就是比例与构图。
@@ -271,6 +296,8 @@ def cmd_check(panel_dir, sample, include_reference):
         targets += [os.path.join(panel_dir, f) for f in REFERENCE_FILES]
     targets += [os.path.join(panel_dir, f) for f in FRAME_FILES]
     targets += [os.path.join(panel_dir, f) for f in TICKLE_FILES]
+    targets += [os.path.join(panel_dir, f) for f in HOP_FILES]
+    targets += [os.path.join(panel_dir, f) for f in BLINK_FILES]
     if sample:
         targets = targets[:sample]
     failed = 0

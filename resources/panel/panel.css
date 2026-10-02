@@ -260,7 +260,7 @@ body.ball-happy #ball .face {
       再叠 `scale(1.02)` 与 `:active` 的 `scale(.92)` 就成了缩两回，看起来是"躲开"而不是
       "被提起来"。这条的选择器特异性高于那两条，所以能压住它们。
    4. **切帧只换 `background-image`**：不动尺寸、不动位置，所以不会跳。 */
-body.ball-lift #ball { transform: none; }
+body.ball-lift #ball { transform: rotate(var(--dangle-deg, 0deg)); transition: transform 90ms linear; }
 body.ball-lift #ball .iris { display: none; }
 body.ball-lift-up-1 #ball .face { background-image: url('/panel/mascot-lift-up-1.png'); }
 body.ball-lift-up-2 #ball .face { background-image: url('/panel/mascot-lift-up-2.png'); }

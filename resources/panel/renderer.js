@@ -515,6 +515,7 @@ function startLift() {
 /** 松手：接着往下走完落地那几帧。**不留尾巴** —— 用户试过 900ms 的保留期，说像卡住了。
  *  还没升到顶就松手（一次普通点击）直接回原样：那时它本来也没离开地面多远。 */
 function endLift() {
+    settleDangle()
   stopLift()
   if (!liftAtPeak) {
     showLift(null)
@@ -630,6 +631,7 @@ function applyMode(payload) {
   showLift(null)
   settleTickle()
   closeMemory()
+  settleDangle()
   const mode = payload && payload.mode === 'ball' ? 'ball' : 'chat'
   const side = payload && payload.side === 'right' ? 'right' : 'left'
   // **只摆锚、不切形态**（`anchorOnly`）：展开分两步走，见 `main.cjs` 里"先摆锚、等页面
@@ -740,6 +742,53 @@ if (memoryButton) memoryButton.addEventListener('click', () => { void openMemory
 const memoryClose = document.getElementById('memory-close')
 if (memoryClose) memoryClose.addEventListener('click', closeMemory)
 
+  // ------------------------------------------ 拖着走的时候"垂着晃"（2026-10-04）
+  //
+  // 按住会播"被拎起来"，但**拖着移动**时它是僵的。这里按拖动速度给一个倾斜，方向与拖动相反
+  // （被拎着走的东西会向后滞一下），和挠痒同一套：绕球心转、纯程序算、不占圆的余量。
+  //
+  // 角度经 body 上的自定义属性交给 CSS（`body.ball-lift #ball` 那条读它）—— 与 `--tickle-deg`
+  // 同一个理由：自定义属性会继承，顶层的 applyMode 也能清。
+  const DANGLE_MAX_DEG = 6
+  const DANGLE_FULL_SPEED = 700      // 每秒拖多少像素算"甩得最狠"
+  let dangleLastX = 0
+  let dangleLastY = 0
+  let dangleLastT = 0
+  let dangleDir = 1
+
+  function setDangle(deg) {
+    document.body.style.setProperty('--dangle-deg', deg.toFixed(2) + 'deg')
+  }
+
+  /** 松手/换形态时回正。 */
+  function settleDangle() {
+    dangleDir = 1
+    setDangle(0)
+  }
+
+  /** 按下时记下起点：不然第一次移动的 dt 会是"上次拖动到这次"的间隔，算出来的速度没意义。 */
+  function startDangle(x, y) {
+    dangleLastX = x
+    dangleLastY = y
+    dangleLastT = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
+  }
+
+  /** 拖动的每一次移动：按水平速度给倾斜（往哪边拖，就往反方向滞）。 */
+  function trackDangle(event) {
+    if (prefersReducedMotion()) return
+    const now = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
+    const dx = event.screenX - dangleLastX
+    const dy = event.screenY - dangleLastY
+    const dt = Math.max(1, now - dangleLastT)
+    dangleLastX = event.screenX
+    dangleLastY = event.screenY
+    dangleLastT = now
+    const speed = Math.hypot(dx, dy) / dt * 1000
+    const amp = Math.min(1, speed / DANGLE_FULL_SPEED)
+    if (Math.abs(dx) >= 1) dangleDir = dx > 0 ? -1 : 1
+    setDangle(dangleDir * amp * DANGLE_MAX_DEG)
+  }
+
 if (hasShell) {
   // `shell` 这个类决定球在不在场（见 panel.css）：浏览器降级那条路永远不该看见球
 
@@ -796,12 +845,16 @@ if (hasShell) {
     const startX = event.screenX
     const startY = event.screenY
     let dragging = false
+    startDangle(startX, startY)
 
     const onMove = (moveEvent) => {
       if (!dragging && Math.hypot(moveEvent.screenX - startX, moveEvent.screenY - startY) > DRAG_THRESHOLD_PX) {
         dragging = true
       }
-      if (dragging) void window.weflowPanel.dragMove(moveEvent.screenX, moveEvent.screenY)
+      if (dragging) {
+        void window.weflowPanel.dragMove(moveEvent.screenX, moveEvent.screenY)
+        trackDangle(moveEvent)
+      }
     }
     const onUp = () => {
       window.removeEventListener('pointermove', onMove)

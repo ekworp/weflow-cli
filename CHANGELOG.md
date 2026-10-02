@@ -34,6 +34,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Added
 
+- **The ball now swings while you drag it.** Holding it already played the "picked up" sequence, but the carry
+  itself was stiff. The tilt is **computed from the drag speed** (up to 6 degrees at 700 px/s) and leans **against**
+  the direction of travel, the way something carried lags behind, then settles when you let go. Same geometry as the
+  tickle: rotation about the ball's centre preserves every pixel's distance from it, so it needs none of the
+  circle's budget. It rides on the lift's own state, so it is skipped under `prefers-reduced-motion` and cleared by
+  a release or a mode change. `test/panel-dangle.test.ts` pins the sign (opposite the drag), the 4-pixel click
+  threshold, the settle, and the reduced-motion skip.
+
 - **The panel can show you what the assistant remembers about you.** Those long-term facts were previously visible
   only by opening `~/.weflow-cli/assistant_memory.json` by hand, so the assistant could act on a belief the user had
   no window into. A `记忆` button in the bubble header fetches `GET /api/memory` - token-gated like every other
