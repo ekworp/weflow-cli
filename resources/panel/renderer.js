@@ -754,8 +754,8 @@ if (memoryClose) memoryClose.addEventListener('click', closeMemory)
   //
   // 角度经 body 上的自定义属性交给 CSS（`body.ball-lift #ball` 那条读它）—— 与 `--tickle-deg`
   // 同一个理由：自定义属性会继承，顶层的 applyMode 也能清。
-  const DANGLE_MAX_DEG = 6
-  const DANGLE_FULL_SPEED = 700      // 每秒拖多少像素算"甩得最狠"
+  const DANGLE_MAX_DEG = 14         // **品味值，不是预算**：绕球心转不占圆的余量，想大就大
+  const DANGLE_FULL_SPEED = 450      // 每秒拖多少像素算"甩得最狠"（700 太快，正常拖动只晃出一两度）
   let dangleLastX = 0
   let dangleLastY = 0
   let dangleLastT = 0
