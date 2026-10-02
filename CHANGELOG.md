@@ -72,6 +72,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   `test/pipeline-vault-default.test.ts` pins the default: writing the vault succeeds silently, so a flip back to
   "do it every time" would otherwise have gone unnoticed.
 
+### Fixed
+
+- **A transient failure used to leave the floating ball stuck on the aggrieved "offline" face forever.** That face
+  was set when a status poll failed and the **success path never cleared it** - only a turn's `finally` cleared
+  `busy`. So the few seconds an `assistant stop` / `assistant start` takes were enough to latch it: the daemon came
+  back, the status line read "微信 + 本机", and the ball stayed aggrieved until the window was reopened. The user
+  reported it as "the default face changed", and the artwork was innocent - `mascot-base.png` and `mascot-iris.png`
+  are byte-identical to the repo. The success path now clears it, without touching `busy` (a turn owns that) and
+  while keeping the quota colour. `test/panel-ball-state.test.ts` pins the **recovery**, because the failure half was
+  always correct; a mutation check confirms it goes red when the clear is removed.
+
 ## 1.9.0
 
 ### Added

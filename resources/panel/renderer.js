@@ -231,8 +231,15 @@ async function refreshStatus() {
     quickReplies = Array.isArray(s.quickReplies) ? s.quickReplies.filter(n => typeof n === 'string') : []
     const mode = s.channelActive ? '微信 + 本机' : '仅本机入口'
     statusEl.textContent = mode + '｜今日 ' + s.quota.used + '/' + s.quota.limit
-    // 额度用尽是"今天不能再用"，值得在球上看得出来（琥珀），但**不是**错误
-    if (s.quota.used >= s.quota.limit) setBallState('quota')
+    // 额度用尽是"今天不能再用"，值得在球上看得出来（琥珀），但**不是**错误。
+    //
+    // **而且必须显式收掉 `offline`。** 拉到状态这件事本身就说"连不上"结束了，而这条成功路径
+    // 原先从不主动清它 —— 于是守护进程重启的那几十秒里页面拉不到状态、挂上那张"委屈"的脸，
+    // 之后（守护进程早就回来了）再也回不来。实测症状：球一直是委屈，而状态条其实写着"微信 + 本机"。
+    // 不动 `busy`（那是"正在答"，由 `ask` 的 finally 负责收）；没超额就恢复成没有状态脸。
+    if (!document.body.classList.contains('busy')) {
+      setBallState(s.quota.used >= s.quota.limit ? 'quota' : null)
+    }
 
     // 记忆桶那句话说清"是不是同一个大脑"——这是用户最容易误解的地方
     foot.textContent = ''
