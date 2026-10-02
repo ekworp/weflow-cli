@@ -34,6 +34,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ### Added
 
+- **The panel can show you what the assistant remembers about you.** Those long-term facts were previously visible
+  only by opening `~/.weflow-cli/assistant_memory.json` by hand, so the assistant could act on a belief the user had
+  no window into. A `记忆` button in the bubble header fetches `GET /api/memory` - token-gated like every other
+  route - and lists each fact with the time it was written and the quote it came from, which is what makes a wrong
+  memory traceable to the sentence that produced it. It is **read-only**, the bucket is chosen **server-side** and
+  cannot be steered by a query parameter, and the payload **never goes to a model**: it is deliberately separate from
+  the fact injection in `buildSystemPrompt`, which has its own budget and redaction. Facts are capped at 30
+  (`FACTS_MAX`) so the view is bounded by construction, and the page renders with `textContent` only - a test feeds
+  in a memory shaped like an `<img onerror=…>` tag and asserts it displays as text.
+
 - **Pressing the floating ball now plays a twelve-frame "picked up" animation.** The hard half already existed - a press
   swapped in a squint-eyed face and a release reverted it instantly - but the only way the ball could say "you have my
   attention" was one still frame. A press now plays six frames up (hard cuts about 60 ms apart, the first

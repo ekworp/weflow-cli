@@ -955,6 +955,32 @@ export class AssistantService {
     return { used: this.dailyCount, limit: DAILY_LIMIT }
   }
 
+  /**
+   * 面板里那个"记忆"按钮要的：**它记住了什么**。只读，且**不经过模型**。
+   *
+   * 为什么不复用微信里那条 `记忆` 指令的文本：聊天那条路给的是"最近 5 条"的摘要（那是给对话用的），
+   * 面板要按时间列全、还要看得出每条是从哪句话来的，所以带上 `sourceQuote`。两边读的是同一份 memory，
+   * 只是呈现不同 —— 不各存一份。
+   *
+   * 桶（`userId`）由**调用方**决定：面板那条路传的是服务端自己那个 `memoryBucket`，不接受客户端指定。
+   */
+  memorySnapshot(userId: string): {
+    facts: { content: string; ts: number; sourceQuote: string }[]
+    summary: string
+    workingTurns: number
+    saveError: string
+  } {
+    return {
+      facts: this.memory.facts(userId).map(f => ({
+        content: f.content, ts: f.ts, sourceQuote: f.sourceQuote ?? '',
+      })),
+      summary: this.memory.summary(userId),
+      workingTurns: this.memory.workingWindow(userId).length,
+      // 落盘失败要传出去：用户问"你记住了什么"时，若上次根本没存上，那份答案就是假的
+      saveError: this.memory.lastSaveError ?? '',
+    }
+  }
+
   stop(): void {
     this.running = false
     this.svc?.stop()

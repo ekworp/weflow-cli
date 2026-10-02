@@ -29,6 +29,9 @@
       <span class="brand">第二大脑</span>
       <span id="status" class="status">连接中…</span>
       <button id="collapse" type="button" class="ghost" hidden>收起</button>
+      <!-- "它记住了什么"（只读）。**不经过模型**：那条路由只返回数据，页面只渲染；
+           模型看到的是另一份（带预算与脱敏）。点开时才拉一次，不轮询。 -->
+      <button id="memory" type="button" class="ghost" title="它记住了什么（只读）">记忆</button>
     </header>
 
     <main id="log" aria-live="polite"></main>
@@ -39,6 +42,15 @@
     </form>
 
     <footer id="foot"></footer>
+
+    <section id="memory-panel" hidden>
+      <div class="memhead">
+        <span class="brand">它记住了什么</span>
+        <span id="memory-note" class="status"></span>
+        <button id="memory-close" type="button" class="ghost">关闭</button>
+      </div>
+      <div id="memory-list" class="memlist"></div>
+    </section>
 
     <div id="tail" aria-hidden="true"></div>
   </div>

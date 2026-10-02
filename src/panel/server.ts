@@ -338,6 +338,16 @@ export async function startPanelServer(options: PanelServerOptions): Promise<Pan
       return
     }
 
+    if (url.pathname === '/api/memory') {
+      // **只读**，而且这份数据**不经过模型**：它是给用户在面板里审计"你记住了什么"用的，
+      // 与 `buildSystemPrompt` 里注入的那份上下文是两件事（各有各的预算与脱敏）。
+      // 桶由服务端决定（上面那个 `memoryBucket`），**不接受客户端指定** —— 否则这就是一个
+      // 能读别的记忆桶的口子。
+      if (req.method !== 'GET') { json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
+      json(res, 200, { ok: true, bucket: memoryBucket, ...service.memorySnapshot(memoryBucket) })
+      return
+    }
+
     if (url.pathname === '/api/ask') {
       if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
       const contentType = String(req.headers['content-type'] ?? '')

@@ -899,6 +899,7 @@ weflow-cli assistant stop
 # 端口与 token 在 ~/.weflow-cli/assistant_endpoint.json 里；token 不要贴到别处
 curl.exe -i http://127.0.0.1:8766/api/status                       # 401（没 token）
 curl.exe -i -H "Authorization: Bearer <token>" http://127.0.0.1:8766/api/status   # 200
+curl.exe -i -H "Authorization: Bearer <token>" http://127.0.0.1:8766/api/memory   # 200：它记住了什么（只读）
 ```
 
 **中文别用 Git Bash 的 `curl -d '中文'`**：那条路径会把正文按控制台代码页编出去，

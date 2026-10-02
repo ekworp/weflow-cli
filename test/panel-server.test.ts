@@ -51,6 +51,14 @@ function stubService(opts: { hang?: boolean; outcome?: any; trace?: any } = {}):
     // 真实接口上就有它（`/api/ask` 拿它给"思考过程"）。桩**不能省**——省了的话
     // 服务端那一句就会抛，而它抛的后果是整条 ask 变 500（第一版正是这么被测试抓到的）。
     recentTrace: () => opts.trace,
+    // "它记住了什么"那条只读路由要它。同上：桩**不能省** —— 省了服务端那一句就会抛，
+    // 后果是整条 /api/memory 变 500。返回的形状与真方法一致（facts / summary / workingTurns / saveError）。
+    memorySnapshot: () => ({
+      facts: [{ content: '喜欢喝美式', ts: 1750000000000, sourceQuote: '我平时喝美式' }],
+      summary: '聊过天气与咖啡',
+      workingTurns: 2,
+      saveError: '',
+    }),
     ask: async (bucket: string, text: string) => {
       stub.calls.push({ bucket, text })
       if (stub.outcome && typeof stub.outcome.then === 'function') return stub.outcome
@@ -464,5 +472,46 @@ test('名单再长也只带前 20 个（菜单在 420px 宽的窗口里，本来
       assert.equal(body.quickReplies[0], '联系人1')
       assert.equal(body.quickReplies[19], '联系人20')
     })
+  } finally { await server.close() }
+})
+
+
+// -------------------------------------------------- /api/memory（面板"它记住了什么"）
+
+test('/api/memory：没 token 401，有 token 才给 —— 那是一份关于用户的东西', async () => {
+  const { server, base, token } = await boot()
+  try {
+    const none = await fetch(`${base}/api/memory`)
+    assert.equal(none.status, 401)
+    const ok = await fetch(`${base}/api/memory`, { headers: { Authorization: `Bearer ${token}` } })
+    assert.equal(ok.status, 200)
+    const body: any = await ok.json()
+    assert.equal(body.ok, true)
+    assert.equal(body.bucket, 'wxid_me', '桶由服务端决定')
+    assert.equal(body.facts.length, 1)
+    assert.equal(body.facts[0].content, '喜欢喝美式')
+    assert.equal(body.facts[0].sourceQuote, '我平时喝美式', '带上它是从哪句话来的，用户才审得动')
+    assert.equal(body.workingTurns, 2)
+    assert.equal(body.saveError, '')
+    assert.equal(JSON.stringify(body).includes(token), false, '这里也不许出现 token')
+  } finally { await server.close() }
+})
+
+test('/api/memory：**桶不接受客户端指定**（否则就是一个读别人记忆的口子）', async () => {
+  const { server, base, token } = await boot()
+  try {
+    const res = await fetch(`${base}/api/memory?bucket=someone_else`, { headers: { Authorization: `Bearer ${token}` } })
+    assert.equal(res.status, 200)
+    assert.equal((await res.json() as any).bucket, 'wxid_me', '查询参数改不了它用哪个桶')
+  } finally { await server.close() }
+})
+
+test('/api/memory：只读 —— POST 405', async () => {
+  const { server, base, token } = await boot()
+  try {
+    const res = await fetch(`${base}/api/memory`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}',
+    })
+    assert.equal(res.status, 405)
   } finally { await server.close() }
 })

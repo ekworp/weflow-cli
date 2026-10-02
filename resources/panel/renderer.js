@@ -618,6 +618,7 @@ function applyMode(payload) {
   stopLift()
   showLift(null)
   settleTickle()
+  closeMemory()
   const mode = payload && payload.mode === 'ball' ? 'ball' : 'chat'
   const side = payload && payload.side === 'right' ? 'right' : 'left'
   // **只摆锚、不切形态**（`anchorOnly`）：展开分两步走，见 `main.cjs` 里"先摆锚、等页面
@@ -662,8 +663,75 @@ function toggleMode() {
   requestMode(document.body.classList.contains('mode-chat') ? 'ball' : 'chat')
 }
 
+// **这一段必须在顶层。** 函数声明在块里是**块作用域**，而 `applyMode`（它要在换形态时收起这一层）
+// 是顶层函数 —— 放进 `if (hasShell) { … }` 里，`applyMode` 调 `closeMemory()` 就会抛
+// `ReferenceError: closeMemory is not defined`。同一个坑在这份文件里已经栽过两次（上一次是
+// "被拎起来"那块），所以这行说明留在这儿。
+// ------------------------------------------------------- 看它在记什么（2026-10-03）
+//
+// 只读视图：它记了什么、什么时候记的、从哪句话来的。**这一份不经过模型** —— 面板那条路由
+// 只把数据交出来，页面只负责渲染；模型看到的是另外一份（带预算与脱敏）。
+//
+// 渲染一律 textContent + createElement：记忆里存的是**用户聊天里的话**，用 innerHTML 就等于
+// 在那个窗口里执行它（这是本仓库最硬的一条纪律，测试盯着）。
+const memoryButton = document.getElementById('memory')
+const memoryPanel = document.getElementById('memory-panel')
+const memoryList = document.getElementById('memory-list')
+const memoryNote = document.getElementById('memory-note')
+
+function closeMemory() {
+  if (memoryPanel) memoryPanel.hidden = true
+}
+
+function memoryLine(text, className) {
+  const p = document.createElement('p')
+  if (className) p.className = className
+  p.textContent = text
+  return p
+}
+
+async function openMemory() {
+  if (!memoryPanel || !memoryList || !memoryNote) return
+  memoryPanel.hidden = false
+  memoryList.replaceChildren()
+  memoryNote.textContent = '读取中…'
+  try {
+    const res = await fetch('/api/memory', { headers: { accept: 'application/json' } })
+    const data = await res.json()
+    if (!res.ok || !data || data.ok !== true) throw new Error('bad response')
+    const facts = Array.isArray(data.facts) ? data.facts : []
+    const nodes = []
+    if (!facts.length) {
+      nodes.push(memoryLine('还没有长期记忆 —— 它只在值得记的时候才写（每 6 轮看一次）。', 'muted'))
+    }
+    for (const fact of facts.slice().reverse()) {
+      const item = document.createElement('article')
+      item.className = 'fact'
+      item.append(memoryLine(String(fact.content ?? '')))
+      const when = Number(fact.ts) ? new Date(Number(fact.ts)).toLocaleString() : '时间未知'
+      const quote = String(fact.sourceQuote ?? '').trim()
+      item.append(memoryLine(quote ? `${when} · 来自「${quote.slice(0, 40)}」` : when, 'muted'))
+      nodes.push(item)
+    }
+    memoryList.replaceChildren(...nodes)
+    const notes = [`长期事实 ${facts.length} 条`]
+    if (Number(data.workingTurns) > 0) notes.push(`工作窗口 ${data.workingTurns} 条`)
+    if (data.summary) notes.push(`滚动摘要 ${String(data.summary).length} 字`)
+    if (data.saveError) notes.push(`⚠ 上次保存失败：${data.saveError}`)
+    memoryNote.textContent = notes.join(' · ')
+  } catch {
+    memoryList.replaceChildren(memoryLine('读不到记忆（守护进程重启过的话，窗口里的凭据就过期了）', 'muted'))
+    memoryNote.textContent = ''
+  }
+}
+
+if (memoryButton) memoryButton.addEventListener('click', () => { void openMemory() })
+const memoryClose = document.getElementById('memory-close')
+if (memoryClose) memoryClose.addEventListener('click', closeMemory)
+
 if (hasShell) {
   // `shell` 这个类决定球在不在场（见 panel.css）：浏览器降级那条路永远不该看见球
+
   document.body.classList.add('shell', 'mode-ball')
   // **四张脸先取回来。**（2026-09-29 加的，用户报"点一下会闪一下"）
   //
