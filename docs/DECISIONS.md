@@ -1403,6 +1403,36 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-070: `#5` 不是"附加参与者"；`chat_room_info_detail` 的配对语义不能搬到 `chat_room` 上
+
+**Status:** Active（更正 D-067 / D-068 里的一处**事实错误**）
+
+这两条是 2026-10-03 用多智能体并行复核时**先由子 Agent 提出、我再独立复核**的：
+
+1. **`#5` 的真实身份**：`chat_room.ext_buffer` 顶层 `#5` 的 id 集合，与"该群成员里
+   `status & 2048`（位 11）的那批人"**逐群完全相等（77/77）**；全库 4151 个成员里带 bit11 的正好
+   28 个，与 `#5` 的 28 条目**一一对应**。⇒ `#5` 是成员列表的**投影**，**没有独立信息**。
+   D-067 / D-068 里"`#5` 是附加参与者 id（库里的表没有这一串）"**是错的**。
+   **后果**：`contact-schema` 的输出键由 `extraIds` 改为 `statusBit11Ids`，人读标签改成
+   「`#5`（status 位 11 的成员）」。这是一次**对外可见的改名**，但留着旧名字等于在输出里
+   继续断言一个已被证伪的含义。
+2. **"配对差值 = 未落库"只对 `chat_room_info_detail` 成立**：`chat_room` 自己的 `#3`/`#4`
+   **77/77 恒等**，在那 5 个"成员比关系表多 1 人"的群里**仍然恒等**。把 detail 的配对语义搬到
+   chat_room 上，本机数据**不支持**；"三个存储落后程度不同"是**同样相容的另一种读法**，
+   一次快照区分不了。文档 6.1 的 ①/② 据此改写。
+3. 另外两条已验的位含义（都 77/77）：`chat_room_info_detail.chat_room_status_` 的**位 17 ⟺
+   本群与企业微信/openim 互通**（置位 6 群全有 `@openim` 成员/群主，不置位 71 群全无）；
+   `524288`（位 19）**只是众数**（51/77）**不是常量** —— 文档里"77 行全是 524288"一并更正。
+4. **`chatroom_seq` 这条名字候选降级**：客户端字符串池里确实有它，但两轮独立追查都指向它是
+   **账号级的"群列表游标"**（出现在 InitContact 的收尾日志里，日志里**没有任何房间标识**）。
+   ⇒ 不采用，`#3`/`#4` 照旧不编名字。
+
+**Reason：** 记"我们对外说过的话里哪些是错的"比只记新增发现更重要——`#5` 那句已经进了命令输出
+和 npm 包的说明文字。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` §2/§5/§6/§6.1/3.2 与 `contact-schema` 的措辞同步；
+`#3`/`#4` 仍然只报字段号（D-068 的边界不变）。
+
 ## D-069: `#3`/`#4` 定性到"一对版本号、跟着成员走"，但**仍然不给它名字**
 
 **Status:** Active（补充 D-068 的"语义未定"）
@@ -1444,7 +1474,8 @@ which is what the gate is for.
 
 D-067 定的是"测绘进仓库、解析不进"。随后的问题是"解析完并纳入功能了吗" —— 于是把**已经验证过**
 的那部分做成能力：`weflow-cli contact-schema`（`scripts/contact_schema.py`，只读本地）输出成员的
-userName / displayName / status（位标志）/ inviter，加上 `#5` 的附加参与者 id。
+userName / displayName / status（位标志）/ inviter，加上 `#5`。（`#5` 当时被叫成"附加参与者 id"；
+2026-10-03 更正：它等于成员 `status` 位 11 的投影，见 D-070。）
 
 **边界写在输出里，不写在注释里。** 顶层 `#3`/`#4` 语义未定（三次证伪：不是成员 id、不是房间 id、
 不在消息库任何 id 列；**2026-10-03 更新**：行为已定性到「一对跟着成员走的版本号」，见 D-069
@@ -1456,7 +1487,7 @@ userName / displayName / status（位标志）/ inviter，加上 `#5` 的附加�
 超出缓冲区"那个用例是**变异检查补出来的**：第一版测试只用了"长度的 varint 被截断"，
 压根走不到 `i + ln > len(buf)` 那条检查，把那个 raise 改成 `return []` 测试照样绿。
 
-**Consequences：** 要素在 blob 里而库里的表没有的那三样（status / inviter / 附加参与者 id）时，
+**Consequences：** 要素在 blob 里而库里的表没有的那两样（status / inviter）时，
 用这个命令；其余字段与群昵称仍以 DLL 那条路为准。
 
 **`#3` 的边界（2026-10-03 追到尽头）**：24 个大值 `#3` 在 `db_storage` 下**全部 24 个库**的每一列里
@@ -1467,7 +1498,10 @@ userName / displayName / status（位标志）/ inviter，加上 `#5` 的附加�
 **为什么"找对应列"这条路注定失败**：这类字段多半是**位标志**（群成员 `status` 实测 8 个位、
 `contact.extra_buffer` 的 `#3` 实测 4 个位）—— 位标志的集合不会与任何单一列镜像。
 先定性到"它是位标志"再谈别的，比拿列联表硬找有意义。另外**本机没有 V3 的数据**
-（`WeChat Files` 与注册表 InstallPath 都为空），所以"拿另一个版本对照"这条在这里走不通。密钥只从配置读、**不做成命令行参数**
+（`WeChat Files` 与注册表 InstallPath 都为空），所以"拿另一个版本对照"这条在这里走不通。
+
+**`#5` 的更正（2026-10-03）**：本文（以及 D-067 引用的那段）把顶层 `#5` 叫"附加参与者 id"是**错的** ——
+实测它等于"成员里 `status` 位 11 置位的那批 id"（77/77 集合相等）。见 **D-070**。密钥只从配置读、**不做成命令行参数**
 （进程列表可见，同 EXTENDING 的 "state goes in over stdin, not argv"）。
 
 ## D-067: `ext_buffer` 的结构已测绘，但**不**在仓库里解析它
@@ -1487,7 +1521,7 @@ userName / displayName / status（位标志）/ inviter，加上 `#5` 的附加�
 三种解释，剩下最像"V4 新 id 空间里的某个会话标识"，但本机数据不足以判定。
 
 **Consequences：** 拿一个语义未定的字段写逻辑，等于把猜测当事实。真需要 blob 里那三样
-（成员的 `status` 位标志、`inviter`、`#5` 的附加参与者 id —— 库里的表都没有）时，回来读那份
+（成员的 `status` 位标志、`inviter`、`#5` —— 库里的表都没有）时，回来读那份
 笔记，先把 `#3` 定死或明确只用已验字段。笔记里也记了**证伪过的猜测**，省得后人再试一遍。
 
 ## D-066: The tickle no longer tilts - rotation belongs to the lift alone

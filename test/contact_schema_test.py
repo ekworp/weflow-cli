@@ -49,7 +49,7 @@ def member(user, display=None, status=1, inviter=None):
 
 
 class ContactSchemaTest(unittest.TestCase):
-    def test_decodes_members_extras_and_keeps_unknown_raw(self):
+    def test_decodes_members_statusbit11_and_keeps_unknown_raw(self):
         blob = (enc_bytes(1, member('wxid_a', '张三', 17, 'wxid_b'))
                 + enc_bytes(1, member('wxid_b', None, 8193))
                 + enc_bytes(5, b'wxid_extra')
@@ -60,7 +60,7 @@ class ContactSchemaTest(unittest.TestCase):
             'userName': 'wxid_a', 'displayName': '张三', 'status': 17, 'inviter': 'wxid_b'})
         # 缺省就是 None：不替它编一个空串或"未知"
         self.assertIsNone(got['members'][1]['displayName'])
-        self.assertEqual(got['extraIds'], ['wxid_extra'])
+        self.assertEqual(got['statusBit11Ids'], ['wxid_extra'])
         # 未识别字段原样保留，键是字段号 —— 没有名字
         self.assertEqual(got['unrecognized'], {'3': 700002082, '4': 700002082})
 

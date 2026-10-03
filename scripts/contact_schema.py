@@ -11,7 +11,8 @@
 
     RoomData
       #1 (重复) 成员 —— 每个成员：1=userName  2=displayName  3=status  4=inviter
-      #5 (重复) 附加参与者 id（实测 wxid_… / xxx@openim，库里的表没有这一串）
+      #5 (重复) = 成员里 **status 位 11 置位**的那批 id（本机 77/77 与该集合完全相等；
+                 它**不是**"额外的参与者"——早前那么叫是错的，见 DECISIONS D-070）
 
 用法：
     python scripts/contact_schema.py --json
@@ -93,7 +94,7 @@ def _text(raw):
 
 
 def decode_room(blob):
-    """把一个 ext_buffer 解成 {members, extraIds, unrecognized}；解不动就抛错。"""
+    """把一个 ext_buffer 解成 {members, statusBit11Ids, unrecognized}；解不动就抛错。"""
     members = []
     extra_ids = []
     unrecognized = {}
@@ -118,7 +119,7 @@ def decode_room(blob):
         else:
             # 不猜：原样放进来，键就是字段号
             unrecognized['%d' % fno] = (len(value) if wt == 2 else value)
-    return {'members': members, 'extraIds': extra_ids, 'unrecognized': unrecognized}
+    return {'members': members, 'statusBit11Ids': extra_ids, 'unrecognized': unrecognized}
 
 
 def load_rows(args):
@@ -182,7 +183,7 @@ def main(argv=None):
         rooms.append({'id': rid, 'username': username, 'owner': owner,
                       'memberCount': len(decoded['members']),
                       'members': decoded['members'],
-                      'extraIds': decoded['extraIds'],
+                      'statusBit11Ids': decoded['statusBit11Ids'],
                       'unrecognized': decoded['unrecognized']})
 
     if args.json:
@@ -198,8 +199,9 @@ def main(argv=None):
             for m in room['members'][:5]:
                 print('   %-28s %-12s status=%-8s inviter=%s' % (
                     m.get('userName'), m.get('displayName'), m.get('status'), m.get('inviter')))
-            if room['extraIds']:
-                print('   附加参与者: %s' % ', '.join(x or '?' for x in room['extraIds'][:5]))
+            if room['statusBit11Ids']:
+                print('   #5（status 位 11 的成员）: %s'
+                      % ', '.join(x or '?' for x in room['statusBit11Ids'][:5]))
         for f in failures:
             print('解不动: id=%s %s' % (f['id'], f['error']), file=sys.stderr)
     return 0

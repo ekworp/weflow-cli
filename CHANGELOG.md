@@ -19,6 +19,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`contact-schema`'s `#5` output carried a wrong label; the label is now the measured fact.** The blobs'
+  top-level `#5` used to be described as "a run of extra participant ids that no table carries". Probing all 77
+  rooms shows the id set equals the members whose `status` has bit 11 (2048) set - exactly, room by room
+  (77/77), and the 28 entries spread over 15 rooms match 28 members carrying that bit, no more and no fewer. So
+  `#5` holds **no information the member list does not already have**, and `extraIds` was simply the wrong name
+  for it: the JSON key is now `statusBit11Ids` and the human line reads `#5 (status bit 11 members)`. **That
+  key rename is user-visible** - if you were keying off `extraIds`, read `#5` raw instead. Two more bit meanings
+  are written down while we were there (both 77/77): `chat_room_info_detail.chat_room_status_` bit 17 marks a
+  room bridged to WeCom/openim, and `524288` (bit 19) is only the **mode**, not a constant - the notes used to
+  say all 77 rows carried it. The paired-field story narrowed as well: `#3 != #4` is a property of the *detail*
+  blob (5 rooms - exactly the rooms whose member list runs one entry ahead of `chatroom_member`), while
+  `chat_room`'s own pair stays equal even in those rooms, so "the difference is a pending-change flag" is not
+  something the data supports for the room blob itself. `#3`/`#4` still get no name; the one candidate
+  (`chatroom_seq` in the client's obfuscated string pool) was chased down and is an account-level cursor in the
+  InitContact log with no room id anywhere near it (`docs/CONTACT_DB_SCHEMA.md` §3.2/§6, `DECISIONS.md` D-070).
+
 - **Running the pointer across the floating ball makes it squirm as if tickled.** Four generated poses (eyes
   squeezed shut, paws up, open laugh) cycle every 110 ms while the pointer moves over it, and settle back after
   260 ms without movement. It **no longer tilts** - see the next entry; the 4-degree rotation computed from the

@@ -1683,13 +1683,15 @@ syncCmd
 // ==================== contacts ====================
 // contact-schema：读 contact.db 里**群**的 ext_buffer（本地只读：不联网、不调模型）
 //
-// 只解**实测验证过**的那几个字段（成员 userName/displayName/status/inviter + #5 的附加参与者 id）；
+// 只解**实测验证过**的那几个字段（成员 userName/displayName/status/inviter + `#5`）；
+// `#5` 曾经叫"附加参与者 id"，实测是**成员 status 位 11 置位的那批 id**（本机 77/77 集合相等），
+// 所以输出改用 `statusBit11Ids`、不再说"额外参与者"（见 D-070）。
 // 顶层 `#3`/`#4` 的语义在本机被三次证伪（不是成员 id / 房间 id / 消息侧 id），所以脚本把它们
 // 原样放进 `unrecognized`，**不猜名字** —— 拿猜出来的名字写逻辑，就是拿不确定当事实。
-// 结构笔记见 `docs/CONTACT_DB_SCHEMA.md`，取舍见 D-067 / D-068。
+// 结构笔记见 `docs/CONTACT_DB_SCHEMA.md`，取舍见 D-067 / D-068 / D-070。
 program
   .command('contact-schema')
-  .description('读 contact.db 的群 ext_buffer：成员（含 status/inviter）与附加参与者 id —— 只解已验证字段，未识别的原样标注（本地、只读）')
+  .description('读 contact.db 的群 ext_buffer：成员（含 status/inviter）与 #5（= status 位11 的成员 id）—— 只解已验证字段，未识别的原样标注（本地、只读）')
   .option('-n, --limit <n>', '最多看几个群', '20')
   .option('--room <which>', '只看某个群（username 或 id）')
   .option('--json', '输出机器可读结果')
