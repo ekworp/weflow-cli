@@ -132,7 +132,9 @@ test('渲染：拿构建出来的数据在假 canvas 上跑一遍，点线字都
     assert.ok(g2, '视图该把把手挂出来')
     assert.equal(g2.nodes, 3)
     assert.equal(g2.edges, 3)
-    assert.ok((calls.arc || 0) >= 3, `3 个点该落 3 笔 arc，实际 ${calls.arc || 0}`)
+    // 屏幕半径不到 2px 的点画方块（实测 5 万方块 3.4ms、5 万个圆 9.0ms），所以"落笔"看 arc + rect 之和
+    const dots = (calls.arc || 0) + (calls.rect || 0)
+    assert.ok(dots >= 3, `3 个点该落 3 笔（arc 或 rect），实际 ${dots}`)
     assert.ok((calls.lineTo || 0) >= 3, `3 条边该落 3 笔 lineTo，实际 ${calls.lineTo || 0}`)
     assert.ok((calls.fillText || 0) >= 1, `该画出概念名，实际 ${calls.fillText || 0}`)
     assert.ok((calls.fill || 0) >= 1, '点要真的填色')

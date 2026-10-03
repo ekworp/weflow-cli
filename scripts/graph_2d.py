@@ -80,7 +80,7 @@ def main(argv=None):
 
     data = json.dumps({'nodes': nodes, 'links': links}, ensure_ascii=False, separators=(',', ':'))
     # 与 3D 分开分槽：同一张图的 2D 与 3D 坐标不通用，各存一份（见 graph_3d.py 里那段注释）
-    digest = hashlib.sha1((data + '|2d').encode('utf-8')).hexdigest()[:12]
+    digest = g.layout_key(data, 2, args.ticks)
     cache = Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
     graph_file = cache / ('graph-%s.json' % digest)
@@ -90,7 +90,7 @@ def main(argv=None):
         print('图没变，沿用已有布局')
     else:
         graph_file.write_text(data, encoding='utf-8')
-        subprocess.run(['node', str(LAYOUT), str(cache), str(g.LIB_DIR), str(args.ticks), digest, '2'], check=True)
+        g.run_layout(cache, digest, 2, args.ticks)
     pos = pos_file.read_text(encoding='utf-8')
 
     viewer = VIEWER2D.read_text(encoding='utf-8')

@@ -43,12 +43,44 @@
   const bucketOf = (line) => (line === 'wiki' || line === 'chat' ? line : 'other')
   const LINE_COLOR = { wiki: '#6ea8fe', chat: '#f0a35e', other: '#8b98b3' }
 
+  // **按线预排一次**：每帧就能一趟扫完。不为分色把 5 万个点扫三遍 —— 省下的是纯遍历时间。
+  const ORDER = new Int32Array(N)
+  for (let i = 0; i < N; i += 1) ORDER[i] = i
+  ORDER.sort((a, b) => bucketOf(nodes[a].line).localeCompare(bucketOf(nodes[b].line)))
+  // 排序后同一条线的点连成一段，扫一遍就能得到三个桶的边界（顺序与上面的字典序一致）
+  const BUCKET_LINE = ['chat', 'other', 'wiki']
+  const BUCKET = [0, 0, 0, N]
+  {
+    let cursor = 0
+    for (let b = 0; b < 3; b += 1) {
+      BUCKET[b] = cursor
+      while (cursor < N && bucketOf(nodes[ORDER[cursor]].line) === BUCKET_LINE[b]) cursor += 1
+    }
+    BUCKET[3] = N
+  }
+
+  // 边的**世界坐标**中位长度：乘上当前缩放就是屏幕上的长度。缩到看不见时直接不画边 ——
+  // 一屏 14 万条线糊成一片，没有信息量，却要花掉每帧四成的时间。
+  const MEDIAN_EDGE = (() => {
+    if (E.length === 0) return 0
+    const total = E.length / 2
+    const step = Math.max(1, Math.floor(total / 2000))
+    const lens = []
+    for (let k = 0; k < E.length; k += 2 * step) {
+      lens.push(Math.hypot(X[E[k]] - X[E[k + 1]], Y[E[k]] - Y[E[k + 1]]))
+    }
+    lens.sort((a, b) => a - b)
+    return lens[lens.length >> 1] || 0
+  })()
+  const EDGE_MIN_PX = 2 // 屏幕上短于这么多像素的边就别画了
+
   // 度数最高的一批画名字（其余只在鼠标指着或点开时显示）
   const labelled = nodes
     .map((_n, i) => i)
     .sort((a, b) => (nodes[b].deg || 0) - (nodes[a].deg || 0))
     .slice(0, 80)
   const labelledSet = new Set(labelled)
+  const LABEL_MAX = 40 // 一屏最多这么多名字，超了就前面的优先（还得互相避让，见 draw 里那段）
 
   const canvas = document.getElementById('cv')
   const hudStats = document.getElementById('stats')
@@ -164,10 +196,12 @@
     const dimOthers = focus >= 0
     const near = (i) => !dimOthers || i === focus || (neighbours !== null && neighbours.has(i))
 
+    // 屏幕上的边短到看不清时，整批不画（见 MEDIAN_EDGE 那段）
+    const drawEdges = MEDIAN_EDGE * s >= EDGE_MIN_PX
     ctx.lineWidth = 0.7 / s
     ctx.strokeStyle = dimOthers ? 'rgba(96,116,152,0.10)' : 'rgba(96,116,152,0.26)'
     ctx.beginPath()
-    for (let k = 0; k < E.length; k += 2) {
+    for (let k = 0; drawEdges && k < E.length; k += 2) {
       const i = E[k]
       const j = E[k + 1]
       if (dimOthers && !(near(i) && near(j))) continue
@@ -182,23 +216,30 @@
     }
     ctx.stroke()
 
-    for (const line of ['wiki', 'chat', 'other']) {
-      let started = false
-      for (let i = 0; i < N; i += 1) {
-        if (bucketOf(nodes[i].line) !== line) continue
+    // 一趟扫完（ORDER 已按线排好，每段一个桶一次 fill），而不是为了分色把全部点扫三遍
+    for (let b = 0; b < 3; b += 1) {
+      const from = BUCKET[b]
+      const to = BUCKET[b + 1]
+      if (from === to) continue
+      ctx.beginPath()
+      ctx.fillStyle = LINE_COLOR[BUCKET_LINE[b]]
+      let any = false
+      for (let k = from; k < to; k += 1) {
+        const i = ORDER[k]
         if (X[i] < x0 || X[i] > x1 || Y[i] < y0 || Y[i] > y1) continue
         if (dimOthers && !near(i)) continue
-        if (!started) {
-          ctx.beginPath()
-          ctx.fillStyle = LINE_COLOR[line]
-          started = true
-        }
         const deg = nodes[i].deg || 0
         const r = (i === focus ? 4 : deg >= 50 ? 2.6 : deg >= 10 ? 1.9 : 1.4) / s
-        ctx.moveTo(X[i] + r, Y[i])
-        ctx.arc(X[i], Y[i], r, 0, Math.PI * 2)
+        // **屏幕上小到看不出圆角时用方块**：实测 5 万个方块 3.4ms、5 万个圆 9.0ms。
+        // 缩到最远时每个点不到 2px，方块与圆在这里没有任何视觉差别。
+        if (r * s < 2) ctx.rect(X[i] - r, Y[i] - r, r * 2, r * 2)
+        else {
+          ctx.moveTo(X[i] + r, Y[i])
+          ctx.arc(X[i], Y[i], r, 0, Math.PI * 2)
+        }
+        any = true
       }
-      if (started) ctx.fill()
+      if (any) ctx.fill()
     }
 
     // ---- 屏幕坐标：名字 ----
@@ -206,15 +247,51 @@
     ctx.font = '11px "Segoe UI","Microsoft YaHei",system-ui,sans-serif'
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
-    for (let i = 0; i < N; i += 1) {
-      const show = i === hovered || i === focus || (labelledSet.has(i) && !dimOthers)
-      if (!show) continue
+    // 只遍历"要画名字的那一小批"，而不是全部 5 万个（以前每帧都要扫 N 次 Set 查询）
+    const extra = []
+    if (hovered >= 0 && !labelledSet.has(hovered)) extra.push(hovered)
+    if (focus >= 0 && focus !== hovered && !labelledSet.has(focus)) extra.push(focus)
+    // **互相压住的名字谁也别画**（贪心避让）：度数最高的那批全是枢纽，它们本来就挤在中心，
+    // 早先那版把它们全画出来，正中间是一团白字，等于没有标签。鼠标指着/点开的那两个永远画。
+    const placed = []
+    let shownLabels = 0
+    for (const i of dimOthers ? extra : labelled.concat(extra)) {
       const sx = ox + X[i] * s
       const sy = oy + Y[i] * s
       if (sx < -40 || sy < -20 || sx > w + 40 || sy > h + 20) continue
-      ctx.fillStyle = i === hovered || i === focus ? '#ffffff' : 'rgba(201,211,230,0.78)'
+      const forced = i === hovered || i === focus
+      if (!forced) {
+        if (shownLabels >= LABEL_MAX) continue
+        let clash = false
+        for (let p = 0; p < placed.length; p += 1) {
+          if (Math.abs(placed[p][0] - sx) < 52 && Math.abs(placed[p][1] - sy) < 13) {
+            clash = true
+            break
+          }
+        }
+        if (clash) continue
+      }
+      placed.push([sx, sy])
+      shownLabels += 1
+      ctx.fillStyle = forced ? '#ffffff' : 'rgba(201,211,230,0.78)'
       ctx.fillText(nodes[i].id, sx + 6, sy)
     }
+  }
+
+  // **每帧最多画一次。** 拖动、滚轮、悬停原本是每个事件都直接 draw()；事件比一帧还密时
+  // （拖动时一秒几百个 pointermove）画布就一直在重画，一次 12.8ms —— 操作会"粘住"，这才是
+  // 它最初卡的主因。合并成每帧一次之后，帧时间就是那一次 draw 的时间，交互立刻顺。
+  const RAF = (typeof window.requestAnimationFrame === 'function')
+    ? (fn) => window.requestAnimationFrame(fn)
+    : (fn) => setTimeout(fn, 16)
+  let scheduled = false
+  function scheduleDraw() {
+    if (scheduled) return
+    scheduled = true
+    RAF(() => {
+      scheduled = false
+      draw()
+    })
   }
 
   function setFocus(i) {
@@ -230,7 +307,7 @@
       neighbours = null
       if (hudInfo) hudInfo.textContent = HINT
     }
-    draw()
+    scheduleDraw()
   }
 
   // ---- 交互 ----
@@ -256,7 +333,7 @@
       lastY = event.clientY
       view.x += dx
       view.y += dy
-      draw()
+      scheduleDraw()
       return
     }
     const rect = canvas.getBoundingClientRect()
@@ -264,7 +341,7 @@
     if (hit !== hovered) {
       hovered = hit
       canvas.style.cursor = hit >= 0 ? 'pointer' : 'grab'
-      draw()
+      scheduleDraw()
     }
   })
   canvas.addEventListener('pointerup', (event) => {
@@ -278,7 +355,7 @@
   canvas.addEventListener('pointerleave', () => {
     if (hovered >= 0) {
       hovered = -1
-      draw()
+      scheduleDraw()
     }
   })
   canvas.addEventListener('wheel', (event) => {
@@ -291,7 +368,7 @@
     view.x = px - (px - view.x) * k
     view.y = py - (py - view.y) * k
     view.scale = next
-    draw()
+    scheduleDraw()
   }, { passive: false })
 
   if (q) {

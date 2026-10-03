@@ -89,7 +89,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   combinations never recomputes anything. `test/graph-2d-cli.test.ts` includes a **render smoke test**: it feeds the
   built data to the viewer over a fake canvas context and counts the `arc` / `lineTo` / `fillText` calls, because a
   JS error in a viewer yields a blank page with **no failing assertion anywhere** - and the page cannot be eyeballed
-  from here. **That smoke test did not catch the first version's real defect**: the graph drew into the top-left
+  from here. **The page was then reported as too slow, and the numbers say where it went** - measured in a real
+  headless Edge over CDP (Node's built-in WebSocket speaks the protocol, so no puppeteer was needed): one `draw()`
+  cost **12.78 ms** at 49,956 nodes, and a micro-benchmark split it up - 50,000 `arc` calls 9.0 ms, 50,000 `rect`
+  calls 3.4 ms, 145,000 line segments 4.1 ms, 80 labels 1.3 ms. Two fixes followed. **Sub-2px dots are now drawn as
+  squares** (identical at that size, 2.6x cheaper), and **every interaction redraw is coalesced into one per frame**
+  - the handlers used to call `draw()` on every `pointermove`, so a drag issued hundreds of full redraws and the
+  canvas never caught up; that was the actual "lag". After: **7.6 ms** per frame (132 fps) and a 200-event drag
+  storm went from ~2.6 s (computed from the measured 12.78 ms per draw) to **6.9 ms**. The same measurement pass also
+  showed why the labels were unreadable - the top-degree concepts are all hubs sitting in the middle, so all eighty
+  names landed on top of each other; labels are now capped and greedily de-overlapped. **The 2D layout needed its own
+  force parameters**: the same numbers in one dimension fewer pack 50,000 nodes into a featureless disc (the first
+  screenshot was exactly that), so 2D now uses stronger repulsion and longer links. That change exposed a second bug:
+  the layout cache key hashed only the *data*, so changing the forces silently kept serving the old coordinates -
+  the key now covers data, dimensions, tick count **and** the force parameters (a Python test pins each of those four,
+  since the symptom is a silently stale result). And that smoke test did not catch the first version's real defect: the graph drew into the top-left
   300x150 corner. `canvas` is a *replaced element*, so `position:fixed; inset:0` does not stretch it - right/bottom
   are ignored and it keeps its intrinsic size, `clientWidth` came back as 300, and the whole view was therefore
   computed for a 300x150 viewport. The page CSS now sets width/height explicitly and `resize()` keeps the CSS box and

@@ -15,9 +15,9 @@
 // 搬进仓库时一并改掉 —— 仓库里的代码不许出现用户的真实路径。
 import { readFileSync, writeFileSync } from 'node:fs'
 
-const [cacheDir, libDir, ticksArg, digest, dimsArg] = process.argv.slice(2)
+const [cacheDir, libDir, ticksArg, digest, dimsArg, paramsArg] = process.argv.slice(2)
 if (!cacheDir || !libDir) {
-  console.error('用法：node layout.mjs <缓存目录> <库目录> [tick] [digest] [dims]')
+  console.error('用法：node layout.mjs <缓存目录> <库目录> [tick] [digest] [dims] [params-json]')
   process.exit(2)
 }
 const DIMS = Number(dimsArg || 3) === 2 ? 2 : 3
@@ -40,9 +40,12 @@ if (!d3?.forceSimulation) {
 
 const { nodes, links } = JSON.parse(readFileSync(IN, 'utf8'))
 const L = links.map(([source, target]) => ({ source, target }))
+// 力参数**由调用方给**（graph_3d.py 的 LAYOUT_PARAMS），这里只照做：参数放两处迟早会分叉，
+// 而它们还得计入缓存 key（改了参数却读到旧坐标，这个坑踩过一次）。
+const P = paramsArg ? JSON.parse(paramsArg) : { charge: -22, chargeMax: 600, linkDist: 22, linkStrength: 0.6 }
 const sim = d3.forceSimulation(nodes, DIMS)
-  .force('charge', d3.forceManyBody().strength(-22).distanceMax(600).theta(1.1))
-  .force('link', d3.forceLink(L).id((d) => d.id).distance(22).strength(0.6))
+  .force('charge', d3.forceManyBody().strength(P.charge).distanceMax(P.chargeMax).theta(1.1))
+  .force('link', d3.forceLink(L).id((d) => d.id).distance(P.linkDist).strength(P.linkStrength))
   .force('center', DIMS === 2 ? d3.forceCenter(0, 0) : d3.forceCenter(0, 0, 0))
   .stop()
 

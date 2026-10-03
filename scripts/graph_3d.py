@@ -49,6 +49,32 @@ LIB_D3 = ['d3-dispatch.min.js', 'd3-timer.min.js', 'd3-quadtree.min.js',
           'd3-binarytree.min.js', 'd3-octree.min.js', 'd3-force-3d.min.js']
 
 
+# 布局的力参数**只在这里定义**（`layout.mjs` 只负责照做），而且**要计入缓存 key**：
+# 参数改了而 key 不变，就会一直读到用旧参数算的坐标 —— 这个坑刚踩过（改了 2D 的斥力、
+# 重跑却打印"图没变，沿用已有布局"，图上一点变化都没有）。
+#
+# 同一个力参数在 2D 与 3D **不是同一张图**：少一维可摊开，同样的斥力会把 5 万个点压成一坨
+# 密实的圆盘（实测：2D 沿用 3D 的参数，出来是一块没有任何结构的"饼"）。
+LAYOUT_PARAMS = {
+    '3': {'charge': -22, 'chargeMax': 600, 'linkDist': 22, 'linkStrength': 0.6},
+    '2': {'charge': -70, 'chargeMax': 1600, 'linkDist': 55, 'linkStrength': 0.5},
+}
+
+
+def layout_key(data, dims, ticks):
+    """缓存 key：**数据 + 维度 + tick 数 + 力参数**。少任何一项都会读到过期的坐标。"""
+    params = LAYOUT_PARAMS[str(dims)]
+    payload = '%s|dims=%s|ticks=%s|%s' % (data, dims, ticks, json.dumps(params, sort_keys=True))
+    return hashlib.sha1(payload.encode('utf-8')).hexdigest()[:12]
+
+
+def run_layout(cache_dir, digest, dims, ticks):
+    """让 `layout.mjs` 把坐标算好写进缓存（参数由这里给，助手只照做）。"""
+    params = json.dumps(LAYOUT_PARAMS[str(dims)], sort_keys=True)
+    subprocess.run(['node', str(LIB_DIR / 'layout.mjs'), str(cache_dir), str(LIB_DIR),
+                    str(ticks), digest, str(dims), params], check=True)
+
+
 def build_graph(vault, min_degree=0, line='all'):
     """`min_degree` / `line` 只在**产出**这一步过滤，改动的是给页面看的点集。
 
@@ -509,7 +535,7 @@ def main(argv=None):
     cache.mkdir(parents=True, exist_ok=True)
     # **按图的内容分槽**：核心图与全量图是两张不同的图，坐标不通用。共用一份文件名的话，
     # 建完核心图就把 5 万点的坐标挤掉了，切回去要重算 55 秒。
-    digest = hashlib.sha1(data.encode('utf-8')).hexdigest()[:12]
+    digest = layout_key(data, 3, args.ticks)
     graph_file = cache / ('graph-%s.json' % digest)
     pos_file = cache / ('positions-%s.json' % digest)
     same = graph_file.exists() and graph_file.read_text(encoding='utf-8') == data
@@ -517,8 +543,7 @@ def main(argv=None):
         print('图没变，沿用已有布局')
     else:
         graph_file.write_text(data, encoding='utf-8')
-        subprocess.run(['node', str(LIB_DIR / 'layout.mjs'), str(cache), str(LIB_DIR), str(args.ticks), digest],
-                       check=True)
+        run_layout(cache, digest, 3, args.ticks)
     pos = pos_file.read_text(encoding='utf-8')
     page = f"""<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
