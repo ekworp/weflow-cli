@@ -82,8 +82,15 @@
   }
 
   function resize() {
-    canvas.width = Math.floor(cssW() * dpr)
-    canvas.height = Math.floor(cssH() * dpr)
+    const w = cssW()
+    const h = cssH()
+    // **画布尺寸与 CSS 尺寸必须一起设**：canvas 是替换元素，`position:fixed; inset:0` 不会
+    // 让它铺满（它保持固有的 300x150）—— 只设 width/height（后备缓冲）而 CSS 盒还是 300x150 的话，
+    // `clientWidth` 就一直是 300，整张图会被算进左上角那一小块。第一版就是这么错的。
+    canvas.style.width = `${w}px`
+    canvas.style.height = `${h}px`
+    canvas.width = Math.floor(w * dpr)
+    canvas.height = Math.floor(h * dpr)
     draw()
   }
 

@@ -87,6 +87,14 @@ test('构建：3 点 3 边，页面里一个外部引用、一行 three.js 都�
     assert.ok(!/<script[^>]+\bsrc=/i.test(html), '不许有 <script src>')
     assert.ok(!/Three\.js Authors/.test(html), '2D 页面不该内联 three.js —— 它一行库都不需要')
 
+    // `#cv` 必须**显式**给 width/height。canvas 是**替换元素**：`position:fixed; inset:0` 不会让它
+    // 铺满（right/bottom 被忽略，它保持固有的 300x150），于是 clientWidth 读回来是 300，
+    // 整张图被算进左上角那一小块 —— 用户第一眼就是这个症状。
+    const cvRule = /#cv\s*\{[^}]*\}/.exec(html)
+    assert.ok(cvRule, '样式里该有 #cv 规则')
+    assert.ok(/width\s*:\s*100%/.test(cvRule[0]), `#cv 要显式给宽度：${cvRule[0]}`)
+    assert.ok(/height\s*:\s*100%/.test(cvRule[0]), `#cv 要显式给高度：${cvRule[0]}`)
+
     const flat = /window\.__POS__ = "([^"]*)";/.exec(html)
     assert.ok(flat, '页面上要有坐标')
     const nums = flat[1].split(',')
@@ -130,6 +138,15 @@ test('渲染：拿构建出来的数据在假 canvas 上跑一遍，点线字都
     assert.ok((calls.fill || 0) >= 1, '点要真的填色')
     assert.ok((calls.stroke || 0) >= 1, '线要真的描边')
     assert.ok((calls.clearRect || 0) >= 1, '每帧要先清屏')
+
+    // 画布的 CSS 尺寸与后备缓冲都要被设上。**只设后备缓冲是不够的** —— 页面里那块 canvas 仍然是
+    // 300x150，clientWidth 一直是 300，图缩在左上角。（jsdom 的 clientWidth 是 0，这里走的是
+    // window.innerWidth 那条兜底，所以这个断言在两种环境下都成立。）
+    const cv = window.document.getElementById('cv') as any
+    assert.equal(cv.style.width, `${window.innerWidth}px`, '要把画布的 CSS 宽度设成视口宽')
+    assert.equal(cv.style.height, `${window.innerHeight}px`, '高度同理')
+    assert.ok(cv.width > 0 && cv.height > 0, '后备缓冲也要有尺寸')
+    assert.ok(cv.width >= window.innerWidth, `后备缓冲不该小于视口：${cv.width}`)
   })
 })
 

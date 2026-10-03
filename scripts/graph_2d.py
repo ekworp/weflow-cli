@@ -101,7 +101,9 @@ def main(argv=None):
   html,body {{ margin:0; height:100%; background:#05070e; color:#c9d3e6;
     font:13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
     overflow:hidden; user-select:none; }}
-  #cv {{ position:fixed; inset:0; display:block; cursor:grab; touch-action:none; }}
+  /* canvas 是**替换元素**：`inset:0` 不会让它铺满（right/bottom 被忽略，它保持固有的 300x150），
+     所以必须显式给 width/height。少了这一条，视图按 300x150 算，整张图画在左上角一小块里。 */
+  #cv {{ position:fixed; inset:0; width:100%; height:100%; display:block; cursor:grab; touch-action:none; }}
   #hud {{ position:fixed; left:14px; top:12px; pointer-events:none; max-width:62vw; }}
   #stats {{ color:#6d7a93; }}
   #info {{ margin-top:6px; font-size:15px; min-height:22px; }}

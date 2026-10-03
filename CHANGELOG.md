@@ -89,7 +89,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   combinations never recomputes anything. `test/graph-2d-cli.test.ts` includes a **render smoke test**: it feeds the
   built data to the viewer over a fake canvas context and counts the `arc` / `lineTo` / `fillText` calls, because a
   JS error in a viewer yields a blank page with **no failing assertion anywhere** - and the page cannot be eyeballed
-  from here.
+  from here. **That smoke test did not catch the first version's real defect**: the graph drew into the top-left
+  300x150 corner. `canvas` is a *replaced element*, so `position:fixed; inset:0` does not stretch it - right/bottom
+  are ignored and it keeps its intrinsic size, `clientWidth` came back as 300, and the whole view was therefore
+  computed for a 300x150 viewport. The page CSS now sets width/height explicitly and `resize()` keeps the CSS box and
+  the backing store in step; both halves are asserted, and reverting either one turns the suite red (verified). The
+  3D page never had this problem because it draws into a `div` (which does stretch) and lets three.js size its own
+  canvas - but nobody has watched *that* one either.
 
 ### Added
 
