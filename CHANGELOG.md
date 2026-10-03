@@ -19,6 +19,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The `#3`/`#4` pair inside `chat_room.ext_buffer` is pinned down to "a local per-room counter", and two name
+  candidates are withdrawn.** Three agents worked it from different sides; the results overlap, which is what makes
+  them usable. (a) It is **not** a server sequence: 42/42 rooms of the `10000+x` family hold a value below their own
+  room's smallest non-zero `server_seq` (median gap 872 million), the entire 84,279-row message set has **zero** rows
+  with `server_seq` in `[1e4, 8e8)`, and rooms created in 2024-2026 still sit at `10000+x` while this account's
+  server sequence had already reached 841 million back in 2021-11. (b) It is **not** a unique id: seven rooms share
+  the value `10000` exactly, which a server-allocated identifier would not do. What survives is "a counter the
+  client seeds itself - `10000`, or a ~7e8 block for the older batch, or ~1-2k for the WeCom-bridged rooms - and
+  bumps on local events", with member-list changes dominating it (the detail blob's own pair correlates 0.889 with
+  member churn and collapses to ~0 against announcements once member count is controlled). Two candidate *names*
+  are dropped: `chatroom_seq` (an account-level cursor in the InitContact log, with no room id anywhere near it) and
+  `InfoVersion` (the plaintext field-name group that contains it carries **no field numbers**, so its order cannot
+  be mapped onto field numbers - reading it as 1..5 would put `AnnouncementPublishTime` at `#4` while the database
+  stores it at `#6`). The blobs' `#3`/`#4` therefore still ship as raw field numbers
+  (`docs/CONTACT_DB_SCHEMA.md` §3.3/§6.1, `DECISIONS.md` D-071).
+
 - **`contact-schema`'s `#5` output carried a wrong label; the label is now the measured fact.** The blobs'
   top-level `#5` used to be described as "a run of extra participant ids that no table carries". Probing all 77
   rooms shows the id set equals the members whose `status` has bit 11 (2048) set - exactly, room by room
