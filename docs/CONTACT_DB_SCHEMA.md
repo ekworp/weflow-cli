@@ -139,19 +139,29 @@ init_contact_manager.cc / contact_util.cc / windows_version.cc
 ### 3.3 客户端**也有**明文字段名组 —— 但拿不到字段号
 
 除了 3.2 那层被混淆的字符串池，客户端 `.rdata` 里还有**成组的明文"字段名清单"**
-（本机数出约 3,764 组 / 76,022 个槽，8 字节对齐、NUL 填充）。抽一组看形态（与 6.1 的 `InfoVersion` 同片）：
+（本机数出约 3,764 组 / 76,022 个槽）。它们排成**"实体注册组"**：条目固定 0x20 字节
+（`pool_ptr | tag | … | name_rva`），`tag ∈ {1,2,3,4}`，组内用 **4 字节 RVA** 指向名字串 ——
+所以"哪些名字属于同一组"是**可复跑**的（把名字的文件偏移当 RVA，全文件搜 `struct.pack('<I', off)`；
+例：`InfoVersion` 有 4 处引用）。抽两组看形态（与 6.1 的 `InfoVersion` 同一片）：
 
 - `ChatRoomName | UserNameList | DisplayNameList | ChatRoomFlag | Owner | IsShowName | SelfDisplayName | RoomData`
-- `strUsrName | nOrder | nUnReadCount | parentRef | strNickName | nStatus | nIsSend | nMsgType | nMsgLocalID | nMsgStatus | nTime | editContent | othersAtMe | bytesXml`（**匈牙利命名** ⇒ 像 V3 时代/镜像 struct）
+- `strUsrName | nOrder | nUnReadCount | parentRef | strNickName | nStatus | nIsSend | nMsgType |
+  nMsgLocalID | nMsgStatus | nTime | editContent | othersAtMe | bytesXml`（**匈牙利命名** ⇒ 像 V3 时代/镜像
+  struct；这 14 个名字**跨两个实体**，边界在 `nUnReadCount` 之后）
 
-**两条边界（都是负结果，但很有用）**：
+**三条边界（前两条是负结果，第三条是纠错）**：
 
-- 这些名字**旁边没有字段号**，而且全文件搜它们的**指针引用（8 字节 VA、4 字节 RVA）都是 0**
-  ⇒ "名字 → 字段号"的映射**本地读不到**（描述它们的 descriptor 定位不到）；
-- 因此**名字的顺序 ≠ 我们观测到的字段号**（把 detail 那组读成 1..5，`AnnouncementPublishTime`
-  会落到 `#4`，而库里它在 `#6`）。
+- **没有任何一张名字表带字段号**：全文件扫过 3,764 张表，"（名字, 小整数）"的配对里**没有编号表**；
+  名字旁的 `tag` 是 `{1,2,3,4}` 这种**结构标记**（从不出现 6/7，而 detail blob 实测字段号是 1/3/4/6/7）
+  ⇒ **"名字表第 n 个 = 字段号 n"不成立**。
+- **"名字表 → 具体 message 类型"这一层没有链**：类型名字符串本身几乎不被任何 RVA/VA 引用；而我们关心的
+  `ChatroomExtData` / `ChatroomMemberLocalData` / `ChatroomDetailInfoExtData` 在各自编译单元里
+  **根本没有字段名表**（那片区域只有类型名后缀 + `contact` 的 snake_case 列名）。
+- ⚠️ **纠错（2026-10-04）**：本节早前一版写"全文件搜这些名字的指针引用都是 0"——**那是错的**，
+  来自一次**PE 节区 file-offset ↔ RVA 错位**。实际存在 **4 字节 RVA 引用**（`InfoVersion` 4 处），
+  以能一行复跑的那个版本为准。这是本轮两个子 Agent 互相核对出来的：一个报了 0 引用，另一个复跑复现出 4 处。
 
-**教训**：以后再看到"某个明文名字恰好和某个字段对得上"，**先验证顺序与编号能不能对上**——
+**教训**：以后再看到"某个明文名字恰好和某个字段对得上"，**先验证名字顺序能不能对上字段号**——
 对不上就只能当线索，不能当名字（6.1 的 `InfoVersion` 候选就是这么撤掉的）。
 
 ## 4. 明确证伪的猜测（省得后人再试一遍）
