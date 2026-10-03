@@ -111,6 +111,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   3D page never had this problem because it draws into a `div` (which does stretch) and lets three.js size its own
   canvas - but nobody has watched *that* one either.
 
+- **`weflow-cli contact-schema` decodes the verified half of `chat_room.ext_buffer`.** Those blobs had no
+  documentation anywhere - not in this repository, not in the native DLL that reads them (`wcdb_api.dll` just
+  hands the string across and never parses it). A read-only probe established the structure and wrote it up in
+  `docs/CONTACT_DB_SCHEMA.md`: the top-level `#1` is a repeated member entry (`1=userName`, `2=displayName`,
+  `3=status`, `4=inviter`), whose count matches `chatroom_member` row-for-row on 29 of 30 groups, and `#5` is a
+  run of extra participant ids (`wxid_...`, `...@openim`) that no table carries. The command outputs exactly
+  those two things and **nothing it cannot name**: the top-level `#3`/`#4` pair - which the published
+  `roomdata.proto` does not describe at all - goes into `unrecognized` keyed by field number, because three
+  separate falsifications (not a member id, not the room id, not any id in the message shards) left its meaning
+  open. Two of that proto's claims are wrong for V4 and the notes say so: `roomCap = 5` is really a
+  length-delimited string list, and `status` is not the documented 0-9 but a bitfield (0/1/9/17/25/2057/2073/
+  8193/2097153/3145729/6291457/7340049 observed). A malformed blob raises and lands in `failures` rather than
+  returning an empty member list, since "cannot parse" and "nobody is in this group" are opposite facts -
+  and the test for that only became real after mutation testing showed the first version never reached the
+  bounds check it was supposed to guard.
+
 ### Added
 
 - **The ball now reacts twice more on its own: a hop when a reply lands, and a blink every 7-13 seconds.** The hop

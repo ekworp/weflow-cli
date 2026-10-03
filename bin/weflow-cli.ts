@@ -1681,6 +1681,43 @@ syncCmd
   })
 
 // ==================== contacts ====================
+// contact-schema：读 contact.db 里**群**的 ext_buffer（本地只读：不联网、不调模型）
+//
+// 只解**实测验证过**的那几个字段（成员 userName/displayName/status/inviter + #5 的附加参与者 id）；
+// 顶层 `#3`/`#4` 的语义在本机被三次证伪（不是成员 id / 房间 id / 消息侧 id），所以脚本把它们
+// 原样放进 `unrecognized`，**不猜名字** —— 拿猜出来的名字写逻辑，就是拿不确定当事实。
+// 结构笔记见 `docs/CONTACT_DB_SCHEMA.md`，取舍见 D-067 / D-068。
+program
+  .command('contact-schema')
+  .description('读 contact.db 的群 ext_buffer：成员（含 status/inviter）与附加参与者 id —— 只解已验证字段，未识别的原样标注（本地、只读）')
+  .option('-n, --limit <n>', '最多看几个群', '20')
+  .option('--room <which>', '只看某个群（username 或 id）')
+  .option('--json', '输出机器可读结果')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'contact_schema.py')
+    const limit = parseCliInteger(opts.limit, 'limit', 1, 100000, !!opts.json)
+    const args = [script, '--limit', String(limit),
+                  ...(opts.room ? ['--room', opts.room] : []),
+                  ...(opts.json ? ['--json'] : [])]
+    try {
+      const { stdout, stderr } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000, maxBuffer: 64 * 1024 * 1024, env: pythonProcessEnv(),
+      })
+      process.stdout.write(stdout)
+      if (stderr && !opts.json) process.stderr.write(stderr)
+    } catch (error) {
+      if (opts.json) {
+        console.log(JSON.stringify({ success: false, code: 'CONTACT_SCHEMA_FAILED', action: 'contact-schema', error: safeSubprocessError(error) }))
+      } else {
+        console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
+      }
+      process.exit(1)
+    }
+  })
+
 program
   .command('contacts')
   .description('查看联系人列表')

@@ -68,6 +68,7 @@ weflow-cli init --refresh
 weflow-cli config show
 weflow-cli sessions -n 10
 weflow-cli contacts -k "关键词"
+weflow-cli contact-schema -n 3                 # 读群 ext_buffer 里**已验证**的字段（成员/status/inviter）
 weflow-cli messages "联系人A" -n 10
 ```
 

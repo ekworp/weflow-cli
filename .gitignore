@@ -42,6 +42,7 @@ scripts/regen_wsl_keys.mjs
 !docs/EXTENDING.md
 !docs/PARTNERS.md
 !docs/BRANCHES.md
+!docs/CONTACT_DB_SCHEMA.md
 !docs/ROADMAP.md
 !docs/RELEASING.md
 !docs/HEALTH-CHECK.md

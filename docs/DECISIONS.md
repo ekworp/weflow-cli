@@ -1403,6 +1403,47 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-068: 只解 `ext_buffer` 里**已验证**的字段，未定的原样标注
+
+**Status:** Active（细化 D-067 的"解析代码不进"）
+
+D-067 定的是"测绘进仓库、解析不进"。随后的问题是"解析完并纳入功能了吗" —— 于是把**已经验证过**
+的那部分做成能力：`weflow-cli contact-schema`（`scripts/contact_schema.py`，只读本地）输出成员的
+userName / displayName / status（位标志）/ inviter，加上 `#5` 的附加参与者 id。
+
+**边界写在输出里，不写在注释里。** 顶层 `#3`/`#4` 语义未定（三次证伪：不是成员 id、不是房间 id、
+不在消息库任何 id 列），所以它们进 `unrecognized`、键就是字段号，**不给它们编名字**；成员里出现
+没见过的小字段同样照原样带出（`members[].unrecognized`）。编了名字，下游就会拿猜出来的含义写逻辑。
+
+**解不动就报错，绝不返回空成员表。** "解不动"和"这个群没人"在数据上是相反的两件事，
+静默把前者写成后者是最坏的一种错。`test/contact_schema_test.py` 钉住这两条 —— 其中"声明长度
+超出缓冲区"那个用例是**变异检查补出来的**：第一版测试只用了"长度的 varint 被截断"，
+压根走不到 `i + ln > len(buf)` 那条检查，把那个 raise 改成 `return []` 测试照样绿。
+
+**Consequences：** 要素在 blob 里而库里的表没有的那三样（status / inviter / 附加参与者 id）时，
+用这个命令；其余字段与群昵称仍以 DLL 那条路为准。密钥只从配置读、**不做成命令行参数**
+（进程列表可见，同 EXTENDING 的 "state goes in over stdin, not argv"）。
+
+## D-067: `ext_buffer` 的结构已测绘，但**不**在仓库里解析它
+
+**Status:** Active
+
+`contact.db` 里那几列二进制（`chat_room.ext_buffer`、`chat_room_info_detail.ext_buffer_`、
+`contact.extra_buffer`、`stranger.extra_buffer`、`openim_*`）没有官方文档。2026-10-03 把
+`chat_room.ext_buffer` 解出来了：它是 protobuf，成员段与上游
+[chatlog-export](https://github.com/Wing900/chatlog-export) 的 `roomdata.proto` **一致**，
+但那份定义**不全也不准**（它写的 `int32 roomCap = 5` 实测是长度分隔的字符串列表；顶层还多
+`#3`/`#4`/`#6`）。整库 17 张表逐列测绘记在 `docs/CONTACT_DB_SCHEMA.md`。
+
+**决定：测绘进仓库，解析代码不进。** 群昵称现在走原生 DLL
+（`wcdbCore.ts` 的 `wcdb_get_chat_room_ext_buffer`）已经够用；而 blob 里最诱人的那个 `#3`
+（每群一个数、与 `#4` 恒相等）**语义没定** —— 实测排除了"成员 id / 房间 id / 消息侧 id"
+三种解释，剩下最像"V4 新 id 空间里的某个会话标识"，但本机数据不足以判定。
+
+**Consequences：** 拿一个语义未定的字段写逻辑，等于把猜测当事实。真需要 blob 里那三样
+（成员的 `status` 位标志、`inviter`、`#5` 的附加参与者 id —— 库里的表都没有）时，回来读那份
+笔记，先把 `#3` 定死或明确只用已验字段。笔记里也记了**证伪过的猜测**，省得后人再试一遍。
+
 ## D-066: The tickle no longer tilts - rotation belongs to the lift alone
 
 **Status:** Active (supersedes the computed-tilt half of D-065)
