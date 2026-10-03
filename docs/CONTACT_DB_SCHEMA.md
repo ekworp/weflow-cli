@@ -74,6 +74,7 @@ RoomDataUser {
 
 **最强的一条**：把 24 个群的 `#3`（其中 **24 个是大值**，`≥ 10^8`）拿到 `db_storage` 下**全部 24 个
 数据库**的**每一张表的每一个非二进制列**里找（文本列也按子串找），**大值命中 0 个**。
+消息**内容**里也找过（第 8 节）—— 同样 0。
 大整数不可能与别处的 id 撞车，所以结论是硬的：
 
 > `#3` 只存在于 `chat_room.ext_buffer` 这个 blob 里；本机可见的任何表都不存它。
@@ -137,7 +138,32 @@ weflow-cli contact-schema --json         # 机器可读
 名字在没有对照源的情况下拿不到 —— 这是**结构性**的，不是没解：本机 24 个库里，
 这些字段的值都不出现在别处（见第 4 节的同款结论）。
 
-## 8. 复现方法
+## 8. 公开圈研究到哪一步了（2026-10-03 查）
+
+这类东西最容易白费力气，所以把"别人做到哪"记下来：
+
+| 项目 | 星 | 与本表的关系 |
+| --- | --- | --- |
+| [Wing900/chatlog-export](https://github.com/Wing900/chatlog-export) | 31 | **唯一的公开 schema**：`internal/model/wxproto/{roomdata,bytesextra,packedinfo}.proto`。成员段与实测一致，`roomCap` 那行对不上（见第 2 节） |
+| [sjzar/chatlog](https://github.com/sjzar/chatlog) | 9.2k | 支持 V4，但**不解析 ext_buffer**（文件树里没有任何 proto） |
+| [LC044/WeChatMsg](https://github.com/LC044/WeChatMsg) | 42k | V3 时代：没有 proto/V4/schema 文件，README 不提 4.x |
+| xaoyaoo/PyWxDump（9.7k）、0xlane/wechat-dump-rs | — | **已被 DMCA 下架**（`Repository access blocked`），取不到了 |
+| [Ray0612/WeChat-v4-export-research](https://github.com/Ray0612/WeChat-v4-export-research) | 13 | 记的是**消息**级字段：记录区（键值对）里 `chatroom_id` = 键 `0x76`、`chatroom_name` = `0x77`（中文 UTF-8）。**已测：与本文的 `#3` 无关**（见下） |
+
+**陷阱一处**：中文资料里那条"`ChatRoom` 表有 `RoomData`(BLOB) 列"说的是**微信机器人框架自己的库**，
+不是微信的 `contact.db`（我们的表是 `chat_room(id, username, owner, ext_buffer)`）。别照抄那张表。
+
+**据此新做的一条证伪**（比第 4 节更进一步，因为它扫的是**消息内容**而不只是表列）：把 74 个群各自的
+`#3` 拿到该群消息表 `Msg_<md5(username)>` 的每一行、每一个非数值列里，按**两种编码**找
+（十进制文本 / varint）。结果：
+
+- **大值（≥1e8）命中 0 / 0**（文本 0、varint 0）—— 大整数不会在忙 blob 里撞车，所以这是硬的；
+- 小值（如 `2021`/`10001`/`10087`）有若干命中，但那是**字节撞车**（两三字节的序列在几 KB 的 blob 里
+  到处都是），不构成证据。
+
+⇒ 同行记下的 `chatroom_id`（消息记录区 `0x76`）**不是**本文这个 `#3`。
+
+## 9. 复现方法
 
 1. 只读打开：`PRAGMA key = "x'<key_hex><库文件头 16 字节的 hex>'"`（同 `scripts/nt_decrypt.py` 里
    `connect_message_shards` / `get_fav_schema` 的写法）；
