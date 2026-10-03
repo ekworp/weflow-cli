@@ -1422,8 +1422,13 @@ which is what the gate is for.
   `micromsg.ChatroomExtData`、成员子消息是 `micromsg.ChatroomMemberLocalData`、
   `contact.extra_buffer` 是 `micromsg.ContactExtData`（`docs/CONTACT_DB_SCHEMA.md` 3.1）；
   但**字段名不以明文出现** —— 明文只到"表的列名"这一层（`nick_name / … / extra_buffer`），
-  这些本地 message 的字段名被编成 `<长度><hex>` 记录（zlib/raw-deflate/gzip 都解不开，
-  也不是标准 protobuf 描述符）。**它是哈希还是裹着名字的编码，没查清**，两种可能都记在 3.1 里。
+  本地 message 的字段名是二进制的、不可读。**（更正：早前一版说"字段名被打包成 `<长度><hex>`
+  记录"是错的 —— 那批记录是客户端的字符串池，见 3.2。）**
+- **顺手破了客户端的一层字符串混淆**（3.2）：`0xa1 <小端 uint16 的 4 位 ASCII hex> 0xb1 <等长 hex>`
+  这种记录，载荷是**明文 XOR 一条固定的逐位密钥**（判据：解出来每一位的可打印率 86%~100%，
+  随机密钥只有 ~37%）。解出来是客户端的符号/文件名/日志串。**对本文的用处只有一条**：
+  日志键里有 **`chatroom_seq`**（与 `contact_seq` 并排，在 `init_contact_manager.cc` 的流程里）——
+  它跟 `#3`/`#4` 的行为对得上，但**没有对照，只能算名字候选**。
 
 **没有改的一件事：名字。** 上面是**行为**证据，不是厂商给的字段名；本机也没有对照源
 （没有 V3 数据、没有第二台机器、同一房间只有一个时点）。所以 `contact-schema` 继续把
