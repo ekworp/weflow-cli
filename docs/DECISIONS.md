@@ -1418,6 +1418,11 @@ which is what the gate is for.
 - 底数有两种（`10000` 47 个群 / `7×10^8` 24 个群），与记录进库的先后相关；`owner` 为空的
   3 个群值为 0；另有 3 个群是第三种来源（1254/1304/2021），样本不够；
 - 它**会变**（同一天实测 +2），所以不是静态 id。
+- **类型名有，字段名没有**：从客户端二进制里读到 `chat_room.ext_buffer` 其实是
+  `micromsg.ChatroomExtData`、成员子消息是 `micromsg.ChatroomMemberLocalData`、
+  `contact.extra_buffer` 是 `micromsg.ContactExtData`（`docs/CONTACT_DB_SCHEMA.md` 3.1）；
+  但**字段名在客户端里不是明文** —— 列名是明文数组、这些本地 message 的字段表是厂商自己的
+  编码（约 5 bit/byte，三种压缩都解不开），不是标准 protobuf 描述符。
 
 **没有改的一件事：名字。** 上面是**行为**证据，不是厂商给的字段名；本机也没有对照源
 （没有 V3 数据、没有第二台机器、同一房间只有一个时点）。所以 `contact-schema` 继续把

@@ -55,7 +55,7 @@ RoomDataUser {
 `internal/model/wxproto/roomdata.proto`，声称 v3/v4 通用）：成员那一段**完全对得上** ✅；
 但它写的 `optional int32 roomCap = 5` ❌（实测 `#5` 是长度分隔的字符串列表）；
 顶层的 `#3`/`#4`/`#6` 它也没有 ❌。它的注释"syntax v3 & v4 通用，可能会有部分字段差异"
-——差异比注释里说的大。
+——差异比注释里说的大。（**客户端自己**给这个 blob 的类型叫 `micromsg.ChatroomExtData`，见 3.1。）
 
 ## 3. 其余几处 protobuf（形状已验，语义多半未定）
 
@@ -65,6 +65,32 @@ RoomDataUser {
 | `contact.extra_buffer` | `#3`(varint)，2 字节上下 | ❌ **追到边界了**：4014 行里 **3072 行根本没有这个字段**（77%，列是空的）；有值的只有 0(520)/3(418)/9(2)/1(1)/515(1)。与同行 21 列**没有一列一一对应** —— `local_type`/`flag`/`verify_flag`/`is_in_chat_room`/`chat_room_type` 逐张列联表都试过（`verify_flag` 的 0/8/24 三种取值下 `#3` 都同时有 0 和 3）。唯一稳定的关系是**存在性**：`local_type = 3` 的 3028 行全部为空，有值的基本只在别的类型上 —— 存在性与类型相关，**取值本身无从判定** |
 | `stranger.extra_buffer` | 38 个顶层字段（`#2`…`#38`，varint 与 length-delimited 混排，含嵌套） | ❓ 形状清楚，字段含义**一个都没定** |
 | `openim_appid.ext_buffer` / `openim_acct_type.ext_buffer` | 各约 200~340 字节，顶层 3~4 个字段、含嵌套 | ❓ 与上面几套**都不一样** |
+
+### 3.1 这几个 blob 的**类型名**（2026-10-03 从客户端二进制里读出来的）
+
+客户端安装目录里的 `Weixin.dll` 里有一张"类型名"表（生成的代码给每个 message 都留了全名）。
+`local_proto/local_contact.pb.cc` 这个编译单元注册的，正好就是本地 contact 库那几个 blob 的类型：
+
+| 我们的列 | 客户端里的类型名 |
+| --- | --- |
+| `chat_room.ext_buffer` | `micromsg.ChatroomExtData` |
+| 每个成员子消息 | `micromsg.ChatroomMemberLocalData` |
+| `chat_room_info_detail.ext_buffer_` | `micromsg.ChatroomDetailInfoExtData` |
+| `contact.extra_buffer` | `micromsg.ContactExtData` |
+| `stranger.extra_buffer` | 同一编译单元里有 `micromsg.OpenIMContactExtData` —— 与「`stranger` 是外部联系人」对得上，但**没验** |
+
+同一编译单元还注册了 `WeclawExternalInfo` / `OpenIMKefuContactExtData` / `CustomInfoExtProfileInfo*` 等，
+正好是 contact 库里"带 `ext_buffer` 的那几张表"那一整套。**所以 blob 是有类型的，我们能叫出类型的名字。**
+
+**但字段名拿不到 —— 而且原因和原来想的不一样。** 原来以为"客户端不留字段名"是错的：
+同一份 dll 里 `contact` 表的**列名**就是明文数组（`nick_name / quan_pin / … / extra_buffer / …`），
+`chat_room_info_detail` 的列名也是明文（`room_id_ / … / ext_buffer_`）。准确说法是：
+**只留列名，不留这些本地 message 的字段名** —— 后者的字段表被打包成 `<长度><hex>` 记录
+（形如 `a1 "0C00" b1 "E28AE09AED0B…"`），每段 16 进制约 **5 bit/byte** 的信息熵，
+zlib / raw-deflate / gzip 三种都解不开，是厂商自己的编码，不是标准 protobuf 描述符。
+
+**实际意义**：`#3`/`#4` 现在能追到「`micromsg.ChatroomExtData` 的第 3、4 号字段」这个粒度；
+要给它俩定名字，得换环境（另一个微信版本 / 另一台机器 / 有 schema 解密工具）才行。
 
 ## 4. 明确证伪的猜测（省得后人再试一遍）
 
@@ -173,8 +199,9 @@ weflow-cli contact-schema --json         # 机器可读
 **⑥ 它仍然只在那个 blob 里。** 第 4 节那条"大值在全部 24 个库的每一列里命中 0"依然成立。
 
 **没定的还是"名字"和"底数从哪来"。** 上面证的是**行为**（一对版本号、跟着成员变更走、两种底数、
-会变）；拿不到的是厂商给它的字段名 —— 那需要对照源（另一台机器 / 另一个微信版本 /
-同一房间的两个时点）。所以它**继续留在 `unrecognized` 里只报字段号，不编名字**（见 D-068、D-069）。
+会变）；**类型的名字**现在有了（`micromsg.ChatroomExtData`，见 3.1），但**字段的名字**在客户端里是
+厂商自己的编码、读不出来 —— 那需要换环境（另一台机器 / 另一个微信版本 / 同一房间的两个时点快照）。
+所以它**继续留在 `unrecognized` 里只报字段号，不编名字**（见 D-068、D-069）。
 
 **顺带**：成员列表的顺序不是按名字排的（"我"在 76 个群里位置从 0 到 378 都有），
 而"我在列表第一个"的 17 个群里 **16 个属于 `10000` 那一族**（按房间大小折算，随机也该有 5.4 个）——
