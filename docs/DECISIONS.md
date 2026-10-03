@@ -1421,8 +1421,9 @@ which is what the gate is for.
 - **类型名有，字段名没有**：从客户端二进制里读到 `chat_room.ext_buffer` 其实是
   `micromsg.ChatroomExtData`、成员子消息是 `micromsg.ChatroomMemberLocalData`、
   `contact.extra_buffer` 是 `micromsg.ContactExtData`（`docs/CONTACT_DB_SCHEMA.md` 3.1）；
-  但**字段名在客户端里不是明文** —— 列名是明文数组、这些本地 message 的字段表是厂商自己的
-  编码（约 5 bit/byte，三种压缩都解不开），不是标准 protobuf 描述符。
+  但**字段名不以明文出现** —— 明文只到"表的列名"这一层（`nick_name / … / extra_buffer`），
+  这些本地 message 的字段名被编成 `<长度><hex>` 记录（zlib/raw-deflate/gzip 都解不开，
+  也不是标准 protobuf 描述符）。**它是哈希还是裹着名字的编码，没查清**，两种可能都记在 3.1 里。
 
 **没有改的一件事：名字。** 上面是**行为**证据，不是厂商给的字段名；本机也没有对照源
 （没有 V3 数据、没有第二台机器、同一房间只有一个时点）。所以 `contact-schema` 继续把
