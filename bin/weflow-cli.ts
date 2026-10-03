@@ -629,9 +629,11 @@ program
         // 读这一位的调用方按 false 走保守分支即可。
         mcpDefaultReadOnly: false,
         mcpSurface: {
-          // 原文只写了 "minus save_memory" —— 而那张表也排除了 `look_at_image`（MCP 只取文本，
-          // 它挂进侧信道的图没人接）。机器可读字段少说一句同样算不准，如实写全。
-          derivedFrom: 'assistant tools minus save_memory and look_at_image',
+          // 这句话**手工补过两回**：先是只写 save_memory，后来补上 `look_at_image`，第三次加
+          // `set_todo_status` 时又漏了 —— 每次都是"表变了、这句话没变"，而且没有任何东西会红。
+          // 现在名字**逐个与 `MCP_EXCLUDED` 对齐**，并由 `test/assistant-tools.test.ts` 从源码里核：
+          // 那张表再加一项而这里没跟，测试就红（同下面 requiresConfirm 的处理方式）。
+          derivedFrom: 'assistant tools minus save_memory, look_at_image and set_todo_status',
           writesFiles: ['export_chat'],
           // 逐个核实过（脚本里确实调云端模型的那些）：
           // who_owes_reply/search_chats → Jev；search_semantic → 阿里云百炼嵌入 + Jev 重排；draft_reply → Jev + DeepSeek。
@@ -5289,7 +5291,7 @@ program
   // draft：判断在前、起草在后、**绝不发送**
   program
     .command('draft <talker>')
-    .description('帮我起草回复：先判断（意图/风险/该不该给实质），再起草候选 —— **只产出文本，不发送**')
+    .description('帮我起草回复：先判断（意图/风险/该不该给实质），再起草候选 —— **默认只产出文本；给了 --pick N --send 才会替你发送**')
     .option('--count <n>', '要几条候选', '3')
     .option('--pick <n>', '选第几条（从 1 数）；不带 --send 时只把那条的完整原文打出来')
     .option('--send', '把选中的那条发出去 —— **必须同时给 --pick**（不允许"自己挑一条发"），仍需 --yes/--dry-run')

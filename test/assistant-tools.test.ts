@@ -84,6 +84,22 @@ test('capability discovery tells the truth about the MCP surface', () => {
   assert.deepEqual([...gated].sort(),
     [...capabilities.safety.mcpSurface.callsCloudModels].sort(),
     '会出境的工具必须一个个都上确认闸门')
+  // `derivedFrom` 是同一类字段，而且**手工补过两回**：最早只写 `save_memory`，后来补了
+  // `look_at_image`，第三次加 `set_todo_status` 时又漏了（2026-10-03 核对文档时才发现）。
+  // 每次都是"表变了、这句话没变"，且没有任何东西会红。所以这里也从源码数 `MCP_EXCLUDED`
+  // 的键，与那句话点名的名字**双向比对** —— 那张表再加一项而说明没跟上，这条就红。
+  const excludedBlock = /export const MCP_EXCLUDED[^{]*\{([\s\S]*?)\n\}/.exec(toolSource)
+  assert.ok(excludedBlock, '找不到 MCP_EXCLUDED 的定义')
+  const excluded = [...excludedBlock[1].matchAll(/^\s{2}([a-z_]+):/gm)].map((m) => m[1])
+  // 解析本身的哨兵：数不出东西时下面那条 deepEqual 会因为两边都空而"通过"
+  assert.ok(excluded.length >= 3, `MCP_EXCLUDED 只数出 ${excluded.length} 个键，解析可能失效`)
+  const named = capabilities.safety.mcpSurface.derivedFrom
+    .replace(/^.*?\bminus\b\s*/, '')
+    .split(/,\s*|\s+and\s+/)
+    .map((x: string) => x.trim())
+    .filter(Boolean)
+  assert.deepEqual([...named].sort(), [...excluded].sort(),
+    'derivedFrom 点名的必须正好是 MCP_EXCLUDED 的键（字段与那张表不许各说各话）')
   assert.equal(capabilities.read.exports.versionedContract, 'weflow-message/v1')
   assert.equal(capabilities.read.exports.rawContractPreserved, true)
   assert.equal(capabilities.read.exports.incrementalRead.stableCursor, false)

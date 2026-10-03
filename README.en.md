@@ -94,12 +94,12 @@ Automatic initialization on Linux depends on the WeChat distribution, the Python
 | --- | --- |
 | Chat history | Query sessions, contacts, and messages; export to JSON, TXT, HTML, Excel. An HTML export also writes a media coverage report saying which images and stickers could not be embedded, and why. |
 | Official-account digest | Crawl articles, AI summarization and classification, generate a local reading page, keep favorites and read states. |
-| Personal knowledge base | Sync WeRead notes, build an Obsidian vault, semantic search, RAG Q&A, a concept wiki, and a **self-contained 3D graph page** you can open by double-clicking (`weflow-cli wiki graph --open` - no server, no network). |
+| Personal knowledge base | Sync WeRead notes, build an Obsidian vault, semantic search, RAG Q&A, a concept wiki, and a **self-contained graph page** you can open by double-clicking (`weflow-cli wiki graph --open` for 3D, `--flat` for 2D - no server, no network; `--min-degree N` keeps only the hubs, `--line wiki\|chat` draws one corpus). |
 | AI collaboration | Expose article crawling, knowledge-base retrieval, digests, and selected local-data tools to MCP-compatible clients. The inventory follows the current code and `docs/MCP.md`. |
 | Personal review | Monthly chat reports, annual reports, todo extraction, and local Moments cache queries. |
 | WeChat favorites | Read WeChat "Favorites" (official-account articles, text, images, videos, chat records) with type filters, keyword search, and Markdown/JSON export. |
 | Second-brain agent | Chat with a local AI assistant inside WeChat: natural-language queries over chats, favorites, Moments, digests, WeRead, todos, and the knowledge base; three-tier memory across sessions, daemonized background service. It can also **fetch an official-account article**, search public articles, format Markdown for the WeChat editor, list contacts, read your learning reviews, health-check the knowledge base and skill packages, and mark a todo done (**never delete one**). What it can reach, and what stays out of reach, is in `docs/PROJECT_STATE.md` and `docs/DECISIONS.md` (D-058). |
-| On-device panel | A floating ball on your desktop: click to chat with **the same brain as the WeChat side** (same memory, same quota), and each reply expands into a **thinking process** - what tool it called, how many round trips, why it stopped. The ball itself is transparent with a face per state. |
+| On-device panel | A floating ball on your desktop: click to chat with **the same brain as the WeChat side** (same memory, same quota), and each reply expands into a **thinking process** - what tool it called, how many round trips, why it stopped. The ball itself is transparent with a face per state, and a **Memory** button lists what it has stored about you long-term - each fact with the time it was written and the quote it came from (read-only). |
 | Skill packages | The assistant reads the `SKILL.md` packages already on your machine (by default `~/.claude/skills` and `~/.weflow-cli/skills`): the prompt lists what exists, and a body is read on demand before following it. **A skill grants the assistant no new tools** - it is material: not executed, not installed, and unable to read configuration or databases. `weflow-cli skill check` reports unreadable frontmatter, cross-directory collisions, and non-conforming ids. |
 | Conversation scenes | Give one conversation a fixed way of working: keywords plus an extra instruction, an output spec, and required skills. Each message picks one by **binding → keyword → last used**, and picks none when nothing matches, leaving the previous behaviour untouched. Manage with `weflow-cli scene`, or bind from the conversation with `场景 <id>`. **Scenes are not readable or writable by the model**, and which scene applied is recorded in the thinking process. |
 
@@ -234,11 +234,11 @@ weflow-cli panel               # open the on-device panel window (usable without
 
 The floating ball needs Electron (`npm i -g electron`); without it the panel degrades to an Edge/Chrome `--app` window — same UI, but no frameless always-on-top ball, no tray, no global shortcut. With the ball (a 96px mascot): **click it and the chat bubble opens beside it (the ball itself stays put; click again to collapse)**. The bubble opens to the left of the ball by default, flips to the right when there is no room on the left, and top-aligns when vertical space runs short; drag the ball to move it, and the position is remembered. **The ball is transparent - only the mascot shows through** - calm at rest, and switching to a *thinking* face for the seconds you are waiting on an answer (offline and quota-exhausted have faces of their own). **Press and hold it and it is picked up by the scruff - a twelve-frame lift (six up, six back down) that settles on release** (skipped when the system asks for reduced motion). **Run the pointer across it and it squirms as if tickled** - four poses, with **no tilt** (the 4-degree rotation it
 used to work out from how fast you move was removed on 2026-10-02, so that running the pointer across it no longer
-looks like a small take-off: rotation belongs to the lift alone).
+looks like a small take-off: rotation belongs to the lift alone). **Carried around it swings left and right - the side you move towards swings further, and faster movement swings wider.** It **hops when a reply lands**, **blinks every 7-13 seconds**, its eyes follow the pointer, and dragged to a screen edge it hides half-way behind it.
 
 **Every reply carries a collapsible "thinking process" (closed by default)**: how that turn actually went - the routing decision, which tool it called, its arguments, how many round trips, and why it stopped. It is the same record you get in WeChat by sending 轨迹 (or 思考过程), so the two cannot drift apart.
 
-**Right-click anywhere in the panel** to draft a reply for someone on your list (`weflow-cli config set quickReplyContacts "Alice,Bob"` — a click sends that conversation to two cloud models and returns text only, never sending for you). The last item in that menu tucks the ball away; the tray icon brings it back. Running a tool **never pops up a console window**, and the window recovers by itself after the assistant restarts - you do not have to reopen it.
+**Right-click anywhere in the panel** to draft a reply for someone on your list (`weflow-cli config set quickReplyContacts "Alice,Bob"` — a click sends that conversation to two cloud models and returns text only, never sending for you). The menu also carries a row of one-click actions (who is waiting on a reply, todos, digests, stats, reading stats, sessions, Moments, WeRead), and its last item tucks the ball away; the tray icon brings it back. Running a tool **never pops up a console window**, and the window recovers by itself after the assistant restarts - you do not have to reopen it.
 
 Then just talk to ClawBot on your phone. The assistant queries local chats and favorites to answer, with memory that survives across sessions:
 
@@ -281,7 +281,8 @@ Management: `weflow-cli assistant status` / `log` / `stop`; send "帮助" in WeC
 | Initialize or specify paths | `weflow-cli init [--path <dir>]` |
 | Browse chat data | `weflow-cli sessions` · `weflow-cli messages <contact>` · `weflow-cli contacts` |
 | Who is waiting on a reply | `weflow-cli awaiting --dry-run` · `weflow-cli awaiting --yes` |
-| Draft a reply (text only, never sent) | `weflow-cli draft <contact> --dry-run` · `--yes` |
+| Draft a reply (text unless you pick and send) | `weflow-cli draft <contact> --dry-run` · `--yes` (**only** `--pick N --send --yes` actually sends; both flags are required) |
+| Relationship temperature | `weflow-cli bonds` (who is cooling, who is warming, who only has WeChat; read-only, local, no model) |
 | Local judgement primitive | `weflow-cli decide --request <file> --dry-run` · `--yes` |
 | Export chat history | `weflow-cli export <contact> <json\|txt\|html\|excel>` |
 | Sync checkpoint | `weflow-cli sync run <contact> --since <date>` · `sync status` · `sync verify` |
@@ -333,6 +334,7 @@ python scripts/fav_server.py --date YYYY-MM-DD
 ## Architecture
 
 ![WeFlow CLI architecture](./docs/images/weflow-architecture-gpt-image-2.png)
+> Illustrative only: [`ARCHITECTURE.md`](./ARCHITECTURE.md) is authoritative for links, ports and authentication — this figure is model-generated, so its fine detail is not word-for-word reliable.
 
 The project is split into five clearly bounded parts:
 
