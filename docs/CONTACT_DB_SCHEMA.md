@@ -164,6 +164,20 @@ init_contact_manager.cc / contact_util.cc / windows_version.cc
 **教训**：以后再看到"某个明文名字恰好和某个字段对得上"，**先验证名字顺序能不能对上字段号**——
 对不上就只能当线索，不能当名字（6.1 的 `InfoVersion` 候选就是这么撤掉的）。
 
+**把 3,764 张表全看一遍之后，还得到三条**（都写在这里，省得后人重跑）：
+
+- **contact 库的"实体名"是明文**，而且是 snake_case：
+  `contact | group_contact | group_member | stranger | im_contact | im_group_contact | im_group_member |
+  im_stranger | chatroom | chatroom_detail` —— 我们的两张表在客户端里就叫 `chatroom` / `chatroom_detail`。
+- **`chat_room_info_detail` 的列名有明文组**（`room_id_ | … | ext_buffer_`），但 **`chat_room`（= `chatroom` 实体）
+  的列名偏偏没有**；取而代之的是那族 **V3 风格**的 8 名字组
+  （`ChatRoomName | UserNameList | DisplayNameList | ChatRoomFlag | Owner | IsShowName | SelfDisplayName | RoomData`）。
+  ⇒ **客户端自己给我们这个 blob 那个"成员"叫 `RoomData`**（V3 谱系：V3 时代成员在 `UserNameList` /
+  `DisplayNameList` 列里，V4 挪进了这个 blob）。
+- **没有任何一组名字描述这个 blob 的顶层字段**：`users`、`roomCap`、`memberList`、`MemberVersion`、
+  `UserListVersion`、`MemberSeq`、`RoomVersion`（含 snake 变体）在 3,764 张表里**全 0 命中**。
+  ⇒ `#3`/`#4` 的名字**不是"没找到"，而是这一版客户端里就没有可读的存放处**（见 8 节的公开圈结论）。
+
 ## 4. 明确证伪的猜测（省得后人再试一遍）
 
 对 `chat_room.ext_buffer` 顶层那个 `#3`（每个群一个数、与 `#4` 恒相等），验到这四条**否定**：
@@ -402,6 +416,19 @@ weflow-cli contact-schema --json         # 机器可读
   到处都是），不构成证据。
 
 ⇒ 同行记下的 `chatroom_id`（消息记录区 `0x76`）**不是**本文这个 `#3`。
+
+**2026-10-04 补一次定向搜索**：我们后来才从客户端读出这层本地 message 的**类型名**，于是拿这些**很有辨识度**的
+字符串去搜公开代码（`gh search code`）：
+
+| 搜什么 | 结果 |
+| --- | --- |
+| `ChatroomExtData`、`ChatroomMemberLocalData` | **只命中我们自己的仓库**（就是这份文档），别处 0 |
+| `win_local_define`、`ClientChatroomMemberData` | **0 命中** |
+| `ClientChatroomData` | 命中的全是 Pokémon Showdex（无关） |
+
+⇒ **公开圈里没有这层本地 proto 的字段定义。** 结合 3.3 的结论（这一版客户端里也没有可读的字段名存放处），
+`#3`/`#4` 的名字**在本机 + 公开渠道两头都拿不到** —— 要它只剩"换一个参照实例"
+（另一台机器的库 / 另一个微信版本，理想是 V3 时代的，因为 V3 的 `RoomData` 才是它的直系祖先）。
 
 ## 9. 复现方法
 
