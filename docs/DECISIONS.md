@@ -1403,6 +1403,33 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-073: 位域要逐位做、`biz_info` 已测绘、以及"恒/从不"类断言必须先核分母
+
+**Status:** Active（补 D-068 的字段边界；含一条方法更正）
+
+2026-10-05 继续把 `contact.db` 剩下的部分做完，三件事值得记：
+
+1. **位域必须逐位做列联，别拿整值做。** 早前对 `contact.extra_buffer` 的 `#3` 是拿**整值**
+   （0/3/9/1/515）去跟 21 列做列联表，于是写下"取值本身无从判定"——**那是方法错**：位域里两个位会互相抵消。
+   逐位重做后立刻有了两条：`bit0 ⟺ 值 ≠ 0`（恒等）、**`bit1 = 1` 的 423 行全部是 `local_type = 1`
+   且不在任何群里**（423/423 单向干净）。同一次也把房间级 `chat_room_status_` 的**位 19 解出来了**：
+   **⟺「该房已初始化（`status ≠ 0`）且与 openim 不互通」77/77**（我独立复核过）——它此前被记成"只是众数"。
+   ⇒ 以后遇到 ❓ 的位域字段，**先逐位**，再谈"取值判不了"。
+2. **`biz_info`（公众号表）已首次测绘**，并明确它对日报线的增量与隐私边界（详见
+   `docs/CONTACT_DB_SCHEMA.md` §1.1）：代码**从来没读过**它，而里面有 `RegisterSource.RegisterBody`
+   （主体名称，93.1%）、`VerifySource.*`（认证类型）、`ServiceType`、`brand_icon_url`（头像直链）等；
+   同时 `sync_version` 列**声明 TEXT 实为二进制 blob**（`SELECT *` 会崩，要 `text_factory=bytes`），
+   且 `PersonVerifyInfo.*` 含**认证人真名**、`ServicePhone`、经纬度 ⇒ **只取需要的字段，别整包带出**。
+3. **子 Agent 报的"全表恒 X / 从来没有 Y"，母 Agent 必须先核分母。** 本轮一个子 Agent 报
+   "`contact` 四列全表恒 0"，直接查库即否（只有 `delete_flag` 真全 0）。根因**不是查错列**，
+   而是**统计时把"成员子集"当成了全表** —— 这类断言的错法恰恰是分母被悄悄换掉，而它的下游结论看着毫无破绽。
+   把它唤醒复核后，结论不变，还顺手多挖出一条真结论（`verify_flag != 0 ⟹ 不在任何群`）。
+   ⇒ 复核要它**把当时的查询原样贴出来**，并要求**在交付文件里如实记下这次更正**。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §1.1（`biz_info`）、§3（`contact.extra_buffer` 那行
+把空行数 **3072 更正为 3028**、并补上非空 986 的三态划分）、§6（逐位结论）同步；
+`#3`/`#4` 仍只报字段号（D-068 边界不变）。
+
 ## D-072: `#3`/`#4` 的边界到此为止 —— 把"已经搜过的范围"写下来，别重搜
 
 **Status:** Active（补 D-068 / D-071 的边界；这条的价值在**范围**，不在结论）

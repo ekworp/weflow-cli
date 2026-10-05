@@ -19,6 +19,23 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`biz_info` - the official-account table in `contact.db` - has been mapped, and it holds fields the daily
+  pipeline never had.** The repo has never read this table (a grep finds only the schema notes mentioning it), yet
+  its `external_info` JSON carries `RegisterSource.RegisterBody` (**the account's legal/subject name, 93.1% of
+  rows**), `VerifySource.Description` / `VerifyBizType` (**verification type**), `ServiceType`, `brand_icon_url`
+  (an **avatar direct link**, 691 rows) and `PersonVerifyInfo.VerifyDescribe`. Today's daily report takes account
+  names from `contact.remark` / `nick_name`, never uses avatars, and `contact.description` is empty for all 673
+  `gh_` rows - so there is currently **no** source for a subject name or a description. Two boundaries are
+  recorded with it: the `sync_version` column is declared TEXT but is really a binary blob (`SELECT *` dies on
+  UTF-8 decoding - use `text_factory=bytes`), and `PersonVerifyInfo` carries a **verified person's real name**
+  plus `ServicePhone` and lat/long, so read the fields you need rather than the whole JSON
+  (`docs/CONTACT_DB_SCHEMA.md` §1.1). The same pass decoded two more flag meanings and corrected one earlier
+  conclusion: `chat_room_status_` bit 19 means "initialised and not bridged to WeCom/openim" (77/77), bits 2 and
+  31 always appear together, and `contact.extra_buffer` does yield two bit-level rules once you test **bit by
+  bit** instead of by whole value (`bit1` implies `local_type = 1` and not a group member, 423/423) - which is
+  what retired the earlier "the value cannot be judged" line, itself a by-whole-value artefact
+  (`DECISIONS.md` D-073).
+
 - **The `#3`/`#4` pair inside `chat_room.ext_buffer` is pinned down to "a local per-room counter", and two name
   candidates are withdrawn.** Three agents worked it from different sides; the results overlap, which is what makes
   them usable. (a) It is **not** a server sequence: 42/42 rooms of the `10000+x` family hold a value below their own
