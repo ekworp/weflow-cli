@@ -403,7 +403,7 @@ weflow-cli contact-schema --json         # 机器可读
 
 - **`contact.db-wal`（1,071,232 字节 = 260 帧，当日）里 `chat_room` 一行都没改**：
   把 WAL 截到第 0 帧和第 260 帧各读一次，**77 个群的 `#3` 和成员列表完全相同**。
-  ⇒ 这个窗口拿不到增量（也说明 `chat_room` 是"改一次就静默很久"的行）。复跑：`D:\tmp_eyetrack\wal_series.py`。
+  ⇒ 这个窗口拿不到增量（也说明 `chat_room` 是"改一次就静默很久"的行）。复跑方式见第 9 节。
 - **`contact.db-{first,last,incremental}.material`（4~8KB，头 16 字节与本库同一个盐）不是页快照**：
   把它们贴进 contact.db 副本的**任一页号**（1366 个位置全试过），`chat_room` 的行数与 blob 长度
   都不变、也不报错 ⇒ 里面装的不是这张表的数据。靠它拿"一年前"的旧快照这条路不通。
@@ -415,8 +415,8 @@ weflow-cli contact-schema --json         # 机器可读
 
 **2026-10-04 把"本机有没有第二个实例"也扫了一遍（负结果，附一条真推断）：**
 
-- **本机只有一个真库**，而且它是**两条路径的同一份**：`D:\微信\xwechat_files\` 是
-  `C:\Users\<用户>\xwechat_files` 的**软链**（不是第二份数据）。`Backup\`、`msg\migrate\`、
+- **本机只有一个真库**，而且它是**两条路径的同一份**：数据盘上那个目录是**用户目录下 `xwechat_files` 的软链**
+  （不是第二份数据）。`Backup\`、`msg\migrate\`、
   `business\migrate\`、`temp\`、`config\` 里没有副本或导出；本机只有一个用户目录、只有 C:/D: 两个盘。
   （顺带：仓库的 `find_nt_databases()` 是"取第一个存在的根就 break"、从不并集多根 ⇒ 软链**不会**造成重复计数。）
 - 企业微信（WXWork）**有本人 profile 的库**（3 个 corp + 1 个同日备份），但头不是 SQLite、
@@ -530,3 +530,14 @@ def walk(buf):                      # [(字段号, wire type, 值)]
      前 30 位就够出人话；**注意逐位搜索会在"两个候选都是字母"时选错**（本机栽在第 0 位：
      `kernel` 被解成 `rernel`）——用一眼能认出的 crib 修（`rernel::`→`kernel::` 定出该位差 `^0x19`），
      再按同样办法往后扩位。
+9. **6.1 ⑧ 那几条怎么复跑**（都只读）：
+   - "不是人数"：`name2id` 查 `MIN(rowid)/MAX(rowid)/COUNT(*)` 看有没有洞；再确认
+     `chatroom_member.member_id == name2id.rowid` 的命中率；拿 `offset` 最大的房跟 `COUNT(*)` 比；
+   - "offset=0 的房 = 成员表没动过"：对这些房取 `chatroom_member` 的 rowid，**按 rowid 排序后数连续段**
+     （段数=1 且段长=成员数 ⇒ 一次性写入），再去消息库看该房有没有成员变动系统消息；
+   - "随变动时间窗"：用 `chatroom_member.rowid` 的 `max−min` 当 spread，与 `offset` 做 Spearman，
+     **并同时算"控制成员数后的偏相关"**（只报 raw 相关会被"人多→跨度天然大"混淆）。
+10. **想要"第二时点"时的可复制做法**（本机没有，但方法通用）：把库与它的 `-wal` **拷到临时目录**，
+    按帧边界（`32 + k × (24 + page_size)`）**截断 WAL 副本**再打开 ⇒ 每截一次就是稍早的一个状态；
+    或定期留一份**只读工作副本**，之后与现库对比（本机就是这么拿到"35 分钟内 77 房 `#3` 全等"的）。
+    ⚠️ 两条前提都记在 6.2：**先确认 WAL 里真的有目标表的帧**、**`.material` 不是页快照**。

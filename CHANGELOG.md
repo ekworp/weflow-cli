@@ -33,7 +33,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   `InfoVersion` (the plaintext field-name group that contains it carries **no field numbers**, so its order cannot
   be mapped onto field numbers - reading it as 1..5 would put `AnnouncementPublishTime` at `#4` while the database
   stores it at `#6`). The blobs' `#3`/`#4` therefore still ship as raw field numbers
-  (`docs/CONTACT_DB_SCHEMA.md` §3.3/§6.1, `DECISIONS.md` D-071).
+  (`docs/CONTACT_DB_SCHEMA.md` §3.3/§6.1, `DECISIONS.md` D-071). Two more bites followed the same day, both
+  narrowing what the number can be: it is **not** "how many distinct people were ever in this room" (the local
+  `name2id` mapping is gap-free - rowids 1..4025 with a count of 4025 - and `chatroom_member.member_id` is that
+  same rowid, so only 4025 distinct people exist on this machine, while one room's offset is 15304), and rooms
+  whose counter still sits exactly at its base turn out to be **rooms whose member table was written once and
+  never touched** (a single contiguous `chatroom_member` rowid run whose length equals the member count, no
+  member-change system message, no announcement). So the pair reads as "a per-room counter of member-table
+  history" - and the remaining question (does one step mean one member added/removed, or one member-table
+  update?) needs a second snapshot of the same room, which a machine-wide sweep showed does not exist locally
+  (`DECISIONS.md` D-072 records the full searched range, so nobody re-searches it).
 
 - **`contact-schema`'s `#5` output carried a wrong label; the label is now the measured fact.** The blobs'
   top-level `#5` used to be described as "a run of extra participant ids that no table carries". Probing all 77

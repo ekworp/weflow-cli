@@ -1403,6 +1403,38 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-072: `#3`/`#4` 的边界到此为止 —— 把"已经搜过的范围"写下来，别重搜
+
+**Status:** Active（补 D-068 / D-071 的边界；这条的价值在**范围**，不在结论）
+
+2026-10-04 用多智能体并行把"还能从哪拿到答案"逐条走完，结论是**本机这一侧已经无路**。
+把范围记下来，免得后人（或下一轮的我）重搜一遍：
+
+**语义（已收窄到能写进文档的程度）**：`#3 − 底数` 是"**每房、从底数起算、随该房成员表历史变更累计**"
+的计数器。三条硬否定（不是服务端 seq / 不是唯一序号 / 不是"曾经出现过的人数"）+ 一条正面证据
+（**offset=0 的 7 个房，其 `chatroom_member` 恰好只有一段连续 rowid、段长 = 成员数、且无成员变动系统消息
+与公告** ⇒ 计数器初值=底数）。**分不开的**：每次 +1 对应"一次成员增删"还是"一次成员表更新"。
+
+**已经搜过、别再搜的范围**：
+
+- **二进制**：本机**四个微信版本**（`4.1.15.11` / `4.1.15.13` / `4.1.12.26` / `4.1.13.12`）
+  加其余腾讯系程序文件，共 **84 个二进制** —— 没有任何 `RoomData`/`RoomDataUser` 字段名组；
+  三版 `Weixin.dll` 的明文名字组一字不差，我们那三个类型的注册块逐字相同。企业微信主程序已卸载。
+- **公开圈**：拿类型名（`ChatroomExtData` / `ChatroomMemberLocalData` / `win_local_define`）做代码搜索
+  —— 只命中本仓库或 0 命中。
+- **数据**：全机只有一个真库；`Backup` / `msg\migrate` / `business\migrate` / `temp` / `config` 无副本或导出；
+  企业微信只剩数据（自定义加密、无 `chat_room`/`ext_buffer`）；D 盘上一个名字像"WeChat 数据分析"的旧目录
+  只是源码仓库，不含任何真实库。
+- **时间维度**：`contact.db-wal` 的帧按边界截断（拿不到 `chat_room` 的改动）、`.material` 不是页快照、
+  工作副本只差 35 分钟且窗口内无成员变更。
+
+**要再往前只有一条路**：换一个**参照实例**（另一台机器的库 / 另一个微信版本，理想是 V3 时代、
+或者能拿到同一房间两个时点的快照）。在那之前，`#3`/`#4` **继续只报字段号、不编名字**（D-068 的边界不变）。
+
+**一条方法教训**：不要把 `name2id.rowid` 当"成员进群先后"的代理 —— 它是"此人进**我的联系人库**"的时刻，
+控制规模后的偏相关 ≈ 0，会得出"只跟当前人数走"的**错结论**；要用 `chatroom_member.rowid`。
+这条是本轮子 Agent 纠正我的，一并记下。
+
 ## D-071: `#3`/`#4` 是"本地每房计数器"，不是服务端 seq、不是唯一序号；`InfoVersion` 候选撤回
 
 **Status:** Active（收窄 D-069，并撤掉它留下的名字候选）
