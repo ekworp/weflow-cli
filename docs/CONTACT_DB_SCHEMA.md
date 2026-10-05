@@ -21,6 +21,32 @@
 | `name2id` / `encrypt_name2id` / `contact_label` / `ticket_info` / `sqlite_sequence` | 4025 / 1 / 1 / 92 / 1 | id 映射与杂项 |
 | `oplog` / `room_verify_application` / `stranger_ticket_info` | 0 | 空表：`oplog(id, buffer)`、`room_verify_application(8 列)`、`stranger_ticket_info(id, ticket)` |
 
+### 1.1 `biz_info`（公众号表，2026-10-05 首次测绘）
+
+15 列。**代码从来没读过它**（全仓库 grep 下来只有这份文档提到过 `biz_info`/`external_info`），
+但里面**有日报线现在拿不到的东西**。
+
+- 核心列：`username`（身份 id）、`type` / `accept_type` / `child_type` / `brand_flag`、
+  `external_info`（JSON）、`brand_info`、`brand_icon_url`、`home_url`、`sync_version`；
+  `brand_list` / `ext_buffer` **全空**。
+- ⚠️ **一个坑**：`sync_version` 声明是 TEXT，**实际是二进制 blob** ⇒ 直接 `SELECT *` 会在 UTF-8 解码上崩，
+  要 `text_factory=bytes`。（现在没代码读它，所以是隐患不是现伤。）
+- `external_info`：根一律 dict、**0 解析失败**，共 **30 个键**。覆盖最高的几个：
+  `Appid` 698 / `MMBizMenu` 673 / `RegisterSource` 650 / `WxaAppInfo` 599 / `VerifySource` 271 /
+  `ServiceType` 257 / `PersonVerifyInfo` 72。
+- **它是不是"我关注的公众号"**：准确说是"**客户端已知的公众号集合**"——698 = `Name2Id` 里的 683 个 `gh_`
+  + 15 个系统号；**凡是 `contact` 里的 `gh_` 必在 `biz_info`（单向包含）**。另有 **10 个 `gh_` 在
+  biz / Name2Id 里而 `contact` 里没有**（`contact` 取关是**硬删行** ⇒ 疑似取关残留），
+  以及 **33 个号有消息表却不在 `biz_info`**。
+- **对日报线的增量（现成的，不用联网）**：`RegisterSource.RegisterBody` = **主体名称（93.1% 覆盖）**、
+  `VerifySource.Description` / `VerifyBizType` = **认证类型**、`ServiceType` = **服务类型**、
+  `brand_icon_url` = **头像直链（691 行）**、`PersonVerifyInfo.VerifyDescribe` = 个人号简介（68 行）。
+  现状是：日报的名字取自 `contact.remark` / `nick_name`、**不用头像**，而 `contact.description` 在
+  673 个 `gh_` 里**全空** ⇒ **今天根本没有"主体名称 / 简介"的来源**。
+- **隐私**：键名扫 `token`/`session`/`cookie`/`password`/`login` **0 命中**；但确有
+  `PersonVerifyInfo.VerifyName`（**认证人真名**）、`ServicePhone`、`Location`（经纬度）、企业 `corp_id`
+  ⇒ 取用时只取需要的字段，**别整包带出去**。
+
 ## 2. `chat_room.ext_buffer` = protobuf（已验）
 
 顶层只有三种：`#1`（长度分隔，重复）× N、`#3`/`#4`（varint，**两者恒相等**）、`#5`（长度分隔，重复）。
@@ -266,6 +292,29 @@ weflow-cli contact-schema --json         # 机器可读
   **早前把它当"额外的参与者 id"是错的**（见 D-070）。
 - **`chat_room_info_detail.chat_room_status_` 的位 17（131072）↔ "本群与企业微信/openim 互通"**：
   置位的 6 个群**全部**有 `@openim` 成员或群主；不置位的 71 个**全部**没有（77/77）。
+
+**成员 `status` 里还有 6 个位没解出来（2026-10-05），但它们的"作用域"已经定了：**
+
+- **位 `3/4/11/13/20/21/22` 全是"房间内成员"的状态，不是"这个人"的属性**：同一个 `username`
+  在不同群里带同一位的一致率只有 **0~12%**（对照组：位 0 是 **93%**）⇒ "某位 = 这个人是 X"这类读法
+  **整类被否掉**。这一条比"某一位的含义"更有用：它把搜索空间从"人的属性"缩到"群内状态"。
+- **位 0**：默认/正常标志（97.6% 置位）。**缺它的恰好 100 人**，且高度房间集中
+  （其中一个房占 64 个，另有 3 个房整群都缺）⇒ 像"未初始化的成员行"。
+- **位 4**（300 人）：最强倾向 = **有群昵称**（0.693 vs 0.271）+ 偏老成员；**与位 13 完全互斥（交集 0）**。
+- **位 3**（272 人）：只有弱相关（同样是"有群昵称"0.489 vs 0.288）。**没找到干净判别式。**
+- **位 13**（422 人）：最好的判别式是**房间级**的 `chat_room_status_` 位 17 / openim（0.668 vs 0.264）——
+  但那是房间属性，**别读成"位 13 = openim"**；成员级没有干净判别式。
+  （本机登录账号自己在 5 个群里带这一位。）
+- **位 `20/21/22`**（21/30/23 人）：**没解出来**。三者成簇（20/22 只与 21 同现），取值范围只有 `1/3/5/7`
+  ⇒ 更像"位置 20–22 上的一个小枚举"，不是三个独立标志；集中在 8 个房里。
+- **已否掉的读法**（列出来省得再试）：位 = 好友 / 位 = 群主 / 位 = 我自己
+  —— **群主与本机账号自己基本都只是 `status = 1`**。
+
+**顺带核清的几列**（`contact` 共 22 列，其中这几列是标志型）：`delete_flag` **全 0**（4014 行 ⇒ 取关是硬删行）；
+`verify_flag` = `0(3327)/8(356)/24(241)/520(54)/1048(22)/776(11)`；`is_in_chat_room` = `0/1/2`；
+`chat_room_type` = `0(4010)/2(4)`；`chat_room_notify` = `0(3960)/1(54)`。
+**一条副产品关系**：`verify_flag != 0` 的 687 行**全部是"不在任何群里的人"**（单向蕴含；
+反过来不成立 —— 非群成员里也有 545 行为 0）。
 
 另外两条只推到这个程度：`chat_room_status_` 是 32 位标志（出现过的位 `2,14,17,19,21,27,31`），
 **`524288`（位 19）只是众数（51/77）而不是常量**（其余 26 行：`0`×16、`131072`×3、
