@@ -1403,6 +1403,40 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-077: blob 字段名的"读二进制"这条路封口了；根因是一条地址口径；负结论必须先确认口径
+
+**Status:** Active（补 D-068 / D-071 / D-076；这是一条**封路**的决定，目的是别让后人重跑）
+
+2026-10-06 试了"用已知字段号的消息去标定客户端那份明文名字组，再给 `ContactExtData` 的 37 个字段对号"这条路。**断在第 1 步，而且是结构性的**（我的复核数与子 Agent 一致）：
+
+1. **没有"每个 message 一份字段名表"这种东西。** `micromsg.ContactExtData` / `ChatroomExtData` /
+   `ChatroomMemberLocalData` / `WeclawExternalInfo` 的**全文件 4 字节引用数都是 0**（只有 `ChatroomDetailInfoExtData`
+   有 2 处）；类型名那一片只有同族类型名 + `local_proto\local_contact.pb.cc` 编译路径；类型名后的 `(VA,1)` 指针表
+   指向的要么是 96 字节密文块、要么是代码。⇒ **"类型名 → 字段表"这一层没有可静态恢复的形式。**
+2. **全文件穷举也没有我们要的组**：43,411 个"对齐 + NUL 结尾"名字槽 → 1,729 个像字段名的连续串，
+   **没有 4 个成员字段的组、也没有 ~37 个 contact 字段名的组**。
+3. **硬负结果：连续挨着 ≠ 同一组**。`Announcement|InfoVersion|AnnouncementEditor|AnnouncementPublishTime|ChatRoomStatus`
+   这 5 个名字挨在一起，但后两者**全文件引用各为 0** ⇒ 组的边界由描述符记录的槽决定，**不能按相邻性划**。
+4. **地址口径（本轮最有复用价值的一条）**：本版 `Weixin.dll` 是 **64 位**（imagebase `0x180000000`）、
+   **每节 `VA ≠ PRAW`**，而**描述符表里存的是"文件偏移"**：按文件偏移搜 4 字节能命中（`InfoVersion` 4 处），
+   按**真 RVA 或 VA 搜全是 0**。⇒ 文档 2026-10-04 那次"全文件搜这些名字的指针引用都是 0"**就是这条口径错造成的假阴性**，
+   当时的解释（"file-offset ↔ RVA 错位"）方向对但没说到点上；现在说法固定为：**表存文件偏移，用 RVA 搜必得 0**。
+   **规则**：任何"0 命中/不被引用"的负结论，**先确认自己用的是哪套地址口径**，并跑一条**正对照**
+   （同一个查询换一个已知该命中的对象 —— 本机就是 `InfoVersion` 的 4 处）。
+5. **半条正面结果（但不足以支撑命名）**：客户端里那种 snake_case 名字数组**在 SQL 列这一层是保序的**
+   （`chat_room_info_detail` **8/8**、`contact` 连续 **18/18** 与 `PRAGMA table_info` 逐项相等）——
+   但 `biz_info` 的数组与列序**不匹配**（`sync_version` 在表里是最后一列、在数组里排第 2），
+   同一片 `.rdata` 里"保序列名数组"和"不保序的别的数组"外形无法区分 ⇒ **不许**拿"名字在第几位"去推 proto 字段号。
+   **D-071 的撤回维持**（唯一能测的 proto 组只有"缺项消隙"一种读法能复现两个锚点，却要求一个不可信的巧合）。
+6. **交付里有三个候选名（`#41`→`UpdateTime`、`#43`→共享 id、`#5`→地区/语言码），全部标注"纯推测"并各带证伪办法，
+   不进代码。** `#2`…`#38` 继续只报字段号 —— 与 D-068 一致。
+7. **一处未消的 1 之差**：`AnnouncementPublishTime` 的引用数子 Agent 报 1、我量 0（其余名字两边一致）。
+   不影响结论（1 与 0 都远低于"被正常引用"的量级），但要如实留在文档里，别让它假装一致。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §0（"名字"那行改写为三条路封口 + 唯一可用机制是跨表 join）、
+§3.3（地址口径写进正文；"4 字节 RVA"改称文件偏移；新增"封口"四条）、§7（新增三个标注"纯推测"的候选名 + 证伪办法）、
+§9（新增复跑 15：二进制搜索**必须先确认地址口径**）。
+
 ## D-076: `verify_flag` 解出来了（它根本不是"好友验证"）；`#9` 的命名要降级；两处"看着对其实错"的脚本坑
 
 **Status:** Active（补 D-073 / D-075；含一次"对子 Agent 结论的降级"）

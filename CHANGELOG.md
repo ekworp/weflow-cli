@@ -19,6 +19,24 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The "read the client binary for field names" route is closed, and the reason it looked closed once before was a
+  false negative.** The `ContactExtData` field names are not recoverable from this machine's binaries, and now the
+  negative is structural rather than "not found": the four `micromsg.*` type-name strings have **zero** 4-byte
+  references anywhere in the file (only `ChatroomDetailInfoExtData` has two), the pointers next to a type name lead to
+  either a 96-byte cipher block or to code, and a whole-file sweep of 43,411 name slots found **no four-member group
+  and no ~37-name group**. One hard detail: names that sit next to each other are not one message's field table -
+  `AnnouncementEditor` and `ChatRoomStatus` are adjacent to three referenced names yet are referenced **zero** times.
+  The addressing lesson is the reusable part: this `Weixin.dll` is **64-bit** (imagebase `0x180000000`) with
+  `VA != PRAW` for every section, and the descriptor tables store **file offsets** - searching for a true RVA or VA
+  returns **0 for every name**, which is exactly how the earlier "these names are never referenced" note was born.
+  So: before writing down any "0 hits / never referenced" result, check which address form you searched, and run a
+  positive control (here, `InfoVersion`'s 4 hits). Two smaller results: the client's snake_case name arrays *do*
+  preserve SQL column order (`chat_room_info_detail` 8/8, `contact` 18/18) but `biz_info`'s does not, so array
+  position must not be used to infer proto field numbers. Three speculative field names ship as **speculation only**,
+  each with its own falsification test (`DECISIONS.md` D-077, `docs/CONTACT_DB_SCHEMA.md` §3.3/§7).
+
+
+
 - **`contact.verify_flag` is decoded - and it never was about friend requests.** It is a bitmask with 9 observed
   values (three single-row values were missing from the earlier list). Bit by bit: **`bit3` (value 8) is true iff the
   row's `username` is in `biz_info`** - 687/687, both directions, no off-diagonal - and every non-zero value carries
