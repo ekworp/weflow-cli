@@ -19,6 +19,33 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`contact.verify_flag` is decoded - and it never was about friend requests.** It is a bitmask with 9 observed
+  values (three single-row values were missing from the earlier list). Bit by bit: **`bit3` (value 8) is true iff the
+  row's `username` is in `biz_info`** - 687/687, both directions, no off-diagonal - and every non-zero value carries
+  it, so "8" *is* "non-zero". `bit4` (16) holds iff `VerifySource` is present (265/265, 2 exceptions the other way),
+  `bit8` (256) iff `PersonVerifyInfo.VerifyDesc` is present (12/12), `bit9` (512) implies `PersonVerifyInfo` (65/65),
+  and `bit4 ⊥ bit9` - institutional and personal verification are mutually exclusive. Three conditions turn out to be
+  three faces of the same 687 rows: `extra_buffer` carries `#13` iff `verify_flag != 0` iff the username is in
+  `biz_info` (and none of those rows is outside the large proto). That is also *why* the older note "`verify_flag != 0`
+  implies not in any group" held - they are all biz/system accounts. Read as friendship state, the flag is refuted by
+  counting: `!= 0` with no `biz_info` row = 0, with a remark = 0, as a group member = 0, and only 5 of 2946 `wxid_`
+  contacts are non-zero.
+
+- **Two notes corrected: `chat_room_info_detail`'s `#1` is a real nested message, and the three `openim_*` blobs are
+  not one shape.** The `#1` body (empty in 72 of 77 rows, non-empty in 5) walks cleanly as `DetailList -> Entry`
+  (`Entry` has field numbers 1-7 in all 8 entries, with `#2` a member `username` - 8/8 present in `contact`, 7 of them
+  exactly the room's `owner` - and `#5` valid UTF-8 free text), so "a chunk of binary" was wrong. Of the three
+  `openim_*` tables, the first two carry "`#1` plus {key, value} pairs", `openim_acct_type`'s blob `#1` is
+  byte-identical to that row's `acc_type_id`, and **`openim_wording.ext_buffer` is zero-length in all 21 rows** - the
+  old line had merged all three into "3-4 fields with nesting". A related field got a *partial* name and is recorded
+  as partial: `#9` is byte-identical to the row's registered entity name (`RegisterSource.RegisterBody`) in 213 of 567
+  rows and merely *contains* it in another 21 (41% together) - but 333 rows have nothing to do with it, so it is not
+  "the subject-name column" and must not be used as one (`DECISIONS.md` D-076, `docs/CONTACT_DB_SCHEMA.md` §3/§6/§7).
+  The rule that came out of that: when a hit rate is reported, ask what the *misses* are - only an asymmetry against
+  a field that never matches can support a name.
+
+
+
 - **`contact.extra_buffer` turns out to hold two message types in one column, and the OpenIM half is pinned by
   cross-table foreign keys.** The 44 rows that were described as "a different proto" are **OpenIM-only**: field
   `#1` byte-exactly equals `openim_appid.app_id` and `#2` equals `openim_wording.wording_id` (43/44 each), and the

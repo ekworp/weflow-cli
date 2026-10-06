@@ -1403,6 +1403,49 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-076: `verify_flag` 解出来了（它根本不是"好友验证"）；`#9` 的命名要降级；两处"看着对其实错"的脚本坑
+
+**Status:** Active（补 D-073 / D-075；含一次"对子 Agent 结论的降级"）
+
+2026-10-06 同一轮里另外三条，**每条都经我独立复算**：
+
+1. **`contact.verify_flag` 解出来了 —— 它跟"加好友/待验证"没关系。** 它是**位掩码**、9 种取值
+   （此前清单漏了 3 个单例 `56/264/1053`）。逐位（全部我的数）：
+   - **`bit3`（值 8）⟺ 该行 `username` 在 `biz_info` 里** —— **687/687 双向、两个错格都是 0**；
+     而且所有非零值都带 bit3 ⇒ "8" 就是"非零"本身。
+   - **`bit4`（16）⟺ 有 `VerifySource`**（机构认证）：265/265，反向 2 例（0.75%）；
+     **`bit8`（256）⟺ 有 `PersonVerifyInfo.VerifyDesc`**：12/12；**`bit9`（512）⟹ 有 `PersonVerifyInfo`**：65/65，反向 7 例；
+     **`bit4 ⊥ bit9`（0 行）** ⇒ 机构认证与个人认证互斥。
+   - **一条副产品**：`contact.extra_buffer` 出现 `#13` ⟺ `verify_flag ≠ 0` ⟺ 在 `biz_info` 里 —— **三条是同一批 687 行的三面**，
+     且 `verify_flag ≠ 0` 的行**没有一个是非大 proto**。此前那条"`verify_flag != 0` ⟹ 不在任何群"由此有了原因
+     （都是 biz/系统号）。⇒ **"位 = 好友关系"整类读法判死**（能证伪的计数：`≠0 且不在 biz_info = 0`、
+     `≠0 且有 remark = 0`、`≠0 且是群成员 = 0`、2946 个 `wxid_` 里 2941 个为 0、`room_verify_application` 是空表）。
+2. **`chat_room_info_detail.ext_buffer_` 的 `#1` 翻案：不是"一坨二进制"，是两层嵌套 message**
+   （`DetailList → Entry`，`Entry` 字段号 {1..7} 8/8）。72/77 空、5 行非空；`Entry.#2` 是成员 `username`
+   （8/8 命中 `contact`，其中 **7 个正是该房 `owner`**）、`#5` 是合法 UTF-8 自由文本。⇒ 文档里"少数是一大块二进制"作废。
+   顺带把三张 `openim_*` 的 `ext_buffer` 分清：前两张是「`#1` + 若干 `{key, value}` 对」，
+   `acct_type.ext_buffer#1` **逐字节 == 该行 `acc_type_id`**，而 **`openim_wording.ext_buffer` 21/21 全 0 字节**
+   （"3~4 个字段"那格把三张表并一起了，错）。
+3. **对子 Agent 的"已命名"结论做降级（这条是流程要求，不是结论）。** 一个 Agent 报「`#9` 已命名 = 主体名」
+   （213/567 逐字节等于该行 `RegisterSource.RegisterBody`）。复算后：这 213 是**真的**、且 `#4` 只有 **1/673**（不对称 ⇒ 非撞车），
+   但另有 **21 行只是把主体名当子串含住**、**333 行与主体名无关** ⇒ 合计 **234/567 = 41%**。
+   ⇒ 只能写"**`#9` 有时含认证主体名**"，**不能写"`#9` = 主体名"**（58% 的行会给出别的东西）。
+   **规则**：子 Agent 报"命中率 p"时，母 Agent 要问 p 的另一面 —— **不命中的那些是什么**；
+   只有"另一个字段几乎不命中"这种**不对称**才能支撑"命名"，单看一个比例不能。
+4. **两条"看着对其实是错"的脚本坑（我这轮自己踩的两个 + 子 Agent 报的两个）**：
+   - **bytes vs str 混比 → 假 0 命中**：blob 里取出的值是 `bytes`，从表里读回来的可能是 `str`，
+     `set` 比较直接给 0 命中 —— 而"0 命中"看起来正好像一个**负结论**。我因此把一条已经验过的关系（`wording_id` 全覆盖）
+     判成"0 命中"，两者输出长得一样。**修法**：比之前统一成 `bytes`（`text_factory = bytes`），并给"0 命中"配一条**正对照**。
+   - **同一个键被两个循环各加一次 → 恰好 2×**：`VerifyDescribe` 我量到 128、真实是 64。**恰好两倍**是这类错的指纹。
+   - 子 Agent 报的两条同族：`D:\tmp_eyetrack\numbers.py` **遮蔽标准库 `numbers`**（会让 `import statistics` 崩在 `_decimal`，
+     且顶层 `print` 会混进别的分析的输出里）；**宽 `except Exception` 包 `json.loads` 会吞掉 `NameError: json 未导入`**，
+     把"代码没跑起来"打成"所有键都为空"的**业务事实**，而所有计数照样出得来。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §0（`contact` 列 / `detail #1` / `openim_*` 三行升级）、
+§1.1（`external_info` 其余键全量清点；`contact.description` 改为"**全表** 4014 行全空"；`VerifyDescribe`/`VerifyIdentity`
+的 68 串位更正）、§3（那行加 `#9` 与 openim 形状）、§6（`verify_flag` 整块重写 + 三面合一）、§7（`#9` 半命名 + 子串门槛）、
+§9（新增复跑 13 / 14）同步。
+
 ## D-075: `contact.extra_buffer` 是「一列两型」；字段名不止二进制一条路；行为足迹打位域基本落空
 
 **Status:** Active（补 D-068 / D-074；含两条口径更正）
