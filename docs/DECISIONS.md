@@ -1403,6 +1403,43 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-075: `contact.extra_buffer` 是「一列两型」；字段名不止二进制一条路；行为足迹打位域基本落空
+
+**Status:** Active（补 D-068 / D-074；含两条口径更正）
+
+2026-10-06 三个子 Agent 从互不重叠的方向推，**三条头条我都用独立脚本量过**（这是本条的流程要求）：
+
+1. **`contact.extra_buffer` 是「一列两型」，按 `local_type` 分。** 主体 940 行是 `ContactExtData` 骨架；
+   另 **44 行是 OpenIM 专属**：`#1` = `openim_appid.app_id`、`#2` = `openim_wording.wording_id`
+   （各 **43/44** 逐字节命中）、`#4.#2` 的 JSON 键**恒为 `custom_info`**（43/43）；承载行 42/44 的 username
+   以 `@openim` 结尾、`local_type ∈ {5,6}`，且**全库 `local_type ∈ {5,6}` 的 42 行恰好全在这族**（双向）。
+   ⇒ **更正**：文档里的"46 行小形状"按字段号看真值是 **44 行**（另 2 行是字段号 `#10`/`#40` 的大 proto 残行）；
+   并且 §3.1 把 `stranger.extra_buffer` 挂在 `OpenIMContactExtData` 上**挂错了**（它与 `contact` 主体同型 ⇒ `ContactExtData`），
+   真正的 OpenIM blob 是那 44 行。
+2. **"跨表外键"是解 blob 字段名的一条独立于二进制的路。** 那 44 行的 `#1`/`#2` 之所以能定含义，靠的是
+   **在别的表里逐字节命中**（`openim_appid` / `openim_wording`），不是读二进制、也不是猜。此前把
+   "字段名拿不到"记成 ❌（D-068）时，**没有把"表间比对"这条算进去** —— 现在它有了一个成功案例。
+   ⇒ 以后遇到有值可查的 blob 字段，先做**跨表 join**，再谈"名字拿不到"。
+3. **行为足迹（该成员在这个群里发过言吗）打成员 `status`，基本落空。** 唯一稳的是 **bit13**：
+   房内载体**系统性更沉默**（P(sent) **0.087 vs 0.208**、房内 MH OR **0.40**、19/20 房同向）——
+   所以 D-074 里"bit13 成员级没找到"**作废**。同时被削的：**bit4 ↔ 有群昵称** raw OR 6.19 → **MH 2.05**
+   （≈2/3 是"昵称房"混杂，且 **bit3 房内一样强**）、**"bit4 偏老成员"房内不成立**（0.353 vs 0.333, p=0.42）、
+   **bit3 的"更活跃"是房间级**（房内符号 15/13/11、均值差 −0.002）、**G 的"更爱发言"全来自一个房**
+   （10 个发过言的 G 载体 8 个在同一房）。⇒ **"某位 = 某种人"整类读法在本轮没有被任何一条支持住。**
+4. **两条"方法别踩"**：
+   - **两个看似独立的代理可能同一个**：`chatroom_member.rowid` 分位与 blob 成员位置分位 **76/77 房完全同序**
+     ⇒ 此前把它们并列成两条证据是**重复计数**。
+   - **小样本的取值窗口会骗人**：`#41` 的年份，一个 Agent 从部分样本得"2021–2024"，我量完整分布是
+     **2019–2026、70% 在 2026**（691 行里还有 127 行显式写 0）⇒ 结论从"老数据"翻成"最近更新时间"。
+     凡"取值范围"类断言，**先报分母与全量分布**。
+5. **一处不裁决**：`bit0` 的性质（"该房的行状态" vs "人的属性 93% 一致率"）在上一轮报告里**自相矛盾**，
+   本轮的行为足迹**帮不上**（缺位者 74/100 在无消息表的房里 ⇒ 量不到）⇒ **如实记 UNKNOWN，不硬裁**。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §0（状态表：`contact.extra_buffer` 升级为"一列两型"、
+`openim_appid`/`openim_wording` 升 ◐、`openim_acct_type` 的 `ext_buffer` 仍 ❓）、§3（那行重写）、
+§3.1（`stranger` 的类型名更正）、§6（bit13 补脚印 + 三条削档）、§7（新增"逐字段取值轮廓"块）同步。
+`#3`/`#4` 仍只报字段号。
+
 ## D-074: `status` 是"字段"不是"一堆标志"；`contact.extra_buffer` 主体是 37 字段 proto（含两处数字更正与一条"更正之更正"）
 
 **Status:** Active（补 D-068 / D-073；本轮的价值一半在"错了什么、数从哪来"）

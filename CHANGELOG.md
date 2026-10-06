@@ -19,6 +19,37 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`contact.extra_buffer` turns out to hold two message types in one column, and the OpenIM half is pinned by
+  cross-table foreign keys.** The 44 rows that were described as "a different proto" are **OpenIM-only**: field
+  `#1` byte-exactly equals `openim_appid.app_id` and `#2` equals `openim_wording.wording_id` (43/44 each), and the
+  nested `#4.#2` is JSON whose key is always `custom_info` (43/43). The carriers are 42/44 `@openim` usernames with
+  `local_type` in {5,6} - and every `local_type` 5/6 row in the database is in that family (both directions), so the
+  column's type follows `local_type`. Two counts are corrected with it: the "46 small rows" is **44** by field number
+  (the other two carry field numbers `#10`/`#40` and belong to the large proto), and `stranger.extra_buffer` was
+  labelled `OpenIMContactExtData` in the type table - that is almost certainly wrong (its skeleton matches
+  `contact`'s main body, i.e. `ContactExtData`); the real OpenIM blob is the 44 rows. Two more exact relations came
+  out of the same pass: **`#13` is present iff `verify_flag != 0`** (687 / 253, no off-diagonal), and `#33` non-empty,
+  `#36` present and `#27`'s subfield 3 are the same 824 rows. Also worth keeping methodologically: those `#1`/`#2`
+  names came from **cross-table byte-exact hits**, not from reading the client binary - a route the "field names are
+  unobtainable" note had not counted (`docs/CONTACT_DB_SCHEMA.md` §3/§3.1/§7, `DECISIONS.md` D-075).
+
+- **Member `status` bits got an external signal (does this member ever speak in this room?) and almost nothing
+  survived.** The one solid member-level footprint is **bit13**: carriers are systematically quieter *within the same
+  room* (P(sent) 0.087 vs 0.208, within-room MH OR 0.40, 19/20 rooms same direction) - so the earlier "no clean
+  member-level discriminator" line is withdrawn for that bit. The rest went the other way: **bit4 ↔ has a group
+  nickname** shrinks from raw OR 6.19 to **MH 2.05** once the room is controlled (~2/3 of it was "rooms with a
+  nickname culture"), and **bit3 is just as strong within-room**, so it is not bit4-specific; "bit4 carriers are
+  older members" does not hold within-room (0.353 vs a 0.333 baseline, p=0.42); "bit3 carriers talk more" is a room
+  effect (within-room signs 15/13/11, mean difference -0.002); and G's apparent activity comes from **one room**
+  (8 of the 10 talking G carriers are in the same room, while the other six G rooms have zero). Two traps are
+  recorded too: the two "join-order" proxies (`chatroom_member.rowid` percentile and blob position percentile) are
+  the **same ordering in 76/77 rooms** (not two independent signals), and small samples lie about value ranges -
+  `#41`, seen as "2021-2024" from a partial sample, is really **2019-2026 with 70% in 2026** (plus 127 rows
+  explicitly written as 0), i.e. more like a "last updated" stamp (`DECISIONS.md` D-075,
+  `docs/CONTACT_DB_SCHEMA.md` §6/§7).
+
+
+
 - **The member `status` field is a set of small fields rather than a pile of flags, and `contact.extra_buffer`'s main
   body is a 37-field proto - two earlier notes corrected.** (a) The 27 observed member `status` values decompose into
   non-overlapping bit ranges (`bit0 | A<<3 | bit11 | bit13 | G<<20`). `A` (bits 3-4) is a **2-bit field**, not two
