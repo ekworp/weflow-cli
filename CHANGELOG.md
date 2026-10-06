@@ -19,6 +19,32 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The member `status` field is a set of small fields rather than a pile of flags, and `contact.extra_buffer`'s main
+  body is a 37-field proto - two earlier notes corrected.** (a) The 27 observed member `status` values decompose into
+  non-overlapping bit ranges (`bit0 | A<<3 | bit11 | bit13 | G<<20`). `A` (bits 3-4) is a **2-bit field**, not two
+  flags (bit3&bit4 co-occur 46 times against an expected 19.7), and its strongest - not definitional - correlate is
+  having a group nickname (monotone 0.26→0.78 across A=0→3, but 31% of carriers have none). `G` (bits 20-22) is a
+  **3-bit group with a forced bit**: only the values 2/3/6/7 occur, so `G != 0` always sets bit 21 (bits 20&22
+  co-occur 18 times against an expected 0.12). Two hard exclusions were re-verified bit by bit (0/4151 each):
+  `bit4 ⊥ bit13` (these two point in *opposite* directions, so they are not one enum) and
+  `bit11 ⊥ {13,20,21,22}`. The notes also carried a wrong value set for bits 20-22 (`1/3/5/7` - those two values
+  cannot occur here). (b) The notes described `contact.extra_buffer` as a "`#3` varint, about 2 bytes"; that is the
+  shape of **46 rows only**. The **main body - 940 rows - is a 37-field proto (`#2`...`#38`), median ~115 bytes**.
+  The two older counts now reconcile exactly: **984 rows carry a top-level `#3`**, of which 942 are varints (940 large
+  + 2 small), 42 are length-delimited and 2 are absent - so the old "942 / 44" *was* the "is `#3` a varint"
+  criterion, two rows off the shape split (940 / 46). (c) The real gain: that 940-row body matches
+  `stranger.extra_buffer` (1 row locally) **field number by field number and wire type by wire type** - the same
+  message type - so the shape catalogue in §7 can now draw value ranges from 940 rows instead of one. `#41` turns out
+  to be an **epoch-seconds** value (691 rows, 2021-2024) with no column among the 22 that could hold it. (d) A
+  value-alignment pass over all 986 rows (raw / utf8 / md5 / sha1 / b64 / utf-16le against every column) returned
+  **2 sparse hits** (`nick_name` == `#4` 8/716, == `#9` 12/953) and **no** hash / URL / wxid-level hit, so the blob's
+  field names still ship as raw numbers (`DECISIONS.md` D-074, `docs/CONTACT_DB_SCHEMA.md` §3/§6/§7). One earlier
+  figure also had its origin pinned: the "33 accounts with message tables but no `biz_info` row" is a real 33, but
+  it comes from the **official-account database's own `Name2Id`** and **none of the 33 has a message table at all** -
+  "message table" was the wrong condition, not the number.
+
+
+
 - **`biz_info` - the official-account table in `contact.db` - has been mapped, and it holds fields the daily
   pipeline never had.** The repo has never read this table (a grep finds only the schema notes mentioning it), yet
   its `external_info` JSON carries `RegisterSource.RegisterBody` (**the account's legal/subject name, 93.1% of
