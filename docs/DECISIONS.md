@@ -1403,6 +1403,31 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-100: 两轮新否证（`#8` 不是键位图、字段×特征无判别式）；`fav_notes` 的"本地正文优先"已量
+
+**Status:** Active（补 D-095 / D-099；一半是否证，一半是"查过没坏"）
+
+1. **两轮否证**（都写进 §7 的"别重跑"清单）：
+   - **字段值 × "该号有什么"**（`external_info` 每个键的有/无、`type`/`child_type`/`brand_flag`、有没有 `Msg_` 表）——
+     **没有任何"某取值下完全恒定"的判别式**。唯一部分信号：`#8` ↔ 有 `WxaAppInfo`（其 23 档里 3 档 P=1.0、3 档 P=0.0，
+     其余 0.2~0.96）——**不是判别式**。
+     ⚠️ **一个混杂项**：`ScanQRCodeType` / `IsShowHeadImgInMsg` / `IsHideInputToolbarInMsg` **三个键总同时出现**，
+     于是在很多字段上刷出 0.7~0.86 的"最大分离度" —— 那描述的是"**资料更全的号**"，不是这个字段的含义。
+   - **`#8` 是不是"哪些键存在"的位图** → **双向否掉**：同一个键集合对应多个 `#8`（51 个键集合里），
+     同一个 `#8` 对应多个键集合（15 档里 11 档）。
+2. **`fav_notes` 的"本地正文优先"量过（因为用户问"能不能看收藏文章的划线"而顺带查的）**：
+   - `MIN_ARTICLE_CHARS = 200`；本机 1,234 篇文章里 **1,227 条走抓取、7 条**因网页描述 ≥200 字而用"自带正文"——
+     那 7 条用的是 **`weburlitem/pagedesc`（网页摘要，不是正文）**；门槛挡住了短噪声：
+     那 20 条 `type=1` 的 `desc` 只有 **49 字且是路径式字符串**（含 `/` `\` `:`）⇒ 全部落 `none` ✓。
+   - **不改行为**（"本地优先、不联网"是它的卖点，且 `--dry-run` 的承诺就是只读本地），
+     只把 `fav_notes.py` 里"文章类只有 `link`"改成"**基本**只有"，并把量出来的数字写进注释
+     （那条注释原本是断言，现在是带分母的观察）。
+3. **顺带（回答"划线"那条问题的依据）**：**本机收藏库里没有任何正文** —— 全部 1,259 条的文本节点里，
+   最长的 1,177 字是**网页描述**，**>1,000 字的只有 2 个** ⇒ `fav-notes` 在文章上几乎全靠抓取，与设计一致。
+
+**Consequences：** `scripts/fav_notes.py`（docstring 那句改准 + 写上数字）、
+`docs/CONTACT_DB_SCHEMA.md` §7（宽扫清单由三轮扩成五轮）。无 CHANGELOG（非用户可见行为变化）。
+
 ## D-099: `contact-schema` **不**进 `capabilities --json`（那是策展子集）；小字段"出现情况位图"假设出局
 
 **Status:** Active（补 D-088 / D-095；两条都是"量过之后不做"）
