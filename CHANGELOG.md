@@ -19,6 +19,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **A pairwise sweep inside the blob: three real results and three trivial ways to fake one.** Asking "does field A's value
+  determine field B's" across the 940-row main proto gave 398 "determinations" before filtering and 16 after - the
+  difference being three degenerate shapes that all make the relation vacuous: A constant, **B constant** (the first
+  pass was full of `has15`/`v16`/`v23`, which are always the same), or **A nearly unique** (`#41` has 565 distinct
+  values, so it "determines" everything). The surviving results: on biz rows (`#13` present, 687 of them) `#2`, `#12`,
+  `#17`, `#22`, `#24` are always 0 and `#25` is always absent - these small flags only ever appear on non-biz rows;
+  `#10 = 0 iff #11 = 0` is confirmed a second time by an independent method; and `#2` correlates strongly with that
+  URL (123 of the 144 rows with `#2` in {1,2} carry it, versus 18 of 109 rows with `#2 = 0`) without being equivalent.
+  The non-biz 253 rows also divide cleanly: **78 are `@chatroom` group rows** (`#2 = 0`), the other 175 are individuals
+  (`DECISIONS.md` D-087, `docs/CONTACT_DB_SCHEMA.md` §7).
+
+
+
 - **`#27`'s second field is a URL, and the notes stop there on purpose.** It is present in 141 of 940 rows, always
   `http://`, 107-110 bytes long, and drawn from only **3 hosts** - none of which appears in any column of
   `contact`, `biz_info` or `chat_room_info_detail` (against 3,914 non-empty `big_head_url` and 691 `brand_icon_url`
