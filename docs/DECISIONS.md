@@ -1403,6 +1403,26 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-091: "每个命令的旗标都必须转发给脚本"这条规则**不推广**（量过了，20 个命中绝大多数是误报）
+
+**Status:** Active（记录**已搜范围**，同 D-072 的做法；结论是"不加这条测试"）
+
+1. **动机**：D-088 给 `contact-schema` 立了一条守卫 —— 声明的每个 `.option` 都必须在 `.action` 之后**被转发给脚本**。
+   很自然想问：能不能推广到整个 CLI？于是用同样的源码扫描把 `bin/weflow-cli.ts` 里 **114 个命令块**量了一遍。
+2. **结果：20 个块命中，但逐条看下来基本是误报**，原因三类（都不是 bug）：
+   - **`--dry-run` / `--yes` / `--json` 由 TS 层自己消费**（两阶段确认门与机器可读输出；`opts.dryRun` / `opts.yes`
+     在文件里出现几十处），本来就不该转发给脚本；
+   - **`--api-key` 是故意不进 argv 的**（密钥走配置/环境；进程列表可见，`test/privacy-paths.test.ts` 也守着这条）；
+   - **我的"块切分"对带子命令的父命令是错的**：`.command('pipeline')` 把几十个子命令并成一个块，
+     于是"声明"列里出现十几遍 `--dry-run,--yes,--json` —— 命中数里有一部分纯是切分造成的。
+   - 另有 `opts.path` / `opts.month` / `opts.talker` / `opts.open` 这类"在 TS 层用掉、或按别的方式传给脚本"的。
+3. **决定：不加** repo-wide 版本。`contact-schema` 那条守卫保留 —— 它的每个声明旗标**确实都是字面转发**
+   （已做变异检查：把转发改成 `[]` 立刻变红），所以那条规则在**那个命令上**是硬事实，在别的命令上不是。
+4. **顺带把"旗标的三种归宿"记下来**：**转发给脚本** / **TS 自己消费** / **故意不进 argv（密钥）**。
+   以后要立类似规矩，得先按这三种归宿分类，**不能按"命令块里有 `.py`"一刀切**。
+
+**Consequences：** 无代码改动（这轮的价值是"别再试一遍"）。`contact-schema` 的守卫不变。
+
 ## D-090: 两个脚本在"重定向"下会崩（已修）；这类 bug 被环境变量盖住，所以守卫必须是静态的
 
 **Status:** Active（补 D-076 / D-089；含一处口径收紧）
