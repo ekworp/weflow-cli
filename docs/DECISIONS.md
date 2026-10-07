@@ -1403,6 +1403,28 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-097: 第四条定名路 = 字段内容自带键名；`#26` = `<bizuserattr>`（上次登录/发言/加好友时间）
+
+**Status:** Active（补 D-081 / D-096；**第四个被命名的字段**）
+
+1. **结果**：`#26` 的内容是 XML，**键名是客户端自己写的英文标识符** ——
+   根标签 `<bizuserattr>`、内含 `<userop>`，三个属性 **`lastlogintime` / `lastmsgoptime` / `lastaddroptime`**，
+   115 行全有、取值都是 **epoch 秒且落在 2013–2015**。
+   ⇒ 读成"**我对该号的用户侧属性：上次登录 / 上次发消息 / 上次加好友的时间**"。
+   **这个名字不是我起的，是数据里就写着的**（与 `#4.#2` 的 JSON 键 `custom_info` 同一类）。
+2. **方法（第四条路，写进 §7）**：**先问"字段内容里有没有自带键名"**（XML 属性名 / JSON 的键）。
+   全量扫大 proto 的所有 ld 字段 ⇒ **只有 `#26` 是**（没有别的 XML、没有顶层 JSON）。
+   ⇒ 至此定名路四条：**(a) 跨表整值 join**、**(b) 自/他对照的内容刻画**、**(c) 公开码表 + 不依赖码表的预测**、
+   **(d) 内容自带键名**。遇到未命名字段，按这四条依次问一遍，别急着说"拿不到"。
+3. **边界**：`#26` 只有 **115/940** 行非空，且时间戳停在 2013–2015（"很久没动"的记录）⇒ 它**不改变**别的结论；
+   也**没有**加进 `contact-schema --contacts`（那个命令只放日报线要用的三个字段，见 D-088）——
+   要加是一条独立决定。
+4. **仍未命名的**（各自缺什么写清）：`#6`/`#7` 像"英文词形标签"但**本机无词表**；`#19` 四族解释已否（D-083/D-095）；
+   `#8` 像位掩码；`#25` 样本只 12 行。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` §7（`#26` 那行改成带名字的结论；新增"第四条定名路"块、
+并列出四条路）。无代码改动、无 CHANGELOG。
+
 ## D-096: `#6`/`#7` 是"分类标签"、`#26` 是 XML；要名字只能靠外部标签表
 
 **Status:** Active（补 D-085 / D-095；一条口径 + 一组新结论）
