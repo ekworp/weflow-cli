@@ -1403,6 +1403,21 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-099: `contact-schema` **不**进 `capabilities --json`（那是策展子集）；小字段"出现情况位图"假设出局
+
+**Status:** Active（补 D-088 / D-095；两条都是"量过之后不做"）
+
+1. **`capabilities --json` 是人工策展的读接口表**（顶层键：`read` / `primitives` / `workflows` / `safety` / `schema` / `version`），
+   `read` 里只有主流读面（sessions / messages / contacts / exports / favorites / configuration / accessControl…），
+   `daily-stats`/`sns`/`stats` **同样不在**。⇒ 这是**子集，不是穷举**，所以 `contact-schema`（含新加的 `--contacts`）**缺席不是缺口**，
+   **不加**；`docs/AI_INTERFACE.md` 的"推荐调用顺序"同理（也是一份子集）。
+2. **一条同族的否证**：假设"某个小字段 = 该行可选字段的出现情况（计数或位图）"——
+   拿 `#2/#8/#11/#12/#17/#18/#19/#22/#24/#37` 与"8 个可选字段里出现了几个"比：
+   **命中 0~25/941（偶然水平）**，`#8` 的"置位数 == 个数"只 8 行 ⇒ **出局**（写进 §7 的宽扫清单）。
+3. **这两条都不改代码**，但值得记：它们是"看起来该做、量完发现不该做"的那一类，不写下来就会被反复重提。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` §7（宽扫清单加第三轮）。无代码改动、无 CHANGELOG。
+
 ## D-098: `#6`/`#7` 不在客户端的字符串存储里（更像服务端标签）；短值搜大语料必须要求"独立成串"
 
 **Status:** Active（补 D-096 / D-097；含一处**差点写错的"命中"**）
