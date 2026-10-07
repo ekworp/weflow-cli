@@ -25,6 +25,11 @@ Read this file and [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) before changin
 
 Run the narrowest relevant check first. TypeScript changes require `npm run build`; run `npm test` for the regression suite. For Python changes, compile or run the affected script's focused check. Before handoff, run `git diff --check` and inspect the staged diff for sensitive information.
 
+Two rules for *claims*, learned from mistakes that shipped:
+
+- **A negative claim needs a positive control, and the control belongs in the script.** Before writing down "0 hits", "no overlap", "never happens", run the same query against something known to match - and put that control *inside* the script so an empty control reports the comparison as void instead of reporting zero. The trap that has cost this project time three times: a `bytes` value read from one database compared against a `str` from another, where the intersection is empty by construction and "no overlap" looks like a finding.
+- **An "A equals B" claim is only as strong as its off-diagonals.** Report both, not just the agreeing cell: `bit3 == (username in biz_info)` is worth writing down because the two *disagreeing* cells are zero, whereas a one-directional correlation says much less. And when reporting how many *kinds* of something there are, say what was counted (lengths, values, or rows) - they differ.
+
 ## Documentation Protocol
 
 - Update `docs/PROJECT_STATE.md` when a feature, supported platform, known limitation, active issue, or verification status changes.

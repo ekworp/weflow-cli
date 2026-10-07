@@ -1403,6 +1403,31 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-089: 负结论必须配"写进脚本"的正对照（同族错误第三次）；`contact` 的群行；`#2` 与会话
+
+**Status:** Active（规则升级到 `AGENTS.md`；补 D-076 / D-087）
+
+1. **同族错误第三次，所以规则升级**：本轮查"`#2` 与有没有会话"时，第一次得到"**253 个非 biz 行全都不是会话**"——
+   假的：`contact` 那条连接设了 `text_factory = bytes`（返回 bytes），消息库那条没设（返回 str），
+   **bytes ∩ str 恒为空集**，而"没有交集"长得**就像一个发现**。第一次（D-076）是同一个坑，当时只在文档里记了；
+   这次把规则写进 **`AGENTS.md` 的 Verification 一节**（未来所有会话/Agent 先读的那个文件）：
+   - **负结论必须先跑正对照，而且正对照要写进脚本**（控制组为空就让脚本自己报"这次比较无效"，别报 0）——
+     本次的正确做法就长这样：先断言 `Name2Id ∩ contact.username = 587/617` 非空，再谈别的。
+   - **"相等"类结论强不强，看两个错格**（`bit3 ⟺ 在 biz_info` 之所以能写下来，是因为两个不一致的格子都是 0）。
+   - **报"有多少种"时必须说清数的是什么**（长度 / 取值 / 行 —— 这三个在 `#27.#2` 上就差过一回，D-086）。
+2. **两条新事实**：
+   - **`contact` 里 78 个 `@chatroom` 行，77 个就是 `chat_room` 的群**（76 个 `local_type = 2`），
+     另有 1 个"像群但不在群表里"的行 ⇒ 非 biz 的 253 行里的"78 个群"就是表里同一批群。
+   - **`#2` 与"有没有会话"相关但不等价**（`Name2Id.is_session`，正对照 587/617）：`#2 = 0` 的 109 个非 biz 行里
+     **75 个是会话**（那 78 个群基本都在），`#2 = 1` 36/98、`#2 = 2` 14/46 ⇒ `#2 = 0` 偏"有会话"、
+     `#2 ∈ {1,2}` 偏"没会话"，而后者同时也与那个 URL 强相关（123/144）。`#2` 仍 UNKNOWN，但有两个相关项。
+3. **文档协议的一处自我纠正**：`AGENTS.md` 写着"`CHANGELOG.md` 只记**用户可见**的发布说明，别当工程日记"。
+   前几轮给纯文档/研究轮次也加了 CHANGELOG 条目，**不符合这条**；从本轮起，纯研究/文档轮次**不加**，
+   只有动到 CLI/行为（如 D-088 的 `--contacts`）才加。
+
+**Consequences：** `AGENTS.md`（Verification 加两条规则）、`docs/CONTACT_DB_SCHEMA.md` §7（新增"群行 + `#2` 与会话"块、
+含那次假负结论的复盘）。**本轮不加 CHANGELOG**（按第 3 条）。
+
 ## D-088: `contact-schema --contacts`：把 `contact.extra_buffer` 那三个已验证字段做成出口（并说明为什么不输出 `#4`/`#9`）
 
 **Status:** Active（**取代 D-081 里"代码这边不用动"那句**）
