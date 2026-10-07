@@ -19,6 +19,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Two more entries in the value-domain table, one positive and one negative.** Verified: `#10 = 0` and `#11 = 0` are
+  *the same 129 rows* (811 / 129 with no off-diagonal), so they share one "unset" state and must not be read as two
+  independent flags. Refuted: `#19`'s 0-10 count-like values are not "the number of repeats of some sub-field" - the
+  best of the ten candidate sub-fields matches only 104 of 940 rows, which rules out a whole class of explanations
+  without yet naming the field (`DECISIONS.md` D-083, `docs/CONTACT_DB_SCHEMA.md` §7).
+
+
+
 - **A second field is named, and every varint field's value domain is now measured.** `#13` equals that row's
   `biz_info.type` - **687 of 687 rows, no counterexample**, across all five values - which also explains the standing
   fact that `#13` appears exactly when `verify_flag != 0` (i.e. when the username is in `biz_info`): the blob simply

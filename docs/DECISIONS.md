@@ -1403,6 +1403,20 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-083: `#10 = 0 ⟺ #11 = 0` 已验；`#19` 的"重复条数"假设被否
+
+**Status:** Active（补 D-082；两条都属"把值域表继续做厚"）
+
+1. **上一条留的线头验了**：`#10 = 0` 与 `#11 = 0` **是同一批 129 行** —— 940 行里 `(F,F) 811 / (T,T) 129`，
+   **两个错格都是 0** ⇒ 两者**共用一个"未设置"状态**（与 `#10`/`#38` 的 `0 / -1` 哨兵同一族写法），
+   **不能当两个独立标志读**。
+2. **`#19`（0~10 的计数形态）的"= 某个子字段的重复条数"假设被否**：把 blob 里 10 个 ld 字段的子字段计数
+   全量算出来逐个对，最好的候选（子字段 `#1` 的条数）也只对上 **104/940** ⇒ 排除掉一整类解释，仍 **UNKNOWN**。
+3. **记账方式**：§7 那张"取值域表"**本身就是资产** —— 每补一条（今天两条：一条命名、一条耦合）与
+   **每排除一条**（`#19` 的两类），后人的搜索空间就小一块。别只在"解出来了"时动笔。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §7（`#11` 行补耦合、`#19` 行补排除项、"未验线头"改成"已验"）。
+
 ## D-082: `#13` = `biz_info.type`（第二个被命名的字段）；取值域也要量，别只量"有没有值"
 
 **Status:** Active（补 D-073 / D-081）
