@@ -82,6 +82,45 @@ def violations(src):
     return stdout_literals(src)
 
 
+def _text_io_calls(src):
+    """→ [(行号, 描述, 有没有 encoding)]：**文本模式**的 open / write_text / read_text。
+
+    口径收紧的一点：`open(p)` 不写 mode 时默认是**文本** 'r'，所以也按文本算
+    （早一版审计把它跳过了，等于漏掉一整类）。
+    """
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # **只认内置 `open`**：`Image.open()` / `tarfile.open()` / `zipfile.open()` 都是属性调用，
+        # 它们是二进制的解码器/封装，给它们加 encoding= 才是错的（第一版判据在这里报了 10 处误报）。
+        if isinstance(func, ast.Name) and func.id == 'open':
+            name = 'open'
+        elif isinstance(func, ast.Attribute) and func.attr in ('write_text', 'read_text'):
+            name = func.attr
+        else:
+            continue
+        enc = any(k.arg == 'encoding' for k in node.keywords)
+        if name == 'open':
+            mode = 'r'
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                mode = node.args[1].value
+            for k in node.keywords:
+                if k.arg == 'mode' and isinstance(k.value, ast.Constant):
+                    mode = k.value.value
+            if 'b' in (mode or ''):
+                continue
+            out.append((node.lineno, 'open(mode=%r)' % mode, enc))
+        elif name in ('write_text', 'read_text'):
+            out.append((node.lineno, name + '()', enc))
+    return out
+
+
+def text_io_without_encoding(src):
+    return [(ln, what) for ln, what, enc in _text_io_calls(src) if not enc]
+
+
 class ScannerControlsTest(unittest.TestCase):
     """先证明扫描器本身是活的（该报的报、不该报的不报）。"""
 
@@ -120,6 +159,46 @@ class ScriptsStdoutEncodingTest(unittest.TestCase):
             '这些行在"重定向/管道"下会 UnicodeEncodeError（桥接跑有 PYTHONIOENCODING 所以看不出来）；'
             '修法是在模块顶部加 sys.stdout.reconfigure(encoding="utf-8", errors="replace")：\n  '
             + '\n  '.join(bad))
+
+
+class ScriptsFileEncodingTest(unittest.TestCase):
+    """同一件事的另一半：**读写文件**也不许依赖调用方的 locale。
+
+    2026-10-07 审计：60 个脚本里文本模式 `open()/write_text()/read_text()` **186 处全部带 `encoding=`、0 处遗漏**
+    （正对照在下面那条：连"带 encoding"的都数不到就说明扫描器坏了）。漏了 `encoding=` 时，中文 Windows 会按
+    **GBK** 读/写，而下游（HTML / Vault / 日报）按 UTF-8 解 —— 静默乱码，不报错。
+
+    判据本身踩过一个坑，记在这儿：第一版按"函数名是 `open`"匹配，把 **PIL 的 `Image.open()`** 也算成文本读，
+    报了 10 处误报 —— 它其实是**二进制解码器**，给它 `encoding=` 才是错的。现在只认**内置** `open`，
+    属性调用只认 `write_text/read_text`，并把 `Image.open/tarfile.open/zipfile.open` 写进对照用例。
+    另外 3 处 `open(f'/proc/<pid>/...')` 是 Linux 分支读的 ASCII 内核文件（不是真风险），也一并写明 encoding，
+    免得判据要开白名单。
+    """
+
+    def test_text_mode_io_declares_its_encoding(self):
+        bad = []
+        seen = 0
+        for path in sorted(glob.glob(os.path.join(SCRIPTS, '*.py'))):
+            src = io.open(path, encoding='utf-8').read()
+            seen += len(_text_io_calls(src))
+            for lineno, what in text_io_without_encoding(src):
+                bad.append('%s:%d %s' % (os.path.relpath(path, ROOT), lineno, what))
+        # 正对照：数到 0 说明扫描器坏了，那时的"没有违反"不作数
+        self.assertGreater(seen, 50, '正对照失败：连"带 encoding"的调用都没数到，扫描器有问题')
+        self.assertEqual(
+            bad, [],
+            '文本模式读写必须写明 encoding="utf-8"（否则走 locale，中文 Windows = GBK）：\n  '
+            + '\n  '.join(bad))
+
+    def test_guard_controls(self):
+        # 该报的报：不带 encoding 的读、写、以及省略 mode 的 open（默认文本）
+        for src in ("open(p, 'w')\n", "open(p)\n", "p.write_text('x')\n", "p.read_text()\n"):
+            self.assertTrue(text_io_without_encoding(src), src)
+        # 不该报的不报：二进制、写了 encoding 的、以及**属性上的** open（PIL/tarfile/zipfile 的解码器）
+        for src in ("open(p, 'rb')\n", "open(p, 'w', encoding='utf-8')\n",
+                    "p.write_text('x', encoding='utf-8')\n",
+                    "Image.open(p)\n", "tarfile.open(p)\n", "zipfile.open(p)\n"):
+            self.assertEqual(text_io_without_encoding(src), [], src)
 
 
 if __name__ == '__main__':

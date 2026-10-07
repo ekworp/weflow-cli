@@ -1403,6 +1403,25 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-092: 文本模式的 `open()` 必须写明 `encoding=`（已钉住）；判据别把 `Image.open` 当内置 `open`
+
+**Status:** Active（补 D-090；**不是修 bug，是把一条已经普遍执行的规矩钉住**）
+
+1. **审计结论（配了正对照）**：60 个脚本里文本模式的 `open()/write_text()/read_text()` **186 处全部带 `encoding=`、
+   0 处遗漏** ⇒ 读写文件这一侧本来就是干净的。漏了 `encoding=` 时中文 Windows 会按 **GBK** 读写，
+   而下游（HTML / Vault / 日报里）按 UTF-8 解 —— **静默乱码、不报错**，所以值得钉住。
+2. **判据踩的坑（值得记）**：第一版按"函数名是 `open`"匹配，把 **PIL 的 `Image.open()`** 也算成文本读 ⇒
+   **10 处误报**。它是**二进制图片解码器**，给它 `encoding=` 才是错的。修法：只认**内置** `open`（`ast.Name`），
+   属性调用只认 `write_text`/`read_text`；并把 `Image.open` / `tarfile.open` / `zipfile.open` 三个"不该报"写进对照用例。
+   （又一次证明：**审计脚本自己也要有对照**，见 AGENTS.md。）
+3. **顺带 3 处真的例外**：`nt_decrypt.py` 里 Linux 分支读 `/proc/<pid>/{comm,statm,maps}`（内容是 ASCII、Linux locale
+   也是 UTF-8，**不算真风险**），仍补上 `encoding='utf-8'` —— 让规矩**没有例外**，省得以后在判据里开白名单。
+4. **守卫落点**：同一个 `test/script_stdout_encoding_test.py`（CI 的 `unittest discover` 自动收），
+   连同 stdout 那半一起；"0 漏"后面跟着正对照（数不到 186 就报扫描器有问题）。
+
+**Consequences：** `scripts/nt_decrypt.py`（3 行）、`test/script_stdout_encoding_test.py`（新增文件编码那一类 + 2 条用例）、
+`docs/EXTENDING.md`（Recipe E 指向同一份测试，说明它同时管 stdout 与文件）。无 CHANGELOG（不是用户可见的行为变化）。
+
 ## D-091: "每个命令的旗标都必须转发给脚本"这条规则**不推广**（量过了，20 个命中绝大多数是误报）
 
 **Status:** Active（记录**已搜范围**，同 D-072 的做法；结论是"不加这条测试"）

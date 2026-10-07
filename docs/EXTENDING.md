@@ -105,7 +105,11 @@ prints JSON). Three rules that this project has been bitten by:
   character GBK cannot encode (`✓`, `⚠️`, `⇒`) raises `UnicodeEncodeError` and kills the run. So a
   "spawn it and see if it crashes" test is a false negative on this machine; `test/script_stdout_encoding_test.py`
   inspects the sources statically instead, and requires `sys.stdout.reconfigure(encoding='utf-8', errors='replace')`
-  in any script whose stdout literals contain a character GBK cannot encode.
+  in any script whose stdout literals contain a character GBK cannot encode. The same test covers the other half -
+  **text-mode file I/O** - and requires `encoding='utf-8'` on every builtin `open()` (and `write_text`/`read_text`):
+  without it a Chinese Windows box reads and writes those files as GBK while everything downstream decodes UTF-8.
+  (`Image.open()`, `tarfile.open()` and friends are exempt by construction - they are binary decoders, which is why
+  the check matches the *builtin* `open` only.)
 - **Fail loudly.** Exit non-zero, or return a JSON object whose `success` is false with an `error` string. "No JSON on
   stdout" must never be read as "no results" - that conflation is why `get_todos` distinguishes "no pending todos" from
   "extraction has never been run".

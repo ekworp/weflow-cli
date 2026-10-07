@@ -91,7 +91,7 @@ def _is_linux_wechat_process(pid):
     if pid == os.getpid():
         return False
     try:
-        with open(f'/proc/{pid}/comm') as f:
+        with open(f'/proc/{pid}/comm', encoding='utf-8') as f:
             comm = f.read().strip().lower()
         if comm in _LINUX_WECHAT_COMMS:
             return True
@@ -122,7 +122,7 @@ def find_weixin_pid_linux():
         if not _is_linux_wechat_process(pid):
             continue
         try:
-            with open(f'/proc/{pid}/statm') as f:
+            with open(f'/proc/{pid}/statm', encoding='utf-8') as f:
                 rss_kb = int(f.read().split()[1]) * 4
         except (OSError, IndexError, ValueError):
             rss_kb = 0
@@ -205,7 +205,7 @@ def scan_memory_keys_linux(pid):
     """
     regions = []
     try:
-        with open(f'/proc/{pid}/maps') as f:
+        with open(f'/proc/{pid}/maps', encoding='utf-8') as f:
             for line in f:
                 parts = line.split()
                 if len(parts) < 2 or 'r' not in parts[1]:
