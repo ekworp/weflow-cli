@@ -19,6 +19,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The per-room counter has no second copy anywhere locally, which closes its file from three directions.** A sweep of
+  all 24 databases (207,156 rows) for the counter's value or its offset found **0 meaningful hits** - but only after the
+  criterion was tightened to "same object": a column counts only if the row it sits in *names that room* (in a
+  `username`/`room_id`/`chat_name` key column). The loose version of the same search returned **279 hits, every one a
+  small-integer collision** (0, 1, 2 and 10 are everywhere, and the rooms sitting at their base keep contributing 0 as a
+  candidate) - so the mirror of D-076's rule applies: before reporting a *hit*, ask how likely a collision is. The
+  negative ships with the three things this project now requires of any "0 hits" claim: a positive control (rooms at
+  base did match zero columns, and `session.last_msg_type = 10000` matched an integer column, so the matcher works),
+  what was skipped (735 `Msg_*` tables, plus tables keyed by a hash rather than a username), and the scope (24
+  databases, 207k rows). With the earlier two results - it is not a server sequence, and it is not a member-change
+  event count - the counter is now refuted from three independent directions, leaving only an off-machine reference
+  (another machine, another version, or an older copy of the database) as a route to what one step means
+  (`DECISIONS.md` D-079, `docs/CONTACT_DB_SCHEMA.md` §6.1 ⑩).
+
+
+
 - **The per-room counter's "one step" is not a member-change event - and the note saying it "needs a second
   timepoint" was framed too narrowly.** The room message table carries its own timestamped event log (member-change
   notifications, base `local_type == 10000`, 1,764 of them locally), so the question could be tested without a second
