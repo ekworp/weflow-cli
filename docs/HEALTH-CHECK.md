@@ -85,12 +85,13 @@ schtasks /create /tn "WeFlow Health Check" ^
 ## 目前已知、但**未修**的问题
 
 体检脚本覆盖不到这些；它们需要人判断，所以留在这里而不是塞进自动检查。
+**修好的行留在表里并标"已修"** —— 这一节的价值一半在教训，其中一行正是因为没人回头核而多挂了些日子。
 
 | 问题 | 现象 | 为什么没自动修 |
 | --- | --- | --- |
 | 未知 talker 的退出码不一致 | `messages <拼错的wxid>` 退出 0 且 `success:true`；同样输入 `export` 退出 1 | 改退出码会动到 MCP 与脚本的既有契约，应由维护者定 |
 | `whitelist list` / `blacklist list` 空列表 | 只输出一个换行，没有「为空」提示（`--json` 正常） | 纯观感问题 |
-| `dashscopeApiKey` 无法通过 `config set` 写入 | 脚本会读它，但它不在 CLI 可写白名单里；只能给 `--api-key` 或环境变量 | 需要决定是否扩大密钥配置面 |
+| `dashscopeApiKey` **曾**无法通过 `config set` 写入 | 脚本会读它，但它当时不在 `CliConfig` 里 ⇒ `config set` 拒绝、只能手改 config.json | **已修**（`favPassphrase` 是同一轮发现的）：键已声明、加密存储、`config set` 可写；守卫见 `test/config_keys_declared_test.py` |
 | 朋友圈/收藏密钥缺失 | `fav list` 曾把「没配密钥」报成「需 4.x NT 连接」——已修，现在会明确说缺密钥 | — |
 
 ## 相关文档

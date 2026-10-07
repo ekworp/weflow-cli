@@ -36,3 +36,4 @@ Two rules for *claims*, learned from mistakes that shipped:
 - Add an entry to `docs/DECISIONS.md` when a decision affects security, data flow, compatibility, public API, or future implementation direction.
 - Update `CHANGELOG.md` only for user-visible release notes; do not use it as an engineering diary.
 - Keep architecture and operations documentation aligned when a behavior changes their stated contracts.
+- When a change **fixes** something a document lists as a known/unfixed limitation (a "已知未修" table, a "limitations" or "does not exist yet" section), update that list in the same change. Nothing fails if you skip it - which is exactly why it happens: the code side grows a test (`test/config_keys_declared_test.py` is one), and the prose next to it drifts. A stale row there costs a reader a workaround they no longer need.

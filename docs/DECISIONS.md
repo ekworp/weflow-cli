@@ -1403,6 +1403,29 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-093: 一条"已修却没标"的限制行（`dashscopeApiKey`）；文档协议补一条
+
+**Status:** Active（补 D-015 那条"文档要跟源码同步"；含一处**非破坏性验证**的示范）
+
+1. **发现**：`docs/HEALTH-CHECK.md` 的"目前已知、但**未修**的问题"里仍写着
+   "`dashscopeApiKey` 无法通过 `config set` 写入 …… 需要决定是否扩大密钥配置面"。但它**早就修了**：
+   键在 `CliConfig` 里、在 `configurableKeys` 里、也在 `ENCRYPTED_KEYS`（加密存储）里；
+   `test/config_keys_declared_test.py` 这个测试**就是为它建的**；而 `docs/PROJECT_STATE.md` 早写着
+   "Both are settable now"，`README.md` / `OPERATIONS.md` 也都在教用户 `config set dashscopeApiKey`
+   ⇒ **四处口径里有一处没跟上**，而它偏偏是"限制清单"——最容易被读者当成现状的那一处。
+2. **验证方式（值得抄）**：`weflow-cli config set dashscopeApiKey sk-test… --dry-run --json`
+   → `{"success":true,"dryRun":true,"action":"config.set","key":"dashscopeApiKey",…}` ——
+   既证明该键被接受，又因为 `--dry-run` **不落盘**、没碰用户配置。
+3. **修**：那一行改成"**已修** + 守卫测试名"（同一节里另一行早就是这种写法）；该节引言补一句"修好的行留在表里并标注"。
+4. **协议补一条**（`AGENTS.md` 的 Documentation Protocol）：**若某次改动修好了某份文档的"已知未修 / 局限 / 尚未实现"
+   清单里的某一项，必须在同一次改动里更新那张清单** —— 跳过它**不会有任何测试变红**，这正是它会烂的原因：
+   代码那侧会长出测试（`config_keys_declared_test.py` 就是），紧挨着它的散文会漂。
+5. **给用户的可执行结论**：本机语义检索那条线**卡在两步**上（设 `dashscopeApiKey` + 建语义索引；`PROJECT_STATE`
+   记着"这台机器两样都没有"）。补上之前，`search_semantic` 这个工具**根本不会摆给模型**（设计如此，见 D-058 一族）。
+
+**Consequences：** `docs/HEALTH-CHECK.md`（那一行 + 该节引言）、`AGENTS.md`（Documentation Protocol 加一条）、本条目。
+无代码改动、无 CHANGELOG。
+
 ## D-092: 文本模式的 `open()` 必须写明 `encoding=`（已钉住）；判据别把 `Image.open` 当内置 `open`
 
 **Status:** Active（补 D-090；**不是修 bug，是把一条已经普遍执行的规矩钉住**）
