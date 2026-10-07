@@ -99,7 +99,13 @@ prints JSON). Three rules that this project has been bitten by:
   outside GBK (`✓`, an emoji) raises `UnicodeEncodeError` and kills the run. 34 of the 55 scripts call
   `sys.stdout.reconfigure(encoding='utf-8', errors='replace')` in `main()` so both paths behave the same; if you add a
   script you intend to run by hand, do the same. A probe that forgets to set that env var will show you a decoding bug
-  that does not exist in the real path.
+  that does not exist in the real path. **The same variable also hides a real one**: because this environment (and the
+  bridge) export `PYTHONIOENCODING=utf-8`, a by-hand `python scripts/x.py > out.txt` never crashes *here* - but a
+  user's own shell has stdout at the locale encoding (measured with `python -E`: `gbk`, locale cp936), where the first
+  character GBK cannot encode (`✓`, `⚠️`, `⇒`) raises `UnicodeEncodeError` and kills the run. So a
+  "spawn it and see if it crashes" test is a false negative on this machine; `test/script_stdout_encoding_test.py`
+  inspects the sources statically instead, and requires `sys.stdout.reconfigure(encoding='utf-8', errors='replace')`
+  in any script whose stdout literals contain a character GBK cannot encode.
 - **Fail loudly.** Exit non-zero, or return a JSON object whose `success` is false with an `error` string. "No JSON on
   stdout" must never be read as "no results" - that conflation is why `get_todos` distinguishes "no pending todos" from
   "extraction has never been run".

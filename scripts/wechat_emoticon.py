@@ -20,7 +20,13 @@ import glob
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
+
+# 手跑或被重定向时 stdout 走本机编码（Windows 是 GBK）：非 GBK 字符（本文件里的 `✓`）会
+# UnicodeEncodeError、整次输出没了；桥接跑有 PYTHONIOENCODING=utf-8 所以看不出来。
+# 这条让两条路的输出一致（同 docs/EXTENDING.md Recipe E，守它的测试是 test/script_stdout_encoding_test.py）。
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 try:
     from cryptography.hazmat.primitives import padding

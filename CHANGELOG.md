@@ -19,6 +19,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Two scripts crashed when their output was redirected or piped, and the crash was invisible from inside this
+  repository.** `scripts/quality_eval.py` prints `⚠️` and `scripts/wechat_emoticon.py` prints `✓`; with stdout at the
+  locale encoding - which is what a by-hand `python scripts/x.py > out.txt` gets on a Chinese Windows console - the
+  first character GBK cannot encode raises `UnicodeEncodeError` and the run dies with exit code 1. Nothing here saw it
+  because this environment and the bridge both export `PYTHONIOENCODING=utf-8`; the reproducer only appears under
+  `python -E` (measured: `sys.stdout.encoding` becomes `gbk`, locale cp936). Both scripts now call
+  `sys.stdout.reconfigure(encoding='utf-8', errors='replace')`, like the 39 others already did, so their output no
+  longer depends on the caller's environment. `test/script_stdout_encoding_test.py` guards the rule statically (AST,
+  not a subprocess run - a spawn-based test is a false negative on this machine) and carries its own controls
+  (`DECISIONS.md` D-090).
+
+
+
 - **`contact-schema` can now read contacts as well as rooms - `--contacts` - and the flags it declares are now guarded.**
   The command has always decoded only *verified* fields; three more were verified in the schema work, so they now have an
   outlet instead of living only in the notes: `region` (country/region code, ISO 3166-1 alpha-2), `bizType` (equal to the

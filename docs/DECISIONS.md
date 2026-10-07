@@ -1403,6 +1403,32 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-090: 两个脚本在"重定向"下会崩（已修）；这类 bug 被环境变量盖住，所以守卫必须是静态的
+
+**Status:** Active（补 D-076 / D-089；含一处口径收紧）
+
+1. **把"有风险"收紧成"可证明会崩"**：审计 `scripts/*.py` 时，第一版判据是"会打印中文却没有 `reconfigure`" ⇒
+   **13 个**文件命中；但真正的崩点是"**打出 GBK 编不出来的字符**"（纯中文在 GBK 下只是乱码，不崩）⇒
+   逐字测 GBK 可编码性后只剩 **2 行**：`quality_eval.py` 的 `⚠️`、`wechat_emoticon.py` 的 `✓`。
+   （又一次"先说清数的是什么"——见 AGENTS.md 新加的那条。）
+2. **复现（这一步同时解释了第一次为什么没崩）**：本机与桥接都注入 `PYTHONIOENCODING=utf-8`，
+   于是 `python scripts/x.py > out.txt` **在这里永远不崩**；用 `python -E`（忽略 PYTHON* 变量）才看得见真实处境：
+   重定向时 `sys.stdout.encoding = gbk`（locale cp936），`print('✓')` →
+   `UnicodeEncodeError: 'gbk' codec can't encode character '✓'`、**退出码 1**。
+   ⇒ **同一个变量既会伪造 bug（D-076 那条），也会掩盖 bug（这条）**。
+3. **修法**：给这两个脚本加模块级 `sys.stdout.reconfigure(encoding='utf-8', errors='replace')`
+   （`wechat_emoticon.py` 顺带补 `import sys`），与已在这么做的 39 个脚本一致 ⇒
+   **脚本不再依赖调用方有没有设环境变量**（这正是 Recipe E 的原话）。
+4. **守卫写成静态的（这是本条的重点）**：新增 `test/script_stdout_encoding_test.py`，
+   用 `ast` 查"stdout 字面量里有没有 GBK 编不出的字符 ∧ 文件里有没有 `reconfigure`"，**不 spawn 子进程** ——
+   因为 spawn 版本在本机是**假阴性**（见 2）。它自带 4 条正对照（该报的报、纯 ASCII 与纯中文不报、
+   有 reconfigure 就不报、反"空扫"的计数下限），CI 的 `unittest discover -s test -p '*_test.py'` 自动收。
+   **先跑红（精确报出那两行）再修**，修完全绿（Python 全量 834 条）。
+5. **`docs/EXTENDING.md` Recipe E** 补了这条两面性，并指向新测试。
+
+**Consequences：** `scripts/quality_eval.py`、`scripts/wechat_emoticon.py`（各加一行 reconfigure）、
+`test/script_stdout_encoding_test.py`（新）、`docs/EXTENDING.md`、CHANGELOG 一条（**崩溃修复算用户可见**）。
+
 ## D-089: 负结论必须配"写进脚本"的正对照（同族错误第三次）；`contact` 的群行；`#2` 与会话
 
 **Status:** Active（规则升级到 `AGENTS.md`；补 D-076 / D-087）

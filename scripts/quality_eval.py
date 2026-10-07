@@ -44,6 +44,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import TOPICS, RELEVANCE_NAMES  # noqa: E402
 from jev_client import create_client  # noqa: E402
 
+# 手跑或被重定向时 stdout 走本机编码（Windows 是 GBK）：非 GBK 字符（本文件里的 `⚠️`）会
+# UnicodeEncodeError、整次输出没了；桥接跑有 PYTHONIOENCODING=utf-8 所以看不出来。
+# 这条让两条路的输出一致（同 docs/EXTENDING.md Recipe E，守它的测试是 test/script_stdout_encoding_test.py）。
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 TZ = timezone(timedelta(hours=8))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAILY_ROOT = os.path.join(ROOT, 'output', 'biz-daily')
