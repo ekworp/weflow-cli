@@ -19,6 +19,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **A third field is pinned down: `#41` is the row's last-updated time; `#43` turns out not to be an id.** `#41` holds
+  epoch seconds in 691 rows (127 of them an explicit 0), correlates with `contact.id` at **Spearman 0.945** with no
+  duplicate values among the 564 non-zero rows, and - decisively - **40 rows carry ids below 1500 together with 2025/2026
+  timestamps**, which no "creation time" could produce. So it reads as "this row was updated", with most rows never
+  updated (which is why the correlation is high but not 1). That is a local inference, not a vendor name: none of the
+  22 columns can hold a time. `#43`'s old description ("a 22-byte id-like value") is wrong - decoding its interior
+  gives a small structure with only **10 variants**, the largest covering 448 of 628 rows, so it looks like a set of
+  capability/scope codes rather than an opaque id. Two negatives ship with them: none of the twelve small varint
+  fields is determined by the row-level attributes tried (account class, `local_type`, `flag`, `verify_flag`,
+  `is_in_chat_room`, `chat_room_type`, `chat_room_notify`, presence of `encrypt_username`), and my own first pass at
+  that scan was flawed because it included a *constant* attribute as a candidate discriminator - which "determines"
+  every field and says nothing (`DECISIONS.md` D-084, `docs/CONTACT_DB_SCHEMA.md` §7).
+
+
+
 - **Two more entries in the value-domain table, one positive and one negative.** Verified: `#10 = 0` and `#11 = 0` are
   *the same 129 rows* (811 / 129 with no off-diagonal), so they share one "unset" state and must not be read as two
   independent flags. Refuted: `#19`'s 0-10 count-like values are not "the number of repeats of some sub-field" - the
