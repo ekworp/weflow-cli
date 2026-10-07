@@ -1689,11 +1689,16 @@ syncCmd
 // 顶层 `#3`/`#4` 的语义在本机被三次证伪（不是成员 id / 房间 id / 消息侧 id），所以脚本把它们
 // 原样放进 `unrecognized`，**不猜名字** —— 拿猜出来的名字写逻辑，就是拿不确定当事实。
 // 结构笔记见 `docs/CONTACT_DB_SCHEMA.md`，取舍见 D-067 / D-068 / D-070。
+//
+// `--contacts`（2026-10-07 加）：同一个命令改读**联系人**的 `contact.extra_buffer`，输出这一轮验证的
+// 三个字段 —— `#5` 国家/地区码（ISO 3166-1 alpha-2）、`#13` = 该行 `biz_info.type`、`#41` = 资料最近更新时间。
+// `#4`/`#9` 已定性为"账号自身资料文本的汇集"，是**内容**不是字段名，**故意不打印**（见 D-088）。
 program
   .command('contact-schema')
-  .description('读 contact.db 的群 ext_buffer：成员（含 status/inviter）与 #5（= status 位11 的成员 id）—— 只解已验证字段，未识别的原样标注（本地、只读）')
-  .option('-n, --limit <n>', '最多看几个群', '20')
-  .option('--room <which>', '只看某个群（username 或 id）')
+  .description('读 contact.db 的 ext_buffer：默认读群（成员 + #5）；--contacts 读联系人（#5 地区码 / #13 服务类型 / #41 更新时间）—— 只解已验证字段，未识别的原样标注（本地、只读）')
+  .option('-n, --limit <n>', '最多看几个（群 / 联系人）', '20')
+  .option('--room <which>', '只看某个（群 / 联系人 的 username 或 id）')
+  .option('--contacts', '改读联系人的 extra_buffer，而不是群')
   .option('--json', '输出机器可读结果')
   .action(async (opts) => {
     const { execFile } = await import('child_process')
@@ -1703,6 +1708,7 @@ program
     const limit = parseCliInteger(opts.limit, 'limit', 1, 100000, !!opts.json)
     const args = [script, '--limit', String(limit),
                   ...(opts.room ? ['--room', opts.room] : []),
+                  ...(opts.contacts ? ['--contacts'] : []),
                   ...(opts.json ? ['--json'] : [])]
     try {
       const { stdout, stderr } = await execFileAsync(getPythonCommand(), args, {

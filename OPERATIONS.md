@@ -69,6 +69,7 @@ weflow-cli config show
 weflow-cli sessions -n 10
 weflow-cli contacts -k "关键词"
 weflow-cli contact-schema -n 3                 # 读群 ext_buffer 里**已验证**的字段（成员/status/inviter）
+weflow-cli contact-schema --contacts -n 5      # 改看联系人：地区码 / 服务类型 / 资料更新时间（#4/#9 是账号资料文本，不打印）
 weflow-cli messages "联系人A" -n 10
 ```
 

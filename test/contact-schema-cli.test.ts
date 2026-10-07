@@ -55,3 +55,42 @@ test('这个命令不接受 --key/--salt：密钥只从配置读，不进 argv',
   const block = src.slice(at, src.indexOf('.action(', at))
   assert.ok(!/--key|--salt/.test(block), '不许把库密钥做成命令行参数（进程列表可见）')
 })
+
+/** contact-schema 那段源码（从 `.command(` 到下一个 `program.command(` 之前） */
+function contactSchemaBlock(src: string): string {
+  const at = src.indexOf(".command('contact-schema')")
+  const end = src.indexOf(".command('", at + 1)
+  return src.slice(at, end > at ? end : src.length)
+}
+
+test('声明了的每个旗标都必须真的转发给脚本 —— 漏转发会静默按默认模式跑', () => {
+  // 这条守的是**跨语言那一步**：旗标在 TS 里声明、在 Python 里解析，中间的转发是手写的。
+  // 少写一行 `--contacts`，命令行不报错、脚本也不会说"我没收到" —— 它会安安静静地去读群，
+  // 而调用方以为拿到的是联系人。`--room` 当初也是这么手写转发的（同样的裸奔）。
+  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const block = contactSchemaBlock(src)
+  assert.ok(block.length > 0, '定位不到 contact-schema 的命令块（改名了？）')
+  const declared = [...block.matchAll(/\.option\('([^']+)'/g)]
+    .map((m) => m[1].split(',').pop()!.trim().split(/\s+/)[0])
+  assert.ok(declared.includes('--contacts'),
+    `这个命令现在声明了 ${declared.join(' / ')}；--contacts 不见了？`)
+  // 只看 `.action(` **之后**的片段：声明处自己也有那个字符串，用 indexOf 会比到声明处去
+  const action = block.slice(block.indexOf('.action('))
+  assert.ok(action.length > 0, '定位不到 action 体（结构变了？）')
+  for (const flag of declared) {
+    assert.ok(action.includes(`'${flag}'`),
+      `${flag} 声明了但没在 action 里转发给脚本 —— 命令会静默跑成默认模式`)
+  }
+})
+
+test('--contacts 是命令行认得的旗标（不是被 commander 拒掉的死开关）', () => {
+  withHome((home) => {
+    const r = runCli(home, ['contact-schema', '--contacts', '--limit', '1', '--json'])
+    const start = r.stdout.indexOf('{')
+    assert.ok(start >= 0, `该有 JSON 输出，实际 stdout=${r.stdout.slice(0, 200)} stderr=${r.stderr.slice(0, 200)}`)
+    const body = JSON.parse(r.stdout.slice(start))
+    assert.equal(body.success, false)
+    assert.equal(body.code, 'CONTACT_SCHEMA_FAILED', '临时 HOME 下没有配置，脚本失败是预期的')
+    assert.ok(!/unknown option/i.test(r.stdout + r.stderr), '--contacts 没被声明，成了死开关')
+  })
+})

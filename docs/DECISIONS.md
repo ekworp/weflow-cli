@@ -1403,6 +1403,33 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-088: `contact-schema --contacts`：把 `contact.extra_buffer` 那三个已验证字段做成出口（并说明为什么不输出 `#4`/`#9`）
+
+**Status:** Active（**取代 D-081 里"代码这边不用动"那句**）
+
+1. **为什么改主意**：D-081 当时写的是"没有任何代码读 `contact.extra_buffer` 的字段 ⇒ 这次命名只进文档，不进实现" ——
+   那是**命名只有一个字段时**的取舍。到 D-084 已经有三个字段被验证（`#5` 地区码、`#13` = `biz_info.type`、
+   `#41` = 资料最近更新时间），再让它们只躺在文档里，就成了"**库里有值而工具不说**"。⇒ 加 `--contacts` 放出来。
+2. **放出来的三个**（与文档同一口径）：`region`（`#5`，**只在"恰好两个大写字母"时给**，否则留空、原值仍以长度留在 `unrecognized`）、
+   `bizType`（`#13`）、`updatedAt`（`#41`；**`0` 按"显式未设置"处理，不当 1970**）。
+3. **故意不输出的**（写进代码注释与测试，免得后人以为是漏了）：
+   - **`#4`/`#9`**：已定性为"该账号自身资料文本的汇集"（含主体名/菜单按钮名）—— 它是**内容不是字段名**，
+     打进 CLI 输出等于把账号资料漏出去 ⇒ 只以**长度**出现在 `unrecognized` 里；测试**断言内容不在输出里**。
+   - OpenIM 那 44 行的小形状：只报 `kind='openim'`，不套联系人那三个字段、也不输出它的 `#1`/`#2`。
+   - 其余 30 来个字段：未定名 ⇒ 原样进 `unrecognized`（**D-068 不变**）。
+4. **顺手补的一条守卫（这才是本轮"需要修复"的那处）**：TS 层是**手写转发旗标**的，而此前**没有任何测试守它** ——
+   少写一行 `--contacts`，`commander` 照样接受、脚本照样跑，**只是安静地去读了群**（错的是"读什么"，不是"报错"）。
+   `test/contact-schema-cli.test.ts` 现在加两条：①**声明了 `.option(...)` 的每个旗标都必须在 `.action(` 之后的片段里
+   被转发**（通用断言，以后新加旗标一样生效；**已做变异检查**：把转发改成 `[]` 立刻变红）；
+   ②`--contacts` 必须是命令行认得的旗标（不是被 commander 拒掉的死开关，判据是"同样走到脚本再失败"）。
+   判据写清楚：**旗标声明在 TS、解析在 Python，中间那一步是手写的，所以它必须被测试盯住**。
+
+**Consequences：** `scripts/contact_schema.py`（`decode_contact` / `load_contacts` / `--contacts`）、
+`bin/weflow-cli.ts`（声明 + 转发）、`test/contact_schema_test.py`（6 条合成测试，含"内容不出现在输出里"）、
+`test/contact-schema-cli.test.ts`（2 条新的守卫测试）、`docs/CONTACT_DB_SCHEMA.md` §5、`OPERATIONS.md` §3、
+`docs/PROJECT_STATE.md`（测试数 856 → 860、入口清单加一条）、`docs/EXTENDING.md`（守卫表加一行）同步。
+**测试数**：`npm test` 858 → **860**（新增 2 条 TS）；Python 单测该文件 4 → **10** 条。
+
 ## D-087: blob 内部两两扫描：真结果三条 + "决定"的三类平凡形态
 
 **Status:** Active（补 D-082 / D-086；方法更正为主）

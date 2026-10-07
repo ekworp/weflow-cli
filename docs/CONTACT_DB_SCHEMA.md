@@ -350,7 +350,14 @@ hexKey。修对之后 24/24 全能打开 —— 这类"打不开"要先怀疑自
 ```
 weflow-cli contact-schema -n 3           # 看 3 个群
 weflow-cli contact-schema --json         # 机器可读
+weflow-cli contact-schema --contacts -n 5 # 改看**联系人**的 extra_buffer（见下）
 ```
+
+**联系人那条（`--contacts`，2026-10-07 加）**：同一个命令读 `contact.extra_buffer`，输出**同样只限已验证**的三个字段 ——
+`region`（`#5` 国家/地区码，只在"恰好两个大写字母"时给）、`bizType`（`#13` = `biz_info.type`）、
+`updatedAt`（`#41` 资料最近更新时间，`0` 当未设置）。**故意不打印 `#4`/`#9`**：它们是
+"该账号自身资料文本的汇集"（含主体名/菜单按钮名），**是内容不是字段名**，只以长度出现在 `unrecognized` 里；
+OpenIM 那 44 行的小形状只报 `kind='openim'`；其余字段未定名，原样进 `unrecognized`（取舍见 D-068 / D-088）。
 
 两条边界写死在实现里（见 D-068）：
 

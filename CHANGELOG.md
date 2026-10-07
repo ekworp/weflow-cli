@@ -19,6 +19,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`contact-schema` can now read contacts as well as rooms - `--contacts` - and the flags it declares are now guarded.**
+  The command has always decoded only *verified* fields; three more were verified in the schema work, so they now have an
+  outlet instead of living only in the notes: `region` (country/region code, ISO 3166-1 alpha-2), `bizType` (equal to the
+  row's `biz_info.type`) and `updatedAt` (the row's last-updated epoch seconds, with `0` treated as "unset" rather than
+  1970). Two things are deliberately **not** printed: `#4`/`#9` are a digest of the account's own profile text - content,
+  not a field name - so they appear only as a length inside `unrecognized` (a test asserts the text itself never reaches
+  the output), and the 44-row OpenIM shape is reported as `kind: 'openim'` without decoding its fields. Separately, an
+  audit found a real hole next to it: the TS layer declares flags and forwards them **by hand**, and nothing tested that
+  step - a dropped `--contacts` would be accepted by the CLI and silently read *rooms* instead. `test/contact-schema-cli.test.ts`
+  now asserts that every declared option is forwarded inside the action (verified by mutation: replacing the forwarding
+  with `[]` turns it red) and that `--contacts` is a flag the CLI actually accepts. `npm test`: 858 -> 860
+  (`DECISIONS.md` D-088).
+
+
+
 - **A pairwise sweep inside the blob: three real results and three trivial ways to fake one.** Asking "does field A's value
   determine field B's" across the 940-row main proto gave 398 "determinations" before filtering and 16 after - the
   difference being three degenerate shapes that all make the relation vacuous: A constant, **B constant** (the first

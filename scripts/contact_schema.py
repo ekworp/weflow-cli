@@ -14,15 +14,28 @@
       #5 (重复) = 成员里 **status 位 11 置位**的那批 id（本机 77/77 与该集合完全相等；
                  它**不是**"额外的参与者"——早前那么叫是错的，见 DECISIONS D-070）
 
+联系人模式（`--contacts`）：读 `contact.extra_buffer` —— 同样只输出**已验证**的字段：
+
+    #5  (ld)     国家/地区代码（ISO 3166-1 alpha-2）—— 本机 25/25 落在码表、众数 CN 占 94%
+    #13 (varint) = 该行 `biz_info.type`（账号服务类型）—— 本机 687/687 逐行相等
+    #41 (varint) = 该行资料的"最近更新时间"（epoch 秒；0 表示显式未设置，按缺省处理）
+
+**故意不输出** `#4`/`#9`：它们已定性为"该账号自身资料文本的汇集"（含主体名/菜单按钮名），
+是**内容不是字段名**，打进 CLI 输出等于把账号资料漏出去 —— 它们只以长度出现在 `unrecognized` 里。
+其余字段未定名，一律原样进 `unrecognized`（键就是字段号）。取舍见 D-068 / D-082 / D-084 / D-088。
+
 用法：
     python scripts/contact_schema.py --json
     python scripts/contact_schema.py --limit 5            # 只看前 5 个群
     python scripts/contact_schema.py --room <群 username 或 id>
+    python scripts/contact_schema.py --contacts --limit 5 # 改看联系人（#5 地区码 / #13 服务类型 / #41 更新时间）
 """
 import argparse
 import json
 import os
+import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -122,6 +135,55 @@ def decode_room(blob):
     return {'members': members, 'statusBit11Ids': extra_ids, 'unrecognized': unrecognized}
 
 
+# `contact.extra_buffer` 的 `#5` 只在它是"恰好两个大写 ASCII 字母"时才当地区码输出。
+REGION_RE = re.compile(r'^[A-Z]{2}$')
+
+
+def decode_contact(blob):
+    """解 `contact.extra_buffer` 里**已经验证过**的那几个字段；解不动就抛错。
+
+    只解"验证过的"（D-068 / D-082 / D-084），三个：
+
+      #5  (ld) 国家/地区代码（ISO 3166-1 alpha-2）—— 本机 25/25 落在码表、众数 CN 占 94%
+      #13 (varint) = 该行 `biz_info.type`（账号服务类型）—— 本机 687/687 逐行相等
+      #41 (varint) epoch 秒 = 该行资料的"最近更新时间"—— 0 表示显式未设置，按缺省处理
+
+    **故意不输出的**（说清楚，免得后人以为是漏了）：
+
+      - `#4` / `#9`：已定性为"该账号自身资料文本的汇集"（含主体名/菜单按钮名），它是**内容不是字段名** ——
+        塞进 CLI 输出等于把账号资料漏出去。它们在 `unrecognized` 里**只留长度**。
+      - 顶层 `#1`/`#2` 那一族（`contact.extra_buffer` 里 44 行的 OpenIM 小形状）：只报 `kind='openim'`，
+        其余按键原样放进 `unrecognized`。那两键在文档里是 openim 库的外键，对"读联系人"没用。
+      - 其余 30 来个字段：**语义未定，一律原样进 `unrecognized`**，键就是字段号（同 `decode_room`）。
+    """
+    fields = {}
+    for fno, wt, value in walk(blob):
+        fields.setdefault(fno, (wt, value))
+    if not fields:
+        return {'kind': None, 'region': None, 'bizType': None, 'updatedAt': None,
+                'unrecognized': {}}
+    raw = {'%d' % fno: (len(v) if wt == 2 else v) for fno, (wt, v) in fields.items()}
+    # 小形状（字段号全 <= 9 且有 #1）= OpenIM 那一族；大 proto 的字段号能到 38/41/43
+    if max(fields) <= 9 and 1 in fields:
+        return {'kind': 'openim', 'region': None, 'bizType': None, 'updatedAt': None,
+                'unrecognized': raw}
+
+    out = {'kind': 'contact', 'region': None, 'bizType': None, 'updatedAt': None,
+           'unrecognized': raw}
+    wt5, v5 = fields.get(5, (None, None))
+    if wt5 == 2 and isinstance(v5, bytes):
+        text = _text(v5)
+        if text and REGION_RE.match(text):
+            out['region'] = text
+    wt13, v13 = fields.get(13, (None, None))
+    if wt13 == 0:
+        out['bizType'] = v13
+    wt41, v41 = fields.get(41, (None, None))
+    if wt41 == 0 and v41:  # 0 = 显式"未设置"，不是 1970 年
+        out['updatedAt'] = v41
+    return out
+
+
 def load_rows(args):
     from _utils import get_db_config  # noqa: E402
     from nt_decrypt import require_sqlcipher  # noqa: E402
@@ -150,10 +212,41 @@ def load_rows(args):
     return rows
 
 
+def load_contacts(args):
+    from _utils import get_db_config  # noqa: E402
+    from nt_decrypt import require_sqlcipher  # noqa: E402
+
+    cfg = get_db_config()
+    db = args.db or cfg['contact_db']
+    key = args.key or cfg['contact_key']
+    salt = args.salt or cfg['contact_salt']
+    if not db or not os.path.isfile(db):
+        raise SystemExit('找不到 contact 库：%s' % (db or '(未配置)'))
+    if not key or not salt:
+        raise SystemExit('缺少库密钥（先跑 weflow-cli init，或显式给 --key/--salt）')
+    conn = require_sqlcipher().connect(db)
+    cur = conn.cursor()
+    cur.execute('PRAGMA key = "x\'%s%s\'";' % (key, salt))
+    sql = ('SELECT id, username, local_type, extra_buffer FROM contact '
+           'WHERE extra_buffer IS NOT NULL AND length(extra_buffer) > 0')
+    params = []
+    if args.room:
+        sql += ' AND (username = ? OR id = ?)'
+        params = [args.room, args.room]
+    sql += ' ORDER BY id LIMIT ?'
+    params.append(args.limit)
+    rows = cur.execute(sql, params).fetchall()
+    conn.close()
+    return rows
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description='读 contact.db 的群 ext_buffer（只读，不联网、不调模型）')
-    ap.add_argument('--limit', type=int, default=20, help='最多看几个群（默认 20）')
-    ap.add_argument('--room', help='只看某个群（username 或 id）')
+    ap = argparse.ArgumentParser(
+        description='读 contact.db 的 ext_buffer（只读，不联网、不调模型）：默认读**群**，--contacts 改读**联系人**')
+    ap.add_argument('--limit', type=int, default=20, help='最多看几个（群 / 联系人，默认 20）')
+    ap.add_argument('--room', help='只看某个（群 / 联系人 的 username 或 id）')
+    ap.add_argument('--contacts', action='store_true',
+                    help='改读联系人的 extra_buffer（#5 地区码 / #13 服务类型 / #41 资料更新时间），而不是群')
     ap.add_argument('--db', help='contact.db 路径（默认取配置）')
     ap.add_argument('--key', help='库密钥（默认取配置）')
     ap.add_argument('--salt', help='库盐（默认取配置）')
@@ -161,7 +254,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     try:
-        rows = load_rows(args)
+        rows = load_contacts(args) if args.contacts else load_rows(args)
     except SystemExit:
         raise
     except Exception as exc:
@@ -170,6 +263,39 @@ def main(argv=None):
         else:
             print('读库失败：%s' % str(exc)[:200], file=sys.stderr)
         return 1
+
+    if args.contacts:
+        contacts = []
+        failures = []
+        for rid, username, local_type, blob in rows:
+            try:
+                decoded = decode_contact(bytes(blob))
+            except Exception as exc:
+                # 同群那条：解不动就说解不动，不返回一条"什么都没有"的联系人
+                failures.append({'id': rid, 'username': username, 'error': str(exc)[:80]})
+                continue
+            contacts.append({'id': rid, 'username': username, 'localType': local_type,
+                             'kind': decoded['kind'], 'region': decoded['region'],
+                             'bizType': decoded['bizType'], 'updatedAt': decoded['updatedAt'],
+                             'unrecognized': decoded['unrecognized']})
+        if args.json:
+            print(json.dumps({'success': True, 'action': 'contact-schema',
+                              'contacts': contacts, 'failures': failures,
+                              'readsLocalData': True, 'invokesAI': False,
+                              'sendsNothing': True}, ensure_ascii=False))
+        else:
+            print('看了 %d 个联系人；解不动 %d 个' % (len(contacts), len(failures)))
+            print('（只输出已验证字段：#5 地区码 / #13 服务类型 / #41 资料更新时间；'
+                  '#4/#9 是账号资料文本，属内容，不打印，只在"未识别"里留长度）')
+            for c in contacts:
+                when = time.strftime('%Y-%m-%d', time.gmtime(c['updatedAt'])) if c['updatedAt'] else '-'
+                print('  %-28s local_type=%-3s kind=%-8s 地区=%-3s 服务类型=%-4s 更新=%-11s 未识别 %d 个'
+                      % (c['username'], c['localType'], c['kind'], c['region'] or '-',
+                         c['bizType'] if c['bizType'] is not None else '-', when,
+                         len(c['unrecognized'])))
+            for f in failures:
+                print('解不动: id=%s %s' % (f['id'], f['error']), file=sys.stderr)
+        return 0
 
     rooms = []
     failures = []

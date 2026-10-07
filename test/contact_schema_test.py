@@ -12,6 +12,7 @@ import os
 import sys
 import unittest
 
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
 import contact_schema as cs  # noqa: E402
 
@@ -86,6 +87,62 @@ class ContactSchemaTest(unittest.TestCase):
         # 空 blob = 真的没有内容；调用方按 length>0 过滤，走到这里也应当如实返回空
         got = cs.decode_room(b'')
         self.assertEqual(got['members'], [])
+        self.assertEqual(got['unrecognized'], {})
+
+
+class ContactExtraBufferTest(unittest.TestCase):
+    """`contact.extra_buffer` 那条（`decode_contact`）：只出**已验证**的三个字段，
+    且**账号资料文本（`#4`/`#9`）的内容绝不出现在输出里** —— 它们只以长度进 `unrecognized`。"""
+
+    def test_decodes_verified_fields_and_keeps_profile_text_out_of_the_output(self):
+        # #4/#9 是"该账号自身资料文本的汇集"（含主体名/菜单名）：**只留长度，不留内容**
+        blob = (enc_bytes(4, '某某公司的官方账号'.encode())
+                + enc_bytes(5, b'CN') + enc_bytes(9, '客服电话：'.encode())
+                + enc_int(8, 247) + enc_int(13, 1) + enc_int(41, 1716595152))
+        got = cs.decode_contact(blob)
+        self.assertEqual(got['kind'], 'contact')
+        self.assertEqual(got['region'], 'CN')
+        self.assertEqual(got['bizType'], 1)
+        self.assertEqual(got['updatedAt'], 1716595152)
+        # 未定名字段原样保留，键是字段号（#8 是 varint 所以留值）
+        self.assertEqual(got['unrecognized']['8'], 247)
+        # #4/#9 **只有长度**：把内容带出去就是把账号资料漏出去
+        self.assertEqual(got['unrecognized']['4'], len('某某公司的官方账号'.encode()))
+        self.assertEqual(got['unrecognized']['9'], len('客服电话：'.encode()))
+        self.assertNotIn('某某公司', repr(got))
+
+    def test_region_only_when_two_uppercase_letters(self):
+        # 形态不符就**不认**（宁可不出，也不出一个像地区码的字符串）
+        for raw in (b'cn', b'CHN', b'C1', b'', b'C '):
+            got = cs.decode_contact(enc_bytes(5, raw) + enc_int(38, 1))
+            self.assertIsNone(got['region'], msg='不该把 %r 当地区码' % raw)
+        # 但原值仍以长度留在 unrecognized 里（没丢线索）
+        got = cs.decode_contact(enc_bytes(5, b'cn') + enc_int(38, 1))
+        self.assertEqual(got['unrecognized']['5'], 2)
+
+    def test_epoch_zero_is_unset_not_1970(self):
+        # #41 = 0 是**显式"未设置"**，不是"1970-01-01 发生过什么"
+        got = cs.decode_contact(enc_bytes(5, b'CN') + enc_int(41, 0))
+        self.assertIsNone(got['updatedAt'])
+
+    def test_openim_small_shape_is_not_read_as_a_contact(self):
+        # 列里第二型（44 行的 OpenIM 小形状）：只报 kind，不去套联系人那三个字段
+        got = cs.decode_contact(enc_bytes(1, b'app') + enc_bytes(2, b'wording'))
+        self.assertEqual(got['kind'], 'openim')
+        self.assertIsNone(got['region'])
+        self.assertIsNone(got['bizType'])
+        self.assertIsNone(got['updatedAt'])
+        # 大 proto 的"残行"（只有 #10）仍按联系人解 —— 边界钉在这儿
+        self.assertEqual(cs.decode_contact(enc_int(10, 4294967295))['kind'], 'contact')
+
+    def test_contact_broken_blob_raises_instead_of_looking_empty(self):
+        for bad in (b'\x0a\x05ab', b'\x0a\xff', b'\x0b'):
+            with self.assertRaises(Exception, msg='坏 blob 必须报错：%r' % bad):
+                cs.decode_contact(bad)
+
+    def test_contact_empty_blob_is_empty_not_an_error(self):
+        got = cs.decode_contact(b'')
+        self.assertIsNone(got['kind'])
         self.assertEqual(got['unrecognized'], {})
 
 
