@@ -1403,6 +1403,25 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-095: `#19` 的第三、第四族解释也被否；平凡命中已数到五种，筛子要写进判据函数
+
+**Status:** Active（补 D-087；本轮的价值全在**否证**与一条方法）
+
+1. **`#19`（0~10）又否掉两族**：①用"同一个号在 `biz_message_0.db` 里的 `Msg_` 表行数"（本地文章数）比 —— 只对上 6 行；
+   ②与 `type` / `child_type` / `VerifyBizType` 这些**分类**字段交叉 —— 都不确定。
+   加上 D-083 否掉的"菜单按钮数"与"子字段重复条数"，**一共四族**。
+   ⚠️ 但它现在的分布值得记：**0 占 667、1~10 各 20~37（平坦）** ⇒ **不像计数（计数会衰减），像枚举/序号**。
+2. **两轮宽扫都判负**（写进文档，省后人重跑）：把十个小字段与"同行 biz 元数据里的十来种计数"逐个比 —— 无一对上；
+   与"253 个非 biz 行才有的特征"（类别/`local_type`/加密名/是否会话/是否在 `chat_room`/有无那个 URL）交叉 ——
+   没有任何"某取值下恒定"。**`#2/#12/#17/#22/#24` 在 biz 行上非零行为 0**（D-087），所以"用 biz 计数测它们"天然无效。
+3. **平凡命中数到五种，于是规则升级**：①A 常量 ②B 常量 ③A 取值近乎唯一 ④**双方同时为 0**（第四种本轮才遇到：
+   `#2=0` 与"小程序条目数=0"⇒ 假 676/688）⑤**筛子只写在调用方** —— 第四种的教训刚写进文档，
+   **我新写的脚本就再犯了一次**（`RegisterSource` 那列整列不存在 ⇒ B 恒为常量 ⇒ 报"完全确定"）。
+   ⇒ 结论写进 `AGENTS.md`：**排除常量的判断要写在判据函数内部**，不能指望每次调用时记得。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` §7（`#19` 那行补四族否证与"平坦分布"的观察；新增"两轮宽扫"与
+"平凡命中五种形态"两块）、`AGENTS.md`（Verification 那条补"筛子写进函数里"）。无代码改动、无 CHANGELOG。
+
 ## D-094: 全量集成核对揪出 `--contacts` 的分类缺陷；库是活的，判解码对不对要看逐行关系
 
 **Status:** Active（补 D-088；一条口径修正 + 一条方法）
