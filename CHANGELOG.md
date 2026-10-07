@@ -19,6 +19,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **"It parses" is not "it is a message" - and two earlier notes are corrected by that.** Walking every
+  length-delimited field one level deeper shows that *text* fields parse too (`#4`, `#5`, `#9` "walk" in 294, 252 and
+  393 of 940 rows because random bytes form legal tags), so the test is not parseability but **whether the shape
+  repeats across the whole set**: `#14` is identical in **830/830** rows (`{#1: 0/1, #2: 13 bytes}`) and `#27` in
+  **937/937** (`{#1, #2: an 84-141 byte text, #3, #4, #5: a mask}`), while `#6` (555/940) and `#7` (473/940) fall
+  short - so the standing line "`#6`/`#7` walk as nested messages" does not hold. Also mapped: `#33`/`#36`/`#15`/`#20`/
+  `#21`/`#28` (and most `#26`) are **empty shells** whose presence is the information, which is consistent with the
+  group of fields that always co-occur (`DECISIONS.md` D-085, `docs/CONTACT_DB_SCHEMA.md` §7).
+
+
+
 - **A third field is pinned down: `#41` is the row's last-updated time; `#43` turns out not to be an id.** `#41` holds
   epoch seconds in 691 rows (127 of them an explicit 0), correlates with `contact.id` at **Spearman 0.945** with no
   duplicate values among the 564 non-zero rows, and - decisively - **40 rows carry ids below 1500 together with 2025/2026
