@@ -71,8 +71,8 @@ interactive menu - `showInteractiveMenu()` plus the `switch (action)` that maps 
 
 `test/cli-menu.test.ts` keeps those in sync: menu entries and `switch` cases must match **in both directions**, and
 every `runCmd('x')` / `runSubCmd('p','c')` the menu calls must name a command that actually exists (that test asks the
-CLI's own `--help`, because the source cannot tell top-level commands from subcommands - 99 `.command('...')` call sites
-as of 2026-09-28, against however many real commands `--help` reports). This matters because both failure modes are silent: a menu entry with no `case` does nothing
+CLI's own `--help`, because the source cannot tell top-level commands from subcommands - 114 `.command('...')` call sites
+as of 2026-10-07, against however many real commands `--help` reports). This matters because both failure modes are silent: a menu entry with no `case` does nothing
 when picked, and `runCmd` is written as `if (cmd) await ...`, so a renamed command makes the entry do nothing too.
 
 Two conventions that hold across the command surface: every command that a script or an AI might drive has a `--json`
@@ -98,7 +98,9 @@ prints JSON). Three rules that this project has been bitten by:
   gives a **GBK** stdout: Chinese comes out as GBK bytes (mojibake if you were expecting UTF-8) and a character
   outside GBK (`✓`, an emoji) raises `UnicodeEncodeError` and kills the run. 34 of the 55 scripts call
   `sys.stdout.reconfigure(encoding='utf-8', errors='replace')` in `main()` so both paths behave the same; if you add a
-  script you intend to run by hand, do the same. A probe that forgets to set that env var will show you a decoding bug
+  script you intend to run by hand, do the same - and note this is no longer advice: `test/script_stdout_encoding_test.py`
+  fails any script that prints a character GBK cannot encode without calling it (40 of the 60 scripts call it as of
+  2026-10-07; the rest print nothing that GBK cannot encode). A probe that forgets to set that env var will show you a decoding bug
   that does not exist in the real path. **The same variable also hides a real one**: because this environment (and the
   bridge) export `PYTHONIOENCODING=utf-8`, a by-hand `python scripts/x.py > out.txt` never crashes *here* - but a
   user's own shell has stdout at the locale encoding (measured with `python -E`: `gbk`, locale cp936), where the first
