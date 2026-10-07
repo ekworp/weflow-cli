@@ -1403,6 +1403,26 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-080: `#4`/`#9` 是"该账号自身资料文本的汇集"；短值/子串命中必须配对照
+
+**Status:** Active（补 D-068 / D-076 / D-079；这是"同对象"纪律第一次**产出正面结果**）
+
+1. **正面结果**：把 `biz_info` 的 `external_info` + `brand_info` 递归展成叶子（16,294 条去重叶子），
+   再看大 proto 的字段里含不含**同一行自己的**叶子。**本行 336 vs 换成下一行 7（48×）** ⇒ 不是撞车。
+   分工：**`#9` ↔ 主体名/认证描述**（`RegisterSource.RegisterBody` 147、`VerifySource.Description` 67）、
+   **`#4` ↔ 菜单按钮名**（`MMBizMenu.button_list[].name` 31 + 子按钮名 21），两者都还含商标名/认证人名。
+   ⇒ **`#4` / `#9` 定性为"该账号自身资料文本的汇集"**（像检索用文本 / 资料摘要）。**这不是名字**，
+   具体的组织形式（拼接 / JSON / 键值堆）**未测**，边界写清楚：包含 ≠ 相等。
+2. **方法（三次误报换来的）**：**子串命中必须配对照**。"本行 vs 换一行"这一个对照就能把撞车筛掉 ——
+   本机 `#5`（2 字节）那 22 条"含菜单值"在对照下**全部消失**；只有 ≥8 字节的叶子才立得住。
+   这与 D-079 的"同对象判据"（防**假阳性**）和 D-077 的"地址口径"（防**假阴性**）是同一族的纪律：
+   **任何"命中"都要能说出一个"不该命中却可能命中"的对照情形**。
+3. 顺带把 `#9` 的"半命名"数字收紧：整值相等 **214** 行（148 归 `RegisterBody`、67 归 `Description`），
+   而 `#4` 整值相等只有 **1** —— 这个不对称说明 `#9` 确实承载主体名，但也再次说明**它只是"有时"**。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §0（`contact.extra_buffer` 行补"`#4`/`#9` 已定性"）、
+§7（`#9` 那条改写为"资料文本汇集"+ 自/他对照 + `#5` 的撞车教训）、§9（新增复跑 18：**必用自/他对照 + 长度门槛**）。
+
 ## D-079: `#3`/`#4` 被三条独立否证围死；而"搜第二份"必须用"同对象"严判据
 
 **Status:** Active（补 D-071 / D-078；含一条**假阳性**教训）

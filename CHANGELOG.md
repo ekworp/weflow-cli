@@ -19,6 +19,20 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Two of the unnamed fields finally have content: they are the account's own profile text, aggregated.** Flattening
+  `biz_info`'s `external_info` and `brand_info` into 16,294 distinct leaves and asking whether a blob field *contains
+  the leaf from its own row* gives **336 same-row hits against 7 next-row hits** - so the containment is real, not
+  coincidence. The split is clean: `#9` carries the subject name and certification description
+  (`RegisterSource.RegisterBody` 147, `VerifySource.Description` 67) while `#4` carries **menu button names**
+  (`MMBizMenu.button_list[].name` 31 plus 21 sub-button names), and both also carry trademark and verifier names. So
+  `#4`/`#9` read as "a digest of this account's own profile strings" - not a name, and containment is not equality.
+  The control is the point: the same query run against the *next row's* leaves is what separates signal from noise, and
+  it is what killed `#5`'s 22 apparent matches (a two-byte value is "contained" in almost anything; only leaves of 8+
+  bytes survive). Hit rates here now come with the counter-rate that could have produced them
+  (`DECISIONS.md` D-080, `docs/CONTACT_DB_SCHEMA.md` §7).
+
+
+
 - **The per-room counter has no second copy anywhere locally, which closes its file from three directions.** A sweep of
   all 24 databases (207,156 rows) for the counter's value or its offset found **0 meaningful hits** - but only after the
   criterion was tightened to "same object": a column counts only if the row it sits in *names that room* (in a
