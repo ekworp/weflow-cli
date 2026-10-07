@@ -19,6 +19,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **A second field is named, and every varint field's value domain is now measured.** `#13` equals that row's
+  `biz_info.type` - **687 of 687 rows, no counterexample**, across all five values - which also explains the standing
+  fact that `#13` appears exactly when `verify_flag != 0` (i.e. when the username is in `biz_info`): the blob simply
+  carries a copy of the account's service type, and non-biz rows have no value to write. The same pass filled a real
+  gap: the notes had "value range unmeasured" next to most varint fields, and measuring them turned up `#10`/`#38` as
+  `0` / `-1` sentinels (`4294967295` is -1 unsigned), `#8` with 23 values shaped like a bitmask, `#12`/`#17`/`#18`/
+  `#22`/`#24` as flags and tiny enums, `#16`/`#23` always 0, `#37` using only bits 8 and 11, and **`#19` as an 0-10
+  value that looks like a count** (menu-button count already excluded) - a new, clearly-shaped open item. The lesson is
+  recorded with it: "does the field have a value" and "what values does it take" are different questions, and only the
+  second one names fields (`DECISIONS.md` D-082, `docs/CONTACT_DB_SCHEMA.md` §7).
+
+
+
 - **The first field of the 37 gets a name: `#5` is a country/region code.** It holds exactly two uppercase ASCII
   letters in 717 rows (223 more carry an explicit empty string - a pattern this proto uses a lot) with 25 distinct
   values, and all **25 fall inside the 249 ISO 3166-1 alpha-2 codes** - if the letters were arbitrary the chance of
