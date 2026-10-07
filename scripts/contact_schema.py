@@ -163,8 +163,10 @@ def decode_contact(blob):
         return {'kind': None, 'region': None, 'bizType': None, 'updatedAt': None,
                 'unrecognized': {}}
     raw = {'%d' % fno: (len(v) if wt == 2 else v) for fno, (wt, v) in fields.items()}
-    # 小形状（字段号全 <= 9 且有 #1）= OpenIM 那一族；大 proto 的字段号能到 38/41/43
-    if max(fields) <= 9 and 1 in fields:
+    # 小形状 = **字段号全 <= 9**（大 proto 一定有 #2..#38，不可能全 <= 9）。
+    # ⚠️ 别再要求"必须有 #1"：那族里有一行没有 #1，加上这个条件会把它错判成联系人
+    #    （全量核对时抓到：kind 分布变成 944/43，文档是 940/44 + 2 个残行）。
+    if max(fields) <= 9:
         return {'kind': 'openim', 'region': None, 'bizType': None, 'updatedAt': None,
                 'unrecognized': raw}
 

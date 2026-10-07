@@ -1403,6 +1403,26 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-094: 全量集成核对揪出 `--contacts` 的分类缺陷；库是活的，判解码对不对要看逐行关系
+
+**Status:** Active（补 D-088；一条口径修正 + 一条方法）
+
+1. **做法**：把刚发布的 `contact-schema --contacts` 在**全量**数据上跑一遍，与文档的断言逐条对
+   （kind 分布 / region 数 / updatedAt 数 / **`#13` 与 `biz_info.type` 逐行相等**）。
+2. **揪出的缺陷**：`#13 == biz_info.type` 在 **688/688** 行上成立（0 处不一致，这是"解码对不对"的硬判据）；
+   但 kind 分布是 **944 / 43**，文档是 **940 / 44** ⇒ 差 1 行。根因：我的判据是"字段号全 ≤ 9 **且**有 `#1`"，
+   而那一族里**确有一行没有 `#1`**（B3 当年就报过 `#1` 只有 43 行）⇒ 它被错判成联系人。
+   修法：判据只留"**字段号全 ≤ 9**"（大 proto 一定有 `#2..#38`，不可能全 ≤ 9）⇒ 复测 **943 / 44**，与文档的 44 一致。
+   合成测试补了"没有 `#1` 的小形状"两条，把边界钉住。
+3. **一条方法**：**绝对值对不上不等于解码错**。同一时刻的复测里 987 vs 986、718 vs 717、566 vs 564 都是**库在变**
+   （这段时间多了一个账号、有行被更新过 ⇒ `#41` 从 0 变成时间戳）。所以判解码正确性要用**逐行关系**
+   （`#13 == type` 这类），**不要用绝对计数** —— 文档 §0 已把这条写成提示。
+4. **这也是"先发布、再全量核对"的收益**：合成单测抓不到口径缺陷 —— 我当时的用例**恰好都带 `#1`**，
+   于是判据里那个多余条件一直没被触发。
+
+**Consequences：** `scripts/contact_schema.py`（kind 判据）、`test/contact_schema_test.py`（+2 条边界用例）、
+`docs/CONTACT_DB_SCHEMA.md` §0（"库是活的"提示）、`CHANGELOG.md`（给未发布的 `--contacts` 那条补一句口径修正）。
+
 ## D-093: 一条"已修却没标"的限制行（`dashscopeApiKey`）；文档协议补一条
 
 **Status:** Active（补 D-015 那条"文档要跟源码同步"；含一处**非破坏性验证**的示范）

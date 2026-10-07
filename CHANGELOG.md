@@ -38,7 +38,9 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   row's `biz_info.type`) and `updatedAt` (the row's last-updated epoch seconds, with `0` treated as "unset" rather than
   1970). Two things are deliberately **not** printed: `#4`/`#9` are a digest of the account's own profile text - content,
   not a field name - so they appear only as a length inside `unrecognized` (a test asserts the text itself never reaches
-  the output), and the 44-row OpenIM shape is reported as `kind: 'openim'` without decoding its fields. Separately, an
+  the output), and the 44-row OpenIM shape is reported as `kind: 'openim'` without decoding its fields (the
+  discriminator is "every field number is <= 9", not "it has `#1`" - one row of that family has no `#1`, and a
+  full-population check caught it being classified as a contact). Separately, an
   audit found a real hole next to it: the TS layer declares flags and forwards them **by hand**, and nothing tested that
   step - a dropped `--contacts` would be accepted by the CLI and silently read *rooms* instead. `test/contact-schema-cli.test.ts`
   now asserts that every declared option is forwarded inside the action (verified by mutation: replacing the forwarding

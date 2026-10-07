@@ -132,8 +132,13 @@ class ContactExtraBufferTest(unittest.TestCase):
         self.assertIsNone(got['region'])
         self.assertIsNone(got['bizType'])
         self.assertIsNone(got['updatedAt'])
-        # 大 proto 的"残行"（只有 #10）仍按联系人解 —— 边界钉在这儿
+        # **没有 #1 的小形状也是 openim**：判据是"字段号全 <= 9"，不是"有没有 #1"。
+        # 那族里真有一行没有 #1；早先按"必须有 #1"判，全量核对时它被错判成 contact（944/43 而不是 943/44）。
+        self.assertEqual(cs.decode_contact(enc_bytes(2, b'wording'))['kind'], 'openim')
+        self.assertEqual(cs.decode_contact(enc_int(7, 1) + enc_int(9, 0))['kind'], 'openim')
+        # 大 proto 的"残行"（只有 #10 / #40）仍按联系人解 —— 边界钉在这儿
         self.assertEqual(cs.decode_contact(enc_int(10, 4294967295))['kind'], 'contact')
+        self.assertEqual(cs.decode_contact(enc_int(40, 1))['kind'], 'contact')
 
     def test_contact_broken_blob_raises_instead_of_looking_empty(self):
         for bad in (b'\x0a\x05ab', b'\x0a\xff', b'\x0b'):
