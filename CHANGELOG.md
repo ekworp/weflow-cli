@@ -19,6 +19,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The per-room counter's "one step" is not a member-change event - and the note saying it "needs a second
+  timepoint" was framed too narrowly.** The room message table carries its own timestamped event log (member-change
+  notifications, base `local_type == 10000`, 1,764 of them locally), so the question could be tested without a second
+  snapshot. It fails on all three candidate readings (n = 71): the counter's offset above its base correlates with
+  member-change event count 0.168, joins 0.143 and net change 0.144, while the existing member-count correlation is
+  0.911. The refutation is not an artifact of the retained window: five rooms created after 2026-08 have their whole
+  history in-window and still exceed every possible join count - for `chat_room.id = 3906` (36 members, whole life
+  2026-08-31 to 2026-09-28) the offset is **104** against **48** messages of that type in total (9 classified as
+  member changes). Two smaller facts came with it: proactive-leave notifications are **0 of 1,622** (WeChat does not
+  send them to ordinary members), so the "net change" reading was never measurable from the data side - check that
+  both halves of a two-sided test exist before weighting them equally - and the rooms sitting exactly at their base
+  are the same **7** under two independent measurements, one of which contains a disband event yet still reads 0
+  (`DECISIONS.md` D-078, `docs/CONTACT_DB_SCHEMA.md` §6.1 ⑨).
+
+
+
 - **The "read the client binary for field names" route is closed, and the reason it looked closed once before was a
   false negative.** The `ContactExtData` field names are not recoverable from this machine's binaries, and now the
   negative is structural rather than "not found": the four `micromsg.*` type-name strings have **zero** 4-byte
