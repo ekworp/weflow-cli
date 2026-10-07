@@ -1403,6 +1403,25 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-096: `#6`/`#7` 是"分类标签"、`#26` 是 XML；要名字只能靠外部标签表
+
+**Status:** Active（补 D-085 / D-095；一条口径 + 一组新结论）
+
+1. **两步一问**（这条口径值得沿用）：先问"**它是不是 message**"（判据：形状在同一批行里**全量一致**，D-085），
+   再问"**不是 message 的话它是什么**"（长度 / utf8 / 可打印 / JSON / 去重数 / 首字符）。
+   本轮把 `#6/#7/#26/#25` 与五个空壳一起过了一遍，结果见 `docs/CONTACT_DB_SCHEMA.md` §7 那张表。
+2. **`#6` / `#7` = 分类标签**：非空取值是 **5~19 字节、全 UTF-8 可打印、纯 ASCII 字母**，去重只有 ~36~51 / ~120 个
+   ⇒ 是**英文词形的标签**，不是消息、不是逐行唯一的值。
+3. **已经排除的路**（别再试）：不是 `external_info`/`brand_info` 的任何叶子（前一轮全叶子比过）、
+   不等于同行的 22 列、**也不由 `type`/`child_type`/`brand_flag` 决定**（只有 18/36 个取值唯一对应）。
+4. ⇒ **要给它名字，只能像 `#5` 那样找一份外部标签表**（D-081 的第三条路：公开码表 + 一条不依赖码表的预测）。
+   本机没有这份表 ⇒ 记 UNKNOWN，**不再在本机数据里找对应列**。
+5. **顺带确认**：`#26` 是 **XML 片段**（100~118 字节、115 个互异值、首字符 `<`）；`#25` 是 31 字节、首字符为数字的串
+   （12 个样本，判不了）；`#15/#20/#21/#28/#36` 与 `#33` 的壳性质再次确认。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` §7（新增"不是 message 的 ld 字段"表 + "别再找"的结论）。
+无代码改动、无 CHANGELOG。
+
 ## D-095: `#19` 的第三、第四族解释也被否；平凡命中已数到五种，筛子要写进判据函数
 
 **Status:** Active（补 D-087；本轮的价值全在**否证**与一条方法）
