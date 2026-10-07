@@ -19,6 +19,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`#27`'s second field is a URL, and the notes stop there on purpose.** It is present in 141 of 940 rows, always
+  `http://`, 107-110 bytes long, and drawn from only **3 hosts** - none of which appears in any column of
+  `contact`, `biz_info` or `chat_room_info_detail` (against 3,914 non-empty `big_head_url` and 691 `brand_icon_url`
+  rows, zero overlap), so it is not any CDN this machine knows. The rows are all outside `biz_info`. The meaning stays
+  UNKNOWN and digging further is deliberately declined: it would mean reading URL path content to unlock nothing else.
+  A reading error of mine is corrected alongside - "14 variants" was the number of *lengths*, not of values; the
+  min/max/count column was always a length column (`DECISIONS.md` D-086, `docs/CONTACT_DB_SCHEMA.md` §7).
+
+
+
 - **"It parses" is not "it is a message" - and two earlier notes are corrected by that.** Walking every
   length-delimited field one level deeper shows that *text* fields parse too (`#4`, `#5`, `#9` "walk" in 294, 252 and
   393 of 940 rows because random bytes form legal tags), so the test is not parseability but **whether the shape

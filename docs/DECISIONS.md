@@ -1403,6 +1403,22 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-086: `#27` 的 `#2` 是 URL（141 行、3 个 host）；"长度种数"别读成"取值数"；到形状为止
+
+**Status:** Active（补 D-085；含一处**读数更正**与一条**止损**）
+
+1. **形状**：`#27.#2` 只在 **141/940** 行有值，**141/141 是 `http://` 的 URL**（长度众数 107~110 字节、
+   **只有 3 个 host**），承载行**全不在 `biz_info` 里**（`local_type` 1 占 97、0 占 44）。
+   这 3 个 host 在 `contact` / `biz_info` / `chat_room_info_detail` 的**任何列里都不出现**
+   （对照：`big_head_url` 3914 行非空、`brand_icon_url` 691 行，命中 **0**）⇒ **不是本机已知的任何 CDN**；
+   与同行列也不同（0 行含该行 `encrypt_username`，仅 4 行含昵称/拼音）。**含义 UNKNOWN。**
+2. **读数更正（我自己的）**：先前那句"`#2` 只有 14 种"是**长度的种数**，不是**取值数** ——
+   `min/max/种数` 这一栏本来就是长度口径，我把它读成了取值口径。**报"种数"时必须写清是"什么"的种数。**
+3. **止损（这条也是决定）**：URL 这条线**到形状为止**。再往下解就要碰 URL 的路径内容，
+   而它既不解锁别的字段、又涉及本机账号的主页地址，**收益与隐私都不划算** ⇒ 记 UNKNOWN，不挖。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §7（`#27` 那行补 `#2` 的口径 + 新增"那个 URL 单独记一笔"）。
+
 ## D-085: "走线能走通"不是"它是 message"的判据；据此更正两处旧写法
 
 **Status:** Active（更正 §3 与 A3 报告里两处；补 D-068）
