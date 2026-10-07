@@ -19,6 +19,20 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The first field of the 37 gets a name: `#5` is a country/region code.** It holds exactly two uppercase ASCII
+  letters in 717 rows (223 more carry an explicit empty string - a pattern this proto uses a lot) with 25 distinct
+  values, and all **25 fall inside the 249 ISO 3166-1 alpha-2 codes** - if the letters were arbitrary the chance of
+  all 25 landing there is about **1.4e-11**. Two independent confirmations came with it: the **mode is `CN`, covering
+  94.0%** of rows, which follows from "most accounts on this machine are Chinese" without using the code table at all;
+  and only **15 of 25** match ISO 639-1 language codes (which are lowercase) - so it is a *region*, not a *language*.
+  That second check is the point of the method: the code table is hardcoded by me, so a "25/25 hits" result would
+  otherwise confuse an error in my own oracle with a fact (`DECISIONS.md` D-081). The field number is also a trap worth
+  naming explicitly: `#5` in `chat_room`'s blob is the member-status-bit-11 projection (D-070), while `#5` in
+  `contact`'s blob is this region code - say which table you mean. Nothing in the code needs to change: no code reads
+  `contact.extra_buffer`'s fields today.
+
+
+
 - **Two of the unnamed fields finally have content: they are the account's own profile text, aggregated.** Flattening
   `biz_info`'s `external_info` and `brand_info` into 16,294 distinct leaves and asking whether a blob field *contains
   the leaf from its own row* gives **336 same-row hits against 7 next-row hits** - so the containment is real, not

@@ -1403,6 +1403,30 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-081: 定名的第三条路 = 公开码表 + 一条不依赖该码表的预测；`#5` = 国家/地区代码
+
+**Status:** Active（补 D-068 / D-080；这是 37 个字段里**第一个被命名**的）
+
+1. **结论**：`contact.extra_buffer` 主体（`ContactExtData`）的 **`#5` = 国家/地区代码（ISO 3166-1 alpha-2）**。
+   形态是"恰好 2 个大写 ASCII 字母"、717 行有值（另 223 行显式空串）、25 个去重值。三条证据：
+   ① **25/25 全部落在 ISO 3166-1 的 249 个 alpha-2 码里** —— 随机 2 大写字母的命中率是 249/676 ≈ 0.37，
+   全中概率 **≈ 1.4e-11**；② **众数就是 `CN`、占 94.0%** —— 这是对 ① 的**独立**确认；
+   ③ 按 **ISO 639-1 语言码**比只有 **15/25**（语言码还是小写）⇒ 是**地区**不是**语言**。
+2. **方法（这条值得单独记）**：**用外部码表当判据时，必须再给一条"不依赖该码表"的预测**。
+   因为码表是**我硬编码**的（249 条，与官方数量一致，但可能有个别错），只靠它得到的"25/25 命中"会把
+   **裁判自身的错**算成结论。②（众数应为 `CN`）就是为了挡这一层：它只依赖"本机账号多在中国"这个**本机事实**。
+   ⇒ 至此，blob 字段"能定名"的路有三条：**(a) 跨表整值 join**（那 44 行的 `#1`/`#2`）、
+   **(b) 自/他对照的内容刻画**（`#4`/`#9`）、**(c) 公开码表 membership + 不依赖码表的预测**（`#5`）。
+3. **一个必须点名的陷阱**：`#5` 这个字段号在两张表里是**两回事** ——
+   `chat_room.ext_buffer` 的顶层 `#5` 是"成员 status 位 11 的投影"（D-070），
+   `contact.extra_buffer` 的 `#5` 才是地区码。**报"#5"时必须先说清是哪张表。**
+4. **代码这边不用动**：D-068 的"只解已验证的那部分"针对的是 `chat_room` 那条链（`contact-schema`），
+   而**没有任何代码读 `contact.extra_buffer` 的字段** ⇒ 这次命名只进文档，不进实现。
+
+**Consequences：** `docs/CONTACT_DB_SCHEMA.md` 的 §0（`contact.extra_buffer` 行补"`#5` 已命名"）、
+§7（`#5` 那条从"❓ UNKNOWN"改成带三条证据的结论；候选名表里那行标注为"已是结论"）、
+§9（新增复跑 19：**码表 + 不依赖码表的预测**）。
+
 ## D-080: `#4`/`#9` 是"该账号自身资料文本的汇集"；短值/子串命中必须配对照
 
 **Status:** Active（补 D-068 / D-076 / D-079；这是"同对象"纪律第一次**产出正面结果**）
