@@ -1414,7 +1414,7 @@ which is what the gate is for.
 5. **字段与优先级照厂商实现**（`third-party/WeKnora/internal/im/wechat/longpoll.go`）：图片先用 `image_item.aeskey`（**hex 字符串**），再退 `media.aes_key`（base64）；语音/文件/视频只有 `media.aes_key`。**用错 key 不报错，只会解出乱码**，所以这条优先级本身就是一条要测的事实，而不是实现细节。
 6. 目录默认 `output/wechat-media/`（`output/` 已在 .gitignore 里），可用 `WEFLOW_WECHAT_MEDIA_DIR` 改——测试因此只用临时目录，从不写仓库。
 
-**Consequences:** 新配置键 `wechatMediaDownload`（五处齐全，`test/config-keys.test.ts` 会拦）；新模块 `src/services/wechatMedia.ts`；`parseInboundMessage` 变为 async（唯一调用点已 `await`）；`CHANGELOG.md`、`docs/PROJECT_STATE.md`、`OPERATIONS.md` 同步；测试 +10（`test/wechat-media.test.ts`，含"默认关不发请求""名字逃逸被吃掉""四种失败不留文件"与真实解密链路的假 fetch 用例）。
+**Consequences:** 新配置键 `wechatMediaDownload`（五处齐全，`test/config-keys.test.ts` 会拦）；新模块 `src/services/wechatMedia.ts`；`parseInboundMessage` 变为 async（唯一调用点已 `await`）；`CHANGELOG.md`、`docs/PROJECT_STATE.md`、`OPERATIONS.md` 同步；测试 +10（`test/wechat-media.test.ts`，含"默认关不发请求""名字逃逸被吃掉""四种失败不留文件"与真实解密链路的假 fetch 用例）。**尚未在真实入站消息上跑过**：本机这条通道从未完成登录（与 D-045 记的那个缺口同一个），所以这条路只在测试里跑过，`fetch` 是打的桩。第一次真收到图时，要回头看 `output/wechat-media/` 里有没有东西、以及日志里有没有那行"未落地"。
 
 ## D-101: `business/xweb/` 是 MMKV 加密存储：本地读不出来，这条线不进能力面
 

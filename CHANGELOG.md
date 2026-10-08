@@ -28,7 +28,8 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   name (a name sent by the server is reduced to a sanitised basename, so `../` cannot escape the directory), a 25 MB
   per-item cap, and the failure behaviour - a download that fails, comes back empty or exceeds the cap writes
   **nothing**, leaving `filePath` empty plus one log line naming the reason, rather than a 0-byte file that the rest of
-  the pipeline would treat as a picture.
+  the pipeline would treat as a picture. **Not yet observed on a real inbound message** - the channel on this machine
+  has never completed a login, so this path has run only in tests, with `fetch` stubbed.
 
 - **Two scripts crashed when their output was redirected or piped, and the crash was invisible from inside this
   repository.** `scripts/quality_eval.py` prints `⚠️` and `scripts/wechat_emoticon.py` prints `✓`; with stdout at the
