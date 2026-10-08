@@ -1403,6 +1403,27 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-101: `business/xweb/` 是 MMKV 加密存储：本地读不出来，这条线不进能力面
+
+**Status:** Active（一次带正对照的完整负结论 + 一个明确的已知缺口）**为什么值得写下来**：它是"看起来该做、量完发现做不了"的那一类，不写下来会被反复重提（同 D-099）。
+
+1. **格式已钉死，可复核。** 账号数据目录下的 `business/xweb/`（含其 `mmkv/` 子目录）里是**成对的 MMKV 存储**：`<id>` + `<id>.crc`。客户端二进制里带 `MMKV.cpp` / `initializeMMKV` / `v2.4.0`，实现是厂商开源的那套。实测布局与源码一致：
+   - 数据文件 = `[u32 actualSize][AES-CFB 密文]`，密文长度恰为 `actualSize`，其后是陈旧字节与零填充；
+   - `.crc` = `MMKVMetaInfo`：`crc32 | version(=4) | sequence | IV[16] | actualSize | lastActualSize | lastCRCDigest | …`；
+   - **`crc32` 等于 `zlib.crc32(密文段)`** —— 在两个互相独立的存储上核对通过（这条同时钉住了"密文从偏移 4 开始、长度就是头部那个数"）。
+2. **加密 = AES-128/256-CFB，IV 每次全量写回随机生成并写进 meta**（源码：`doFullWriteBack` → `fillRandomIV` → `resetIV` → `writeActualSize(..., newIV, ...)`）。⇒ **IV 是已知的；唯一的未知量是密钥**。
+3. **密钥不在任何能读的文件里。** 以下都试过，且都带正对照（自造 MMKV 明文 → 加密 → oracle 必须能解出、错 key 必须解不出）：
+   - 数据库 key、配置里的密钥、passphrase、wxid 派生、md5/sha 变体（34 族 × 16/32 字节）× 各存储的 meta IV / 全零 / key[:16]；
+   - 客户端二进制里所有 16/32 字节的**字符串型**候选（341,794 个，含 UTF-16LE）；
+   - Weixin.dll 解出的**字符串池**（1,493 个定长候选）；
+   - 运行进程内存里 **IV / 密文尾锚点 ±256 字节**内的所有窗口；
+   - 从运行进程内存里**扫出的 892 把真 AES key**（按密钥扩展表的代数关系取值并整表核对过）× 16 个存储 × 8 种 IV。
+4. **已知缺口（下一步唯一入口）**：扫描只覆盖扩展表的"标准布局"，**AES-NI 的字节交换布局没被覆盖**（正对照在该布局上是红的）；另一条路是顺着指针找 MMKV 对象本体（`AESCrypt` 的 `m_key` 与 `m_vector` 相邻）。两者都要动运行中进程的内存，属独立小工具，不是本仓能力。
+5. **即便解开，也未必是"浏览足迹"。** 客户端自带字符串显示这些存储的键是 `mmkv_key_use_sys_browser_key` / `mmkv_key_force_no_embedding` / `mmkv_key_dynamic_config`，加上存储名 `xweb_open_stat` —— 更像**内置浏览器的设置与统计**，不是页面访问史。投入之前应先定"要的是不是它"。
+6. 本轮读进程内存：只在本机、只读、不落盘、不入库；上面所有数字都是计数，没有标题、键值或路径。
+
+**Consequences:** 无代码改动、无 CHANGELOG（非用户可见行为）。`docs/CONTACT_DB_SCHEMA.md` 不动（那份文档管 contact.db）。若将来要做，需要一个独立的"内存里定位 AESCrypt 对象"工具，并且必须先补上第 4 条的缺口。
+
 ## D-100: 两轮新否证（`#8` 不是键位图、字段×特征无判别式）；`fav_notes` 的"本地正文优先"已量
 
 **Status:** Active（补 D-095 / D-099；一半是否证，一半是"查过没坏"）
