@@ -29,7 +29,10 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   per-item cap, and the failure behaviour - a download that fails, comes back empty or exceeds the cap writes
   **nothing**, leaving `filePath` empty plus one log line naming the reason, rather than a 0-byte file that the rest of
   the pipeline would treat as a picture. **Not yet observed on a real inbound message** - the channel on this machine
-  has never completed a login, so this path has run only in tests, with `fetch` stubbed.
+  has never completed a login, so this path has run only in tests, with `fetch` stubbed. **Nothing reads the saved
+  path yet either**: the file is on disk and `components[].filePath` points at it, but the assistant still receives
+  only the text and the kind, so it cannot act on the picture. Handing images to a model is a separate egress
+  decision, not a side effect of this switch.
 
 - **Two scripts crashed when their output was redirected or piped, and the crash was invisible from inside this
   repository.** `scripts/quality_eval.py` prints `⚠️` and `scripts/wechat_emoticon.py` prints `✓`; with stdout at the
