@@ -1435,8 +1435,9 @@ which is what the gate is for.
 5. **据此重扫运行中的进程，捞回约 900 把真 AES key，并且真的解开了 3 个存储**（判据取并集，见下）：`db_storage/MMKV/brandprivatemsg@hardcode`（key 是字符串常量的前 16 字节，ASCII 可见 `xwechat_crypt_ke…`）、`config/rs_config` 与 `config/file_config_2026v2`（key 是随机 16 字节）。**三者的 IV 都取 `.crc` 里那 16 字节** ⇒ "IV 存在 meta 里"由实测确认，不再只是源码推断。解出来的键名是 `unreadcount29` / `red_dot` / `sync_11` / `2026-04e0…9f22b6.zip` 这类。
 6. **仍锁着 14 个**（含 `business/xweb/` 那两个、`db_storage/MMKV/*tinfo.mmkv`、`XEditorData`、`login_configv2`）。证据指向"**它的 AESCrypt 此刻不在内存里**"：MMKV 按需开关，析构时 `~AESCrypt` 会 `secureWipe` 掉 `m_key` 与 `m_aesKey`。所以**序列号大不等于活着** —— `f2541000tinfo` 全量写回 6471 次照样扫不到。下一步只能是"趁它开着的时候抓"（盯 `.crc` 变化、一变就扫内存）；顺带排除了几种可能：没有 >512MB 的大区域被跳过（实测 0 MB）、key 也不是根目录名/存储名/已知 key 串的哈希族（1761 个派生候选全灭）。
 7. **两个 oracle 各有盲点，必须取并集**：按"记录流是否像键名"判，会把 `file_config_*`（前几条键是**文件名**）误杀；按"解出来像不像文本"判，会把 `rs_config`（值多为**二进制**）误杀。单独用任何一个都会得出"解不开"的错结论 —— 这一条与第 4 条是同一类错：**判据本身没被验证过，就会把方法的失败说成对象的性质**。
-8. **即便解开，也未必是"浏览足迹"。** 客户端自带字符串显示这些存储的键是 `mmkv_key_use_sys_browser_key` / `mmkv_key_force_no_embedding` / `mmkv_key_dynamic_config`，加上存储名 `xweb_open_stat` —— 更像**内置浏览器的设置与统计**，不是页面访问史。投入之前应先定"要的是不是它"。
-9. 本轮读进程内存：只在本机、只读、不落盘、不入库；上面所有数字都是计数，没有标题、键值或路径。
+8. **别按块熵跳过**：为了让扫描快些，我一开始对每个块算"不同字节数"、太低就整块跳过 —— 这会把"**小对象落在几乎全新的堆页里**"整块丢掉（`AESCrypt` 只有 72 字节）。反退化判据放进预筛里就够了，扫描本来就不慢。
+9. **即便解开，也未必是"浏览足迹"。** 客户端自带字符串显示这些存储的键是 `mmkv_key_use_sys_browser_key` / `mmkv_key_force_no_embedding` / `mmkv_key_dynamic_config`，加上存储名 `xweb_open_stat` —— 更像**内置浏览器的设置与统计**，不是页面访问史。投入之前应先定"要的是不是它"。
+10. 本轮读进程内存：只在本机、只读、不落盘、不入库；上面所有数字都是计数，没有标题、键值或路径。
 
 **Consequences:** 无代码改动、无 CHANGELOG（非用户可见行为）。`docs/CONTACT_DB_SCHEMA.md` 不动（那份文档管 contact.db）。若将来要做，需要一个独立的"内存里定位 AESCrypt 对象"工具，并且必须先补上第 4 条的缺口。
 
