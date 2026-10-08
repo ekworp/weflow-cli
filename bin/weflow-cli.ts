@@ -1074,6 +1074,7 @@ const configurableKeys = [
   'skillDirs', 'skillDisabled',
   'dailySources', 'dailySourceCategories',
   'dailyExcludeTopics', 'dailyAiEnabled',
+  'wechatMediaDownload',
   'emoticonSeed',
 ] as const
 

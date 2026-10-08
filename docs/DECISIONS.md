@@ -1403,6 +1403,19 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-102: 入站媒体落地**默认关**；文件名与上限由本地定，失败不留半个文件
+
+**Status:** Active（新能力 + 三条不变量；字段与优先级照厂商实现）
+
+1. **能力**：官方通道（ilink）的入站图片/语音/文件/视频现在能下载并解密落盘。下载与解密的本事本来就有（`WechatClient.downloadMedia`），缺的只是把它接上 `parseInboundMessage` 这条路——此前那四项只产出 `filePath: ''`，助手拿不到图。与 D-042（`look_at_image`）合起来，"助手能看图"在两个通道上都通了。
+2. **默认关**：新增 `wechatMediaDownload`，默认 `false`。打开它就是一次显式的网络访问，而本仓的取向是"网络访问要显式"（与 D-001/D-003 同族），所以这里是开关而不是默认行为。**关着时不发任何请求**——这条有测试钉住（不是"大概不会发"）。
+3. **文件名由本地决定**：只取服务端名字的 basename，再过滤控制字符与路径字符、去掉前导点、限长。理由很直接：这是"外部输入变成本地路径"的唯一入口，`../` 必须在这一层被吃掉，不能指望调用方记得。
+4. **上限 25 MB**；失败/空结果/超限一律 `path: ''` + 一行日志写明原因，**不写半个文件**。半个文件比没有更难查：下游会把它当成"有这张图"。
+5. **字段与优先级照厂商实现**（`third-party/WeKnora/internal/im/wechat/longpoll.go`）：图片先用 `image_item.aeskey`（**hex 字符串**），再退 `media.aes_key`（base64）；语音/文件/视频只有 `media.aes_key`。**用错 key 不报错，只会解出乱码**，所以这条优先级本身就是一条要测的事实，而不是实现细节。
+6. 目录默认 `output/wechat-media/`（`output/` 已在 .gitignore 里），可用 `WEFLOW_WECHAT_MEDIA_DIR` 改——测试因此只用临时目录，从不写仓库。
+
+**Consequences:** 新配置键 `wechatMediaDownload`（五处齐全，`test/config-keys.test.ts` 会拦）；新模块 `src/services/wechatMedia.ts`；`parseInboundMessage` 变为 async（唯一调用点已 `await`）；`CHANGELOG.md`、`docs/PROJECT_STATE.md`、`OPERATIONS.md` 同步；测试 +10（`test/wechat-media.test.ts`，含"默认关不发请求""名字逃逸被吃掉""四种失败不留文件"与真实解密链路的假 fetch 用例）。
+
 ## D-101: `business/xweb/` 是 MMKV 加密存储：本地读不出来，这条线不进能力面
 
 **Status:** Active（一次带正对照的完整负结论 + 一个明确的已知缺口）**为什么值得写下来**：它是"看起来该做、量完发现做不了"的那一类，不写下来会被反复重提（同 D-099）。

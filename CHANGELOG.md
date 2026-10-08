@@ -19,6 +19,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The OC Bot channel can save inbound media to disk, and it stays off until you say otherwise.** Inbound images,
+  voice notes, files and videos used to arrive as an empty `filePath` and nothing else, so the assistant was told
+  "[image]" and no more. `weflow-cli config set wechatMediaDownload true` makes the channel download each item from
+  the CDN and decrypt it locally with the scheme the local image files already use, writing it under
+  `output/wechat-media/` (the directory can be moved with `WEFLOW_WECHAT_MEDIA_DIR`). It is **off by default** because
+  turning it on is a network access the user should choose. Three things are deliberately decided locally: the file
+  name (a name sent by the server is reduced to a sanitised basename, so `../` cannot escape the directory), a 25 MB
+  per-item cap, and the failure behaviour - a download that fails, comes back empty or exceeds the cap writes
+  **nothing**, leaving `filePath` empty plus one log line naming the reason, rather than a 0-byte file that the rest of
+  the pipeline would treat as a picture.
+
 - **Two scripts crashed when their output was redirected or piped, and the crash was invisible from inside this
   repository.** `scripts/quality_eval.py` prints `⚠️` and `scripts/wechat_emoticon.py` prints `✓`; with stdout at the
   locale encoding - which is what a by-hand `python scripts/x.py > out.txt` gets on a Chinese Windows console - the

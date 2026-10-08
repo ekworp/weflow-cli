@@ -8,6 +8,8 @@ import path from 'path'
 import { WechatClient } from '../core/wechatClient.js'
 import { configService } from './configService.js'
 import { resolveInboundRouting } from './assistantRouting.js'
+import { mediaTypeOf, saveInboundMedia, wechatMediaDir } from './wechatMedia.js'
+import type { InboundMediaType } from './wechatMedia.js'
 import type { WechatOCConfig, WechatLoginSession, WechatInboundMessage, WechatMessageComponent } from '../types.js'
 
 function sleep(ms: number): Promise<void> {
@@ -64,10 +66,16 @@ export class WechatMessageService {
   private messageCallbacks: Array<(msg: WechatInboundMessage) => void> = []
   /** 服务端说过 token 失效了。**只由长轮询置位**（见 `classifyPollResult`），恢复时清掉 */
   private tokenExpired = false
+  /** 入站媒体是否落地。undefined = 每次去读配置（默认关，见 `wechatMedia.ts` 的边界 1） */
+  private mediaDownload?: boolean | string
+  /** 落地目录。undefined = 用 `wechatMediaDir()`（可被环境变量改，测试用临时目录） */
+  private mediaDirOverride?: string
 
   constructor(config: WechatOCConfig = {}) {
     this.config = config
     this.syncBuf = config.syncBuf || ''
+    this.mediaDownload = config.mediaDownload
+    this.mediaDirOverride = config.mediaDir
     this.client = new WechatClient({
       baseUrl: config.baseUrl,
       cdnBaseUrl: config.cdnBaseUrl,
@@ -225,7 +233,7 @@ export class WechatMessageService {
         const msgs: any[] = data.msgs || []
         for (const msg of msgs) {
           if (this.shutdownFlag) return
-          const inbound = this.parseInboundMessage(msg)
+          const inbound = await this.parseInboundMessage(msg)
           if (inbound) {
             for (const cb of this.messageCallbacks) {
               try { cb(inbound) } catch (error: any) {
@@ -409,7 +417,40 @@ export class WechatMessageService {
 
   // ====== Private ======
 
-  private parseInboundMessage(msg: any): WechatInboundMessage | null {
+  /** 入站媒体落地的开关：构造时注入的优先，其次读配置。默认关 —— 关着就不发任何网络请求 */
+  private mediaDownloadEnabled(): boolean {
+    const raw = this.mediaDownload ?? configService.get('wechatMediaDownload')
+    return raw === true || raw === 'true'
+  }
+
+  /**
+   * 下载一件入站媒体并落盘，返回路径；**没开这个功能、或下载失败，都返回空串**。
+   * 失败会往日志里写一行原因 —— "没开"和"开了但失败了"必须分得开，否则出事时两种证据全无。
+   */
+  private async inboundMediaPath(
+    item: any,
+    mediaType: InboundMediaType,
+    index: number,
+    messageId: string,
+  ): Promise<string> {
+    if (!this.mediaDownloadEnabled()) return ''
+    const result = await saveInboundMedia({
+      item,
+      mediaType,
+      index,
+      messageId,
+      dir: this.mediaDirOverride || wechatMediaDir(),
+      serverFileName: mediaType === 'file' ? item?.file_item?.file_name : undefined,
+      download: (param, key) => this.client.downloadMedia(param, key),
+    })
+    if (!result.path) {
+      console.warn(`入站媒体未落地（${mediaType}）：${result.reason}`)
+      return ''
+    }
+    return result.path
+  }
+
+  private async parseInboundMessage(msg: any): Promise<WechatInboundMessage | null> {
     const fromUserId: string = msg.from_user_id || ''
     if (!fromUserId) return null
     const routing = resolveInboundRouting(msg, String(configService.get('wechatOcAccountId') || ''))
@@ -423,19 +464,29 @@ export class WechatMessageService {
 
     const components: WechatMessageComponent[] = []
     const itemList: any[] = msg.item_list || []
+    const messageId: string = msg.client_id || uuidHex()
+    let mediaIndex = 0
 
     for (const item of itemList) {
       const itemType = item.type as number
       if (itemType === 1 && item.text_item) {
         components.push({ type: 'plain', text: item.text_item.text || '' })
-      } else if (itemType === 2 && item.image_item) {
-        components.push({ type: 'image', filePath: '' }) // image download deferred
-      } else if (itemType === 3 && item.voice_item) {
-        components.push({ type: 'record', filePath: '' })
-      } else if (itemType === 4 && item.file_item) {
-        components.push({ type: 'file', name: item.file_item.file_name || '', filePath: '' })
-      } else if (itemType === 5 && item.video_item) {
-        components.push({ type: 'video', filePath: '' })
+        continue
+      }
+      const mediaType = mediaTypeOf(itemType)
+      // 缺节点就整项跳过（与既有行为一致：形状不对的项不进 components）
+      if (!mediaType || !item[`${mediaType === 'record' ? 'voice' : mediaType}_item`]) continue
+      mediaIndex += 1
+      // 落盘（默认关，关着时这里不做任何 IO）
+      const filePath = await this.inboundMediaPath(item, mediaType, mediaIndex, messageId)
+      if (mediaType === 'image') {
+        components.push({ type: 'image', filePath })
+      } else if (mediaType === 'record') {
+        components.push({ type: 'record', filePath })
+      } else if (mediaType === 'file') {
+        components.push({ type: 'file', name: item.file_item.file_name || '', filePath })
+      } else {
+        components.push({ type: 'video', filePath })
       }
     }
 
@@ -454,7 +505,7 @@ export class WechatMessageService {
     const messageStr = textComponents.map(c => (c as { type: 'plain'; text: string }).text).join('')
 
     return {
-      messageId: msg.client_id || uuidHex(),
+      messageId,
       fromUserId,
       ...routing,
       senderNickname: msg.from_user_id || '',

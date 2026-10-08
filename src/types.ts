@@ -65,6 +65,10 @@ export interface WechatOCConfig {
   apiTimeoutMs?: number
   typingKeepaliveIntervalS?: number
   typingTicketTtlS?: number
+  /** 入站媒体是否落地（缺省=读 `wechatMediaDownload` 配置，默认关）。见 src/services/wechatMedia.ts */
+  mediaDownload?: boolean | string
+  /** 入站媒体落地目录（缺省=output/wechat-media/，可被 WEFLOW_WECHAT_MEDIA_DIR 改） */
+  mediaDir?: string
 }
 
 export interface WechatLoginSession {

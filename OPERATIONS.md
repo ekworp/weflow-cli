@@ -814,6 +814,22 @@ weflow-cli assistant start
 weflow-cli assistant status
 ```
 
+### 入站图片/文件要不要落地（默认不落）
+
+别人发给助手一张图，助手默认只知道"有这么一张图"，不知道图里是什么。打开这个开关后，通道会把图片、语音、文件、视频从 CDN 拉下来、在本地解密并写盘：
+
+```powershell
+weflow-cli config set wechatMediaDownload true
+weflow-cli assistant stop
+weflow-cli assistant start
+```
+
+- **这是显式的网络访问**，所以默认是关的（`false`）。不打开时，进程不会为入站媒体发任何请求。
+- 文件落在 `output/wechat-media/` 下；换位置用环境变量 `WEFLOW_WECHAT_MEDIA_DIR`（目录会在首次落地时自动建）。
+- **文件名由本地决定**：服务端给的名字只取最后一段并过滤字符，所以它写不到 `output/` 之外去。
+- 单件超过 **25 MB**、下载失败、或解出来是空的，都**不会留下文件**：`filePath` 是空的，日志里有一行写明原因（`入站媒体未落地（image）：…`）。看到这行就是没存下来，不是"存了但你没找到"。
+- 关掉就回到原样：`weflow-cli config set wechatMediaDownload false`。
+
 ### 本机面板：不扫码也能跟助手说话
 
 ```powershell
