@@ -12,6 +12,7 @@ import { keyService } from '../src/core/keyService.js'
 import { NtCore } from '../src/core/ntCore.js'
 import { configService } from '../src/services/configService.js'
 import { chatService } from '../src/services/chatService.js'
+import { emptyMessagesNote, looksLikeTalkerId } from '../src/services/messageQuery.js'
 import { exportService } from '../src/services/exportService.js'
 import { writeEvidencePackage } from '../src/services/evidenceService.js'
 import { resolveTalker as resolveTalkerCore } from '../src/utils/talkerUtils.js'
@@ -1372,8 +1373,25 @@ program
       : await chatService.getMessages(talker, limit, offset)
 
     if (messages.length === 0) {
-      if (opts.json) { console.log(JSON.stringify({ success: true, talker, messages: [] })); return }
+      // 拼错的 ID 会被 resolveTalker 原样放行 ⇒ 取不到消息。这里补一句话把两种情况分开，
+      // 但**不改退出码、也不改 success**（"没有消息"不是错误，脚本与 MCP 依赖这一点）。
+      let note = ''
+      if (looksLikeTalkerId(talkerInput)) {
+        const [sessions, contacts] = await Promise.all([
+          chatService.listSessions(talkerInput, 5),
+          chatService.listContacts(talkerInput, 5),
+        ])
+        note = emptyMessagesNote(talkerInput, {
+          sessionUsernames: sessions.map(s => s.username),
+          contactUsernames: contacts.map(c => c.username),
+        })
+      }
+      if (opts.json) {
+        console.log(JSON.stringify({ success: true, talker, messages: [], ...(note ? { note } : {}) }))
+        return
+      }
       console.log(chalk.gray('未找到消息'))
+      if (note) console.log(chalk.yellow(note))
       return
     }
 

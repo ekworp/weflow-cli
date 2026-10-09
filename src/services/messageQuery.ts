@@ -5,6 +5,35 @@ export interface MessageTimeRange {
   to?: number
 }
 
+/**
+ * 这三种形状的输入会被 `resolveTalker` **原样返回**（见 `src/utils/talkerUtils.ts`），
+ * 于是拼错的 ID 会一路走到「取不到消息」，和「这条会话在窗口内确实没有消息」长得一模一样。
+ * 只看形状，不碰 IO —— 判定所需的名单由调用方传进来。
+ */
+export function looksLikeTalkerId(input: string): boolean {
+  const value = String(input || '')
+  return value.startsWith('wxid_') || value.includes('@chatroom') || value.includes('@openim')
+}
+
+/**
+ * 空结果时补的一句话：**只在"看起来是 ID、但会话与联系人都没有它"时**才给。
+ * 返回空串表示没什么可补的 —— 名字形状的输入本来就由 `resolveTalker` 报错，认识的 ID
+ * 取不到消息是正常结果。
+ *
+ * 这里**不改退出码、也不改 `success`**：既有契约里「没有消息」不是错误（脚本与 MCP 依赖它，
+ * 见 `docs/HEALTH-CHECK.md` 的那一行），所以只把歧义说出来，不动语义。
+ */
+export function emptyMessagesNote(
+  input: string,
+  known: { sessionUsernames: Iterable<string>; contactUsernames: Iterable<string> },
+): string {
+  if (!looksLikeTalkerId(input)) return ''
+  for (const id of known.sessionUsernames) if (id === input) return ''
+  for (const id of known.contactUsernames) if (id === input) return ''
+  return `这个 ID 既不在会话里、也不在联系人里：${input}` +
+    ' —— 先确认有没有拼错（weflow-cli sessions / weflow-cli contacts）'
+}
+
 export async function collectMessagesInRange(
   fetchPage: (limit: number, offset: number) => Promise<Message[]>,
   limit: number,

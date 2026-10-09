@@ -19,6 +19,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`messages` now says when an ID is one nobody knows, instead of looking like "no messages".** An input shaped like
+  an id (`wxid_…`, `…@chatroom`, `…@openim`) is passed straight through, so a typo produced exactly the same output as
+  a real conversation that happens to be empty: `未找到消息` and exit code 0. It still exits 0 - "no messages" is not
+  an error and scripts depend on that - but when the id appears in neither the session list nor the contacts, the
+  output adds a line naming the id and pointing at `sessions` / `contacts`, and `--json` carries an optional `note`
+  field beside the unchanged `success: true`. Verified with the real command:
+  `messages wxid_zzz_not_a_real_id --json` → `{"success":true,…,"note":"这个 ID 既不在会话里、也不在联系人里：…"}`.
 - **The OC Bot channel can save inbound media to disk, and it stays off until you say otherwise.** Inbound images,
   voice notes, files and videos used to arrive as an empty `filePath` and nothing else, so the assistant was told
   "[image]" and no more. `weflow-cli config set wechatMediaDownload true` makes the channel download each item from

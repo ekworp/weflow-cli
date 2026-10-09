@@ -1403,6 +1403,17 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-103: `messages` 的退出码不动，但把"这个 ID 谁都不认识"说出来
+
+**Status:** Active（补 `docs/HEALTH-CHECK.md` 里那行"未知 talker 退出码不一致"）
+
+1. **不改退出码。** 拼错的 `wxid_…` 与"这条会话在窗口内确实没有消息"此前给出**一模一样**的输出：`未找到消息`、退出 0、`success:true`。但"没有消息"不是错误，脚本与 MCP 依赖这一点 ⇒ **退出码与 `success` 都不动**。
+2. **只把歧义说出来。** 输入是 `wxid_` / `@chatroom` / `@openim` 形状（`resolveTalker` 对这三种**原样放行**，见 `src/utils/talkerUtils.ts`）、且**会话与联系人名单里都没有它**时，人看的输出补一句并**回显那个 ID**；`--json` 多一个可选 `note` 字段。
+3. **判定做成纯函数**（`emptyMessagesNote` / `looksLikeTalkerId`，`src/services/messageQuery.ts`）：名单由调用方传进去，于是四种情形（认识的 ID、只在联系人里、拼错的 ID、名字形状）都能被单测钉住；另加一条**接线守卫**盯着"函数写了却没接上"——这类缺口本仓从来没有任何东西会报错。
+4. 真实命令跑过：`messages wxid_zzz_not_a_real_id --json` → `{"success":true,…,"note":"这个 ID 既不在会话里、也不在联系人里：…"}`，退出码 0；人看的输出同样多那一行。
+
+**Consequences:** `bin/weflow-cli.ts`（messages 命令里接线）、`src/services/messageQuery.ts`（两个纯函数）、`test/message-query.test.ts`（+3 条）、`CHANGELOG.md`、`docs/HEALTH-CHECK.md`（把那行从"没自动修"改成"退出码刻意不动、歧义已说明"）。无破坏性变更——JSON 只多了可选的 `note`。
+
 ## D-102: 入站媒体落地**默认关**；文件名与上限由本地定，失败不留半个文件
 
 **Status:** Active（新能力 + 三条不变量；字段与优先级照厂商实现）
