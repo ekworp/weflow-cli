@@ -958,7 +958,7 @@ def get_openrouter_key(config=None) -> str:
 
 
 def get_judge_provider(config=None) -> str:
-    """决策模型走哪条通路：`native`（默认）、`chat`（国内对话模型）或 `openrouter`。
+    """决策模型走哪条通路：`native`（默认）、`chat`、`openrouter` 或 `local`（本机决策模型）。
 
     **默认必须是 native**：这个开关存在的意义是"本机原生被地区封锁时换条路"，
     而不是替所有用户改行为。取值不认识时也回 native —— 打错的配置项不该把判断整层关掉。
@@ -969,7 +969,26 @@ def get_judge_provider(config=None) -> str:
         except Exception:
             return 'native'
     value = str((config or {}).get('judgeProvider') or '').strip().lower()
-    return value if value in ('native', 'chat', 'openrouter') else 'native'
+    return value if value in ('native', 'chat', 'openrouter', 'local') else 'native'
+
+
+# 本地决策模型服务的默认地址：`python decide.py serve --port 8090` 起的那个（D-127）。
+DEFAULT_JUDGE_LOCAL_URL = 'http://127.0.0.1:8090'
+
+
+def get_judge_local_url(config=None) -> str:
+    """`judgeProvider=local` 时往哪发：配置项 `judgeLocalUrl`，没配就用默认地址。
+
+    与 `get_chat_endpoint` 同一态度：配置读不出来就当没配，返回默认值而不是抛 ——
+    这里抛会让"本机能跑但配置少一个键"变成整条判断链不可用。
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return DEFAULT_JUDGE_LOCAL_URL
+    value = str((config or {}).get('judgeLocalUrl') or '').strip()
+    return value.rstrip('/') or DEFAULT_JUDGE_LOCAL_URL
 
 
 def get_chat_endpoint(config=None):

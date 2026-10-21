@@ -1169,7 +1169,7 @@ const configurableKeys = [
   'ntDbPath', 'ntKey', 'ntSalt', 'contactDbPath', 'contactKey', 'contactSalt',
   'vaultRepo', 'aiEngine', 'aiBaseUrl', 'aiModel', 'deepseekApiKey', 'typesafeApiKey',
   'dashscopeApiKey', 'favPassphrase',
-  'judgeProvider', 'openrouterApiKey', 'openrouterJudgeModel',
+  'judgeProvider', 'openrouterApiKey', 'openrouterJudgeModel', 'judgeLocalUrl',
   'wereadApiKey',
   'assistantPrivacy', 'assistantWhitelist', 'assistantGroupWhitelist',
   'assistantGroupRequireMention', 'assistantFastRoute', 'assistantPanelUser', 'quickReplyContacts',

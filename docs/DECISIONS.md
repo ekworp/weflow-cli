@@ -4017,3 +4017,33 @@ State the decision in one or two sentences.
 
 **Consequences:** List compatibility, migration, security, or documentation follow-up when relevant.
 ```
+
+## D-127: 决策模型可以走本机（`judgeProvider=local`），概率默认当作未校准
+
+**Decision.** 新增第四条判断通路 `judgeProvider=local`：`LocalJevClient` 把本机决策模型服务
+（`decide.py serve`，APUS Reflex 4B + llama-server 的 `/decide`）当 Jev 用，**不需要 key、不联网**。
+`score` 没有连续分，改用 `choice` 在有序档位上选、把选中档位的下标当分数（下游 `score_to_relevance`
+本来就是四舍五入取整，语义等价）。
+
+**Reason.** 原生 `api.typesafe.ai` 在本机被地区封锁（D-120），`chat` 与 `openrouter` 都要把文章正文
+发给第三方。本机 4B 决策模型在官方 Frozen80 上 **66/80 = 82.50%**、**0.3 s/题**（2026-10-22 本机实测，
+RTX 5060 8GB），对"主题 / 相关度 / 该不该收录"这类**窄口径、可验证**的判断够用，而正文不出机器。
+
+**Consequences.**
+- 本机服务的概率是**候选集上的相对 softmax、未校准**（APUS 契约原文）。`confidence` 只作参考，
+  不能直接当自动放行阈值；要用阈值先在自有样本上标定。
+- **一个问题一次 HTTP**：原生 `systemone` 一次答一组，本机 `/decide` 一次只答一个 primitive。
+  日报 3 个问题 ⇒ 3 次调用，实测整篇 0.3–0.5 s（本机回环）。
+- `score` 用 **n-1 次阈值判断**（`达到「中」或「高」吗？`）合成档位，不是三选一：
+  同一批 44 篇（2026-10-16~21，Jev 实判）上，三选一对 Jev 的一致率 45.5%（`低→中` 23 次，
+  系统性偏高），阈值问法 **72.7%**、平均差 0.55 → 0.27 档。**措辞影响巨大**（同一模型同一批样本：
+  纯判据句 59.1%、带主语 + 档位 + 判据 72.7%），改这句话要重测。
+- 服务没起时抛 `JevError`（调用方按既有降级路径退到 LLM 路径），**不静默改用云端**。
+- 新增配置键 `judgeLocalUrl`（默认 `http://127.0.0.1:8090`），已登记进 `CliConfig` 与 `config set`。
+- **按主题的相关度下限（实测校准）**：211 篇同题对比（2026-10-16~21，Jev 实判）显示本机模型对
+  `AI` 类文章的相关度**系统性低估一档**（该类一致率 20.0%，`低→中` 33 次；政治/文学/新闻 90%+）。
+  `LocalJevClient.TOPIC_RELEVANCE_FLOOR = {'AI': 1}` 只把 `AI` 的 `低` 抬到 `中`：
+  该类 77.5%、总体 73.9% → 84.4%（68 篇复测 80.9%）。统一 +1 只有 82.9% 且会越界，故不采用。
+  这张表是**数据产物**：换语料/换模型要重测，`usage.calibration` 会落盘，便于事后核对。
+- 收录阈值：Jev 0.5 时收录 32/211；本机同阈值收录 30 篇、判定一致 86.7%；降到 0.35 收录 32 篇、
+  一致率不变 —— 要与 Jev 的"收录量"对齐就把阈值降到 0.35，要更保守就留 0.5。

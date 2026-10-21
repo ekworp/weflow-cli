@@ -38,7 +38,7 @@ INPUT_USD_PER_TOKEN = 0.042 / 1_000_000  # 输出 token 目前不计费
 
 # 分类法（列表 + 每类的判据）只有一份，在 `_utils` 里。这里直接引用它，
 # 所以提示词那条路和决策模型这条路**判的是同一套定义**——回退时不会换标准。
-from _utils import TOPIC_CRITERIA, RELEVANCE_NAMES  # noqa: E402  (scripts/ 在 sys.path 上)
+from _utils import TOPIC_CRITERIA, RELEVANCE_NAMES, DEFAULT_JUDGE_LOCAL_URL  # noqa: E402  (scripts/ 在 sys.path 上)
 
 # **顺序即语义**：score.criteria 零索引，第一个元素是 0 分。
 # 两件事必须分开：判据文本是**给模型看**的（照抄 TOPIC_PROMPT 里对高/中/低的定义，
@@ -543,6 +543,131 @@ class ChatJevClient(JevClient):
         return message.get('content') or '', usage
 
 
+class LocalJevClient(JevClient):
+    """**用本机决策模型当判断器**（D-127）：`decide.py serve` 的 `/decide`，不出网、无 key。
+
+    与 `JevClient` 同一个鸭子类型（`decide` / `decide_article` / `last_model`），差别有三处：
+
+      · **一个问题一次请求**：本机服务的 `/decide` 只答一个 primitive，而原生 `systemone`
+        一次答一组问题。日报是 3 个问题 ⇒ 3 次调用（本机 0.2–0.6 s/次，整篇仍在 2 s 内）；
+      · `score` **没有连续分**：用 `choice` 在有序档位上选，把选中档位的下标当分数。
+        下游 `score_to_relevance` 本来就是四舍五入取整，所以语义等价；
+      · 概率是**候选集上的相对 softmax、未校准**（APUS 契约原文），`confidence` 只作参考，
+        不要直接拿来做自动放行阈值。
+
+    契约不成立时仍由 `_check_choice` / `_check_score` / `_check_noul` 当场抛 ——
+    换通路不降低校验标准。
+    """
+
+    #: noul / score_level 必须使用固定的 yes/no 候选（本机服务的契约要求）。
+    BINARY = [{'id': 'yes', 'description': 'The stated proposition is true.'},
+              {'id': 'no', 'description': 'The stated proposition is false.'}]
+
+    #: 主题 → 相关度下限（见 `_calibrate` 的实测依据）。空表就是不做校准。
+    TOPIC_RELEVANCE_FLOOR = {'AI': 1}
+
+    def __init__(self, base_url=DEFAULT_JUDGE_LOCAL_URL, model='apus-reflex-4b', timeout=120):
+        super().__init__('local', model=model, timeout=timeout)
+        self.base_url = (base_url or DEFAULT_JUDGE_LOCAL_URL).rstrip('/')
+        self.provider = 'local'
+
+    def models(self):
+        """本机服务没有模型清单接口；调用方（`jev_probe`）只拿它做"名字写错了吗"的自检。"""
+        return []
+
+    def _decide_one(self, state, question):
+        qtype = (question or {}).get('type')
+        instructions = (question or {}).get('instructions') or ''
+        if isinstance(state, (dict, list)):
+            state = json.dumps(state, ensure_ascii=False)
+        if qtype == 'choice':
+            criteria = question.get('criteria') or {}
+            body = self._post(self.base_url + '/decide', {
+                'state': state, 'instructions': instructions, 'primitive': 'choice',
+                'criteria': [{'id': str(k), 'description': str(v)} for k, v in criteria.items()]})
+            return {'choice': body.get('choice'),
+                    'probabilities': body.get('probabilities') or {},
+                    'confidence': body.get('confidence')}
+        if qtype == 'score':
+            levels = question.get('criteria') or []
+            if len(levels) < 2:
+                raise JevError('score：有序档位至少要有 2 档')
+            # 把原问题（"…的实用价值有多高？"）改写成陈述式命题：
+            # "…的实用价值，达到「中」或更高吗？（中：…；高：…）"。
+            # 实测三种写法（同一批 44 篇）：三选一 45.5%、纯判据句 59.1%、
+            # 这种"保留主语 + 阈值 + 判据" 70.5%。**保留主语**是关键——
+            # 只给判据时模型不知道在判什么。
+            stem = instructions.strip().rstrip('？?').strip()
+            if stem.endswith('有多高'):
+                stem = stem[:-3].rstrip('，, ')
+            hits = 0
+            last_name = str(levels[-1]).split('：')[0].split(':')[0]
+            for index in range(1, len(levels)):
+                name = str(levels[index]).split('：')[0].split(':')[0]
+                criteria_text = '；'.join(str(x) for x in levels[index:])
+                body = self._post(self.base_url + '/decide', {
+                    'state': state,
+                    'instructions': '这篇文章%s，达到「%s」或「%s」吗？（%s）'
+                                    % (stem, name, last_name, criteria_text),
+                    'primitive': 'noul', 'criteria': self.BINARY})
+                probability = body.get('yes_probability')
+                if probability is None:
+                    raise JevError('score：第 %d 档阈值没给 yes_probability（%s）'
+                                   % (index + 1, json.dumps(body, ensure_ascii=False)[:200]))
+                hits += float(probability) >= 0.5
+            return {'score': float(hits)}
+        if qtype == 'noul':
+            body = self._post(self.base_url + '/decide', {
+                'state': state, 'instructions': instructions, 'primitive': 'noul',
+                'criteria': self.BINARY})
+            if body.get('yes_probability') is None:
+                raise JevError('noul：本机服务没给 yes_probability（%s）'
+                               % json.dumps(body, ensure_ascii=False)[:200])
+            return {'noul': float(body['yes_probability'])}
+        raise JevError('本机判断器不支持的问题类型：%r' % (qtype,))
+
+    def decide(self, state, questions):
+        """返回 `(answers, usage)`，形状与另外两条通路一致；每个答案都过一遍校验。"""
+        answers = {}
+        started = time.time()
+        for key, question in (questions or {}).items():
+            if not isinstance(question, dict):
+                continue
+            answer = self._decide_one(state, question)
+            _check_choice(key, question, answer)
+            _check_score(key, question, answer)
+            _check_noul(key, question, answer)
+            answers[key] = answer
+        self._calibrate(answers)
+        usage = {'model': self.model, 'provider': 'local',
+                 'elapsed_ms': round((time.time() - started) * 1000),
+                 'calibration': dict(self.TOPIC_RELEVANCE_FLOOR)}
+        self.last_model = self.model
+        return answers, usage
+
+    def _calibrate(self, answers):
+        """按主题给相关度加下限 —— **这是实测出来的，不是拍脑袋**。
+
+        211 篇同题对比（2026-10-16~21，Jev 实判）：本机模型对 `AI` 类文章的相关度
+        系统性低估一档——`低→中` 33 次、`中→中` 仅 5 次，该类一致率 20.0%，
+        而政治/文学/新闻都在 90% 以上。加下限后 AI 类 77.5%、总体 73.9% → 84.4%。
+
+        为什么是「下限」而不是「整体 +1」：统一 +1 只有 82.9%，且会把本来判 `高`
+        的压成越界值；只把 `低` 抬到 `中` 才对得上 Jev 的分布。
+        """
+        topic_answer = answers.get('topic') or {}
+        score_answer = answers.get('relevance') or {}
+        topic = topic_answer.get('choice')
+        if topic is None or 'score' not in score_answer:
+            return
+        floor = self.TOPIC_RELEVANCE_FLOOR.get(topic)
+        if floor is None:
+            return
+        if float(score_answer['score']) < floor:
+            score_answer['score'] = float(floor)
+            score_answer['calibrated'] = True
+
+
 def create_client(api_key='', model='', timeout=120, config=None):
     """拿到 key 就返回客户端，没有就返回 None（调用方据此走老路）。
 
@@ -553,7 +678,9 @@ def create_client(api_key='', model='', timeout=120, config=None):
       `aiModel` / `deepseekApiKey`）——一句话就能打开，不需要新厂商、新 key。
       实测 `deepseek-chat` 1.0 秒/篇且契约通过，成本量级 ¥1/天；
     · `openrouter` → OpenRouter 的 chat/completions，模型取 `openrouterJudgeModel`
-      （默认 `typesafe/jev-router`），key 取 `openrouterApiKey`。
+      （默认 `typesafe/jev-router`），key 取 `openrouterApiKey`；
+    · `local`      → **本机决策模型服务**（`judgeLocalUrl`，默认 `http://127.0.0.1:8090`，
+      即 `decide.py serve`），不需要 key、不出网（D-127）。
     """
     judge_provider = ''
     openrouter_key = openrouter_model = ''
@@ -620,6 +747,13 @@ def create_client(api_key='', model='', timeout=120, config=None):
                              timeout=timeout, provider='openrouter',
                              extra_headers={'HTTP-Referer': OPENROUTER_REFERER,
                                             'X-Title': OPENROUTER_TITLE})
+    if judge_provider == 'local':
+        local_url = DEFAULT_JUDGE_LOCAL_URL
+        try:
+            local_url = getattr(_utils, 'get_judge_local_url')(config) or DEFAULT_JUDGE_LOCAL_URL
+        except Exception:
+            pass
+        return LocalJevClient(local_url, timeout=timeout)
     key = resolve_key(api_key, config)
     if not key:
         return None
