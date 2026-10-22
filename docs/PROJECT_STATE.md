@@ -514,6 +514,18 @@ because nobody built it" look identical to a reader.
 - **`tags` is the configured category for any source that has one, by design.** The prompt for a categorised source is summary-only and explicitly says *不要输出主题、标签、相关度或概念字段*, and the code sets `tags = [category]` itself. Measured over the 1584 articles of the 11 stored days: 1396 carry exactly `[topic]`, 182 carry none, and only **6** carry real extracted tags - and those 6 are the corpus built without configured categories. The checkable signature is that **on every one of those days each source maps to exactly one topic** (36/40/15/43/41/27/35/36/3/36/6 sources, no exceptions), which is what topic-from-config produces and per-article classification does not. A live call through the production prompt returns real tags (`AI与数学, 人类数学家, 数学共同体, 人机关系, 学术人文`), so extraction itself is not broken - it is simply not asked for on that path. Practical consequence: to get meaningful tags for a source, leave its category unconfigured (and accept that its topic then comes from classification rather than from you).
 - **No real artifact on disk carries `includeScore`.** The six files in the 2026-09-05 output directory were written before that field existed, so the field has never been produced in a real run - which is why calibration has to re-score articles rather than read stored values.
 - The report's admission threshold (`INCLUDE_THRESHOLD = 0.5` on `includeScore`) is provisional in the same way and, unlike the old rule, it is actually applied: both loaders call one predicate. Turning it on **reduced** what the report collects, because the primary loader previously collected everything unfiltered. On a 6-article trial the scores straddled the cut point (0.48 and 0.63 on two engineering posts), so the cut point is doing real work rather than being decorative.
+- **Voice transcription is wired but not usable on this machine's audio - measured 2026-10-22.** The
+  decode side is fine and verified: `media_*.db` holds 2121 clips, PILK turns a 15878-byte payload into
+  8.4 s of 16 kHz mono at peak 27613 / 46% loud samples, so it is real speech rather than noise. The
+  transcription side is not: `small`, `large-v3`, and `large-v3` with a Cantonese hint all return either
+  garbled text or **verbatim repetition** (`我做的事情都没有做过` x3), which is Whisper's failure mode on
+  dialect-heavy short clips. Sample rate is not the cause - decoding at 8000 and 16000 Hz yields the same
+  8.38 s, i.e. PILK resamples rather than shifting pitch. The working alternative (FunASR) could not be
+  installed: `pip install funasr` spent **23 minutes downloading only the wheel metadata** before being
+  killed, so the network path is the blocker. Deliberately **not** indexed: putting those transcripts into
+  the semantic/phrase index would poison retrieval, and a search that returns gibberish is worse than one
+  that returns nothing. `voice_transcribe.py` stays as the working decode + cache + resume layer, ready for
+  a better engine.
 - **Message shards are split by *time*, not by account or by size - measured 2026-10-22.** The four
   `message_*.db` files on this machine each cover a consecutive span, oldest to newest:
   `message_2.db` 2024-03-29 ~ 2024-08-28 (1 conversation table), `message_1.db` 2024-08-30 ~ 2025-08-28 (2),
