@@ -19,7 +19,9 @@
 
 </div>
 
-**WeFlow CLI turns WeChat into your local second brain**: read and query chat history locally with one command, export readable HTML; turn official-account articles into AI-digested daily reports; read your WeChat favorites; build a semantic-searchable knowledge base — and plug it all into MCP-compatible AI editors like Claude Code. Works on Windows and Linux.
+**WeFlow CLI turns WeChat into your local second brain**: read and query chat history locally with one command, export readable HTML; turn official-account articles into AI-digested daily reports (optionally mailed to you); read your WeChat favorites; build a semantic-searchable knowledge base — voice messages included — and plug it all into MCP-compatible AI editors like Claude Code. Works on Windows and Linux.
+
+It is built to answer **questions WeChat itself cannot**: who is waiting on a reply, what I promised someone and whether I followed through, which relationships are cooling, how an account's position shifted over time, and what we were talking about on this day in earlier years.
 
 > 🔒 **Local-first**: runs entirely on your machine — zero telemetry, zero cloud reporting. Database keys are stored locally, encrypted with machine-bound AES-256-GCM. AI features only activate after you explicitly configure your own API key. See the [Security & Privacy statement](./SECURITY.md).
 
@@ -58,6 +60,17 @@ weflow-cli daily --date 2026-08-21     # official-account digest + AI summary
 weflow-cli daily-server                # local reader http://localhost:8765
 weflow-cli chat "How does RAG work?"   # knowledge-base RAG Q&A
 weflow-cli mcp-config                  # one-shot MCP client integration
+```
+
+**Questions WeChat cannot answer** (all read-only, no network, no model calls):
+
+```text
+weflow-cli awaiting                    # who is waiting on a reply
+weflow-cli bonds                       # relationship temperature: cooling, warming, WeChat-only
+weflow-cli promises --days 180         # what I said I'd do, with the original words and follow-up evidence
+weflow-cli today --years 1,3,5         # what we were talking about on this day in earlier years
+weflow-cli network --with "contact"    # shared groups; --intro finds who could introduce you
+weflow-cli timeline --source "account" # one account's articles laid out in time
 ```
 
 ## Platform Support
@@ -283,6 +296,10 @@ Management: `weflow-cli assistant status` / `log` / `stop`; send "帮助" in WeC
 | Who is waiting on a reply | `weflow-cli awaiting --dry-run` · `weflow-cli awaiting --yes` |
 | Draft a reply (text unless you pick and send) | `weflow-cli draft <contact> --dry-run` · `--yes` (**only** `--pick N --send --yes` actually sends; both flags are required) |
 | Relationship temperature | `weflow-cli bonds` (who is cooling, who is warming, who only has WeChat; read-only, local, no model) |
+| What I promised whom | `weflow-cli promises --days 180` (original words plus follow-up evidence; rule-based, no model) |
+| This day in earlier years | `weflow-cli today --years 1,3,5` (what you were talking about back then) |
+| People graph | `weflow-cli network --groups` · `--with <name>` (shared groups) · `--intro <name>` (who could introduce you; reads `contact.db` only) |
+| One account over time | `weflow-cli timeline --list` · `--source <account>` (its articles laid out in time) |
 | Local judgement primitive | `weflow-cli decide --request <file> --dry-run` · `--yes` |
 | Export chat history | `weflow-cli export <contact> <json\|txt\|html\|excel>` |
 | Sync checkpoint | `weflow-cli sync run <contact> --since <date>` · `sync status` · `sync verify` |
@@ -290,7 +307,7 @@ Management: `weflow-cli assistant status` / `log` / `stop`; send "帮助" in WeC
 | Moments cache | `weflow-cli sns timeline` · `weflow-cli sns users` · `weflow-cli sns stats` |
 | WeChat favorites | `weflow-cli fav list` · `weflow-cli fav export markdown` · `weflow-cli fav set-key` |
 | WeRead | `weflow-cli weread shelf` · `notes` · `search` · `stats` (get the key from https://weread.qq.com/r/weread-skills; see [OPERATIONS.md](./OPERATIONS.md)) |
-| Knowledge base | `weflow-cli vault` · `weflow-cli wiki` · `weflow-cli search <query>` · `weflow-cli chat` (semantic search needs `config set dashscopeApiKey` first) |
+| Knowledge base | `weflow-cli vault` · `weflow-cli wiki` · `weflow-cli search <query>` · `weflow-cli chat` (semantic search needs `config set dashscopeApiKey` first; `search --phrase <words> --line all` also matches voice transcripts) |
 | Reports & tasks | `weflow-cli report` · `annual-report` · `todos` |
 | Second-brain assistant | `weflow-cli assistant start` · `status` · `log` · `stop` |
 | On-device panel | `weflow-cli panel` — floating window; `--status` reads state only, `--ask "…"` asks from the command line |
@@ -356,6 +373,8 @@ For a more complete view of modules and data flow, read [ARCHITECTURE.md](./ARCH
 - After upgrading WeChat, switching accounts, or migrating computers, you may need to re-initialize or re-scan NT keys.
 - `init` validates existing local configuration first and does not re-capture keys when that validation passes. Use `weflow-cli init --refresh` only after a migration, an account switch, or an access failure.
 - To test a first-time initialization or a failed key, prefer `weflow-cli init --test-missing-keys`; it simulates missing keys for that run only and leaves the saved configuration untouched. When keys really have failed, `weflow-cli config forget-keys` clears the database access keys only and asks for confirmation.
+- **Voice transcription runs on your machine** (`faster-whisper`, local model); audio never leaves it, and transcripts are cached by content hash so an interrupted run resumes. It is **not guaranteed accurate** — dialect, accent and background noise all introduce errors; the purpose is "you can find what was said", not a verbatim record. Transcripts join the phrase index only, never the semantic index (no second embedding bill for dialect-approximate text).
+- **Message shards are split by time** (`message_0..3.db`, roughly a year each), so "older chats" depend on whether the shard covering that period is still on the machine; `weflow-cli check --report` lists each shard's read status.
 - Running `weflow-cli daily` without a date checks yesterday's artifacts first: if yesterday's `README.md`, article index, or `index.html` is missing, it backfills yesterday and only generates today once that succeeds. Passing `--date` or `--dry-run` skips the backfill.
 
 ## Documentation & Feedback

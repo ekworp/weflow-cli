@@ -19,7 +19,9 @@
 
 </div>
 
-**WeFlow CLI 把微信变成你的本地第二大脑**：在本机读取和查询聊天记录、导出可读 HTML；把公众号文章整理成带 AI 摘要的日报；读取微信收藏；构建可语义搜索的知识库；并通过 MCP 接入 Claude Code 等 AI 编辑器。支持 Windows 与 Linux。
+**WeFlow CLI 把微信变成你的本地第二大脑**：在本机读取和查询聊天记录、导出可读 HTML；把公众号文章整理成带 AI 摘要的日报（可邮件推送）；读取微信收藏；构建可语义搜索的知识库（连语音消息也能搜）；并通过 MCP 接入 Claude Code 等 AI 编辑器。支持 Windows 与 Linux。
+
+它专门回答**几个微信自己回答不了的问题**：谁在等我回话、我答应过谁什么后来做了没有、和谁的关系在变淡、某个号的观点怎么变的、那一年的今天我们在聊什么。
 
 > 🔒 **本地优先**：完全在你的电脑上运行——零遥测、零云上报；数据库密钥以机器绑定的 AES-256-GCM 加密存储在本机。AI 功能仅在显式配置你自己的 API Key 后启用。详见[安全与隐私声明](./SECURITY.md)。
 
@@ -58,6 +60,17 @@ weflow-cli daily --date 2026-08-21     # 公众号日报 + AI 摘要与分类
 weflow-cli daily-server                # 本地阅读器 http://localhost:8765
 weflow-cli chat "RAG 的原理是什么?"     # 知识库 RAG 问答
 weflow-cli mcp-config                  # 一键接入 Claude Code 等 MCP 客户端
+```
+
+**几个微信给不出答案的问题**（都只读本地库，不联网、不调模型）：
+
+```text
+weflow-cli awaiting                    # 谁在等我回话
+weflow-cli bonds                       # 关系温度：谁在冷却、谁只有微信这一条线
+weflow-cli promises --days 180         # 我答应过谁什么，后来做了没有（带原话与后续证据）
+weflow-cli today --years 1,3,5         # 那几年的今天，我们在聊什么
+weflow-cli network --with "联系人A"     # 我和他共同在哪些群；--intro 看谁能引荐
+weflow-cli timeline --source "某号"     # 这个号历次说法的时间线
 ```
 
 ## 平台支持
@@ -307,7 +320,7 @@ weflow-cli config set assistantGroupRequireMention true
 | 朋友圈缓存 | `weflow-cli sns timeline` · `weflow-cli sns users` · `weflow-cli sns stats` |
 | 微信收藏 | `weflow-cli fav list` · `weflow-cli fav export markdown` · `weflow-cli fav set-key` |
 | 微信读书 | `weflow-cli weread shelf` · `notes` · `search` · `stats`（key 从 https://weread.qq.com/r/weread-skills 拿，见 [OPERATIONS.md](./OPERATIONS.md)） |
-| 知识库 | `weflow-cli vault` · `weflow-cli wiki` · `weflow-cli search <query>` · `weflow-cli chat`（语义检索需先 `config set dashscopeApiKey`）|
+| 知识库 | `weflow-cli vault` · `weflow-cli wiki` · `weflow-cli search <query>` · `weflow-cli chat`（语义检索需先 `config set dashscopeApiKey`；`search --phrase <词> --line all` 连语音转写一起搜）|
 | 总结与任务 | `weflow-cli report` · `annual-report` · `todos` |
 | 第二大脑助手 | `weflow-cli assistant start` · `status` · `log` · `stop` |
 | 本机面板 | `weflow-cli panel`（悬浮窗；`--status` 只看状态，`--ask "…"` 在命令行里问）|
@@ -374,6 +387,8 @@ python scripts/fav_server.py --date YYYY-MM-DD
 - `init` 会先验证已有本地配置；验证通过时不再重复捕获密钥。仅在迁移、切换账号或访问失败后使用 `weflow-cli init --refresh`。
 - 测试首次初始化或密钥失效时，优先使用 `weflow-cli init --test-missing-keys`；它只在本次运行模拟密钥缺失，不改动已保存配置。实际密钥失效时可使用 `weflow-cli config forget-keys`，该命令仅清除数据库访问密钥并要求确认。
 - 不指定日期运行 `weflow-cli daily` 时，会先检查昨天的日报产物；昨天缺少 `README.md`、文章索引或 `index.html` 时，会先补齐昨天，成功后才生成今天。指定 `--date` 或使用 `--dry-run` 时不执行补日报。
+- 语音转写用**本机** Whisper 模型（`faster-whisper`），音频不出本机；转写按内容哈希缓存，可中断续跑。它**不保证准确**——方言、口音和背景音都会带来误差，用途是"能搜到说过什么"，不是逐字记录。转写结果只并入短语索引，不进语义索引（不为方言近似文本再付一次嵌入费用）。
+- 消息分片按**时间段**切分（`message_0..3.db` 各覆盖一年多），所以"更早的聊天"取决于那段时间对应的分片是否还在本机；`weflow-cli check --report` 会列出每个分片的读取状态。
 
 ## 文档与反馈
 
