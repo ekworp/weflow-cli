@@ -17,6 +17,22 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.14.1
+
+- **The daily run now keeps the retrieval indexes fresh.** On 2026-10-22 the semantic index was
+  still at 10-15 and the phrase index at 10-17, so `search` could not find anything newer than a
+  week ago - nothing had ever refreshed them. After the day's report is written, the wrapper runs
+  `semantic_search.py update` (embeds only what is missing: 4,061 new records on that first run)
+  and `semantic_search.py phrase-build` (local FTS, no API cost). Each has its own log and neither
+  can fail the day.
+- **The noon pass mails too, and says it is half a day.** It used to generate silently, which read
+  as "it never ran" - the only evidence was a log file. The noon email is titled
+  「…（截至中午）」 and states that the complete version arrives the next morning, so the two daily
+  emails cannot be mistaken for duplicates.
+- **`phrase-build` no longer fails when `VACUUM` cannot run.** `VACUUM` needs a temp file, and in a
+  restricted environment it reports `unable to open database file` *after* the index has been
+  written successfully - that turned a good rebuild into exit code 1.
+
 ## 1.14.0
 
 - **A daily report you can receive by mail, cut down to the topics you actually read.**
