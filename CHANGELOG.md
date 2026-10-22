@@ -17,6 +17,30 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.15.0
+
+- **Four read-only answers to questions WeChat cannot answer.** `weflow-cli today` shows what you were
+  talking about on this day in earlier years (it walks every shard and every conversation table, so
+  "five years ago today" is actually reachable). `network` gives shared groups and introduction paths
+  from `contact.db` alone - it never opens a message. `promises --days 180` finds what you said you
+  would do, then looks for the follow-up evidence in the same conversation: you mentioning it was sent,
+  the other side chasing it, or the other side confirming. `timeline --source <账号>` lays one account's
+  articles out in time so its positions can be compared. All four are `--json`-capable, read-only, and
+  speak Chinese like the rest of the CLI.
+- **Voice messages are searchable.** `search --phrase <词> --line all` now matches what was said out
+  loud, a content class WeChat cannot search at all. The blocker was not dialect but Whisper's default
+  self-conditioning: with `condition_on_previous_text` off, VAD on, a compression-ratio fallback and a
+  repetition penalty, the same clips that produced `我做的事情都没有做过` three times instead read
+  `你填一下交通补贴20元 兄弟`. Measured 4 of 5 clips readable afterwards, 0 of 5 before. Transcripts are
+  merged into the **phrase** index as `type='voice'` and deliberately kept out of the semantic one -
+  paying a second embedding bill for a dialect-approximate transcript is a bad trade.
+- **Two silent name-resolution bugs fixed along the way.** Contacts live in `contact.db`, never in the
+  message shards, so looking for a `contact` table there yields a blank name map and every group prints
+  as `47966561144@chatroom`; and the configured `wxid` may carry a suffix that `Name2Id` does not
+  (`wxid_账号A_后缀` vs `wxid_账号A`), which made "messages I sent" match nothing until the comparison
+  became prefix-tolerant. `voice_transcribe.py` decodes, caches (content-addressed, resumable) and
+  writes `output/.voice_index/voices.jsonl`.
+
 ## 1.14.1
 
 - **The daily run now keeps the retrieval indexes fresh.** On 2026-10-22 the semantic index was
