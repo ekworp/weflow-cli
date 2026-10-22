@@ -19,21 +19,25 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.14.0
 
-- **Set up the daily report can now be mailed, filtered to the topics you actually read.**
-  `daily --email` renders the day's articles into one email with two sections - AI and 学术 -
-  dropping 新闻 / 政治 / 投资 / 文学, and each section opens with an AI-written digest (one call per
-  section) over that section's titles and key points. Every article keeps its one-line analysis
-  (those are the per-article summaries `biz_daily` already produced, so no extra calls) plus its
-  source, time and a link to the original. The layout is a 640px card: dark header with the date,
-  a per-topic colour badge (AI indigo / 学术 teal), the digest in a tinted panel, then one card per
-  article - built with tables and inline styles because mail clients strip `<style>` and classes.
-  The HTML reader stays on the desktop on purpose: its images are local relative paths and would
-  break in a mailbox. Recipient comes from `--mail-to`, then config `dailyMailTo`, then the SMTP
-  account itself.
-- **The scheduled run mails the same report after it finishes.** `scripts/daily_task.ps1` calls
-  `daily_mail.py` only when the report was produced, and logs the mail step separately - a mail
-  failure is recorded but does not turn a successful day into a failed one, nor stop the noon
-  marker from being written.
+- **A daily report you can receive by mail, cut down to the topics you actually read.**
+  `daily --email` mails one report with two sections - AI and 学术 - dropping 新闻 / 政治 / 投资 /
+  文学, and each section opens with an AI-written digest over that section's titles. Every article
+  keeps the one-line analysis `biz_daily` already produced (no extra calls), its source and time,
+  its link, and any GitHub repository mentioned in the body (14 of the 110 articles on 2026-10-18).
+  Recipient comes from `--mail-to`, then config `dailyMailTo`, then the SMTP account itself.
+- **Each topic is clustered again before it is printed.** 68 AI articles in one list is a wall;
+  an AI pass groups them into 4-6 named sections (模型与产品 / 智能体与工程 / 科研工具 …), each with a
+  coloured dot. Tags were not usable: 68 articles carried 382 distinct tags, the most frequent
+  appearing 6 times. A degenerate answer (everything in one group) is retried with a stricter
+  instruction, because it silently collapses the layout back to a single wall - observed on
+  2026-10-21, where 91 articles ended up in one group.
+- **Uniform cards, and no colour without a label.** Every article is the same card; only the badge
+  colour and summary length differ, so a section never looks like two layouts mixed together.
+  Relevance is a small tag that *says* 高 instead of a colour the reader has to guess.
+- **The scheduled run mails the report once a day.** `scripts/daily_task.ps1` calls `daily_mail.py`
+  only after the day pass produced the report - the noon pass generates but does not mail, so the
+  inbox gets one complete day instead of a half day followed by a repeat. A mail failure is logged
+  separately and does not turn a successful day into a failed one.
 
 ## 1.13.1
 
