@@ -62,7 +62,8 @@ def collect(cfg, days, limit=0):
                 'WHERE voice_data IS NOT NULL AND create_time >= ? '
                 'ORDER BY create_time DESC', (since,))
             for cid, lid, ts, blob in cur.fetchall():
-                rows.append((str(shard), cid, lid, int(ts or 0), blob, names.get(cid, str(cid))))
+                rows.append((str(shard), cid, lid, int(ts or 0), blob,
+                         names.get(cid, str(cid))))
         except Exception as exc:
             print(f'[WARN] {pathlib.Path(shard).name} 读不了（{type(exc).__name__}: {exc}）',
                   file=sys.stderr)
@@ -72,6 +73,18 @@ def collect(cfg, days, limit=0):
     rows.sort(key=lambda r: r[3], reverse=True)
     if limit and limit > 0:
         rows = rows[:limit]
+
+    # 会话名从 **contact.db** 补一层：消息库的 `Name2Id` 只有 id，语音清单里
+    # 只写 id 的话，搜索结果显示成 `wxid_xxx`（2026-10-22 第一版就是这样）。
+    try:
+        from network import load_graph
+        people, _rooms, _members = load_graph(cfg)
+        by_username = {p['username']: (p['remark'] or p['nick'] or p['username'])
+                       for p in people.values()}
+        rows = [(s, c, l, t, b, by_username.get(name, name)) for s, c, l, t, b, name in rows]
+    except Exception as exc:
+        print(f'[WARN] 读联系人失败（{type(exc).__name__}: {exc}），语音清单里显示 id',
+              file=sys.stderr)
     return rows
 
 
