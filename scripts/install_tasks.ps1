@@ -60,24 +60,38 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances 
 $psExe = 'powershell.exe'
 $common = '-NoProfile -ExecutionPolicy Bypass -File ' + $script
 
+# Launch through wscript.exe, not powershell.exe directly.
+#
+# A scheduled action that runs powershell.exe is a *console* program: Windows creates the console
+# window before PowerShell can hide it, so every run flashes a black box - and while a game is in
+# the foreground that is a real interruption. wscript.exe is a GUI process with no console at all,
+# and run_hidden.vbs starts PowerShell with window style 0, so nothing appears.
+$wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+$vbs = Join-Path $PSScriptRoot 'run_hidden.vbs'
+if (-not (Test-Path $vbs)) {
+    Write-Host "Missing launcher: $vbs" -ForegroundColor Red
+    exit 1
+}
+$action = '//B //Nologo "' + $vbs + '"'
+
 # End of day: yesterday. The at-logon trigger is the catch-up: this machine slept for
 # 37 hours and StartWhenAvailable did NOT actually start the missed run (NumberOfMissedRuns=2,
 # no run record), so "it will catch up by itself" is not something to rely on.
 Register-ScheduledTask -TaskName 'WeFlow Daily' `
-    -Action (New-ScheduledTaskAction -Execute $psExe -Argument $common) `
+    -Action (New-ScheduledTaskAction -Execute $wscript -Argument $action) `
     -Trigger @((New-ScheduledTaskTrigger -Daily -At '00:05'),
                (New-ScheduledTaskTrigger -AtLogOn)) `
     -Settings $settings `
-    -Description 'WeChat daily report for yesterday (00:05 + at logon, idempotent)' -Force | Out-Null
+    -Description 'WeChat daily report for yesterday (00:05 + at logon, idempotent, no window)' -Force | Out-Null
 
 # Noon: today so far. Deliberately NO at-logon trigger: a morning logon would produce a
 # very thin "noon" report and write the .noon_done marker, which would then make the real
 # 13:00 run skip itself (the guard keys on that marker).
 Register-ScheduledTask -TaskName 'WeFlow Daily Noon' `
-    -Action (New-ScheduledTaskAction -Execute $psExe -Argument ($common + ' noon')) `
+    -Action (New-ScheduledTaskAction -Execute $wscript -Argument ($action + ' noon')) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At '13:00') `
     -Settings $settings `
-    -Description 'WeChat daily report for today so far (13:00)' -Force | Out-Null
+    -Description 'WeChat daily report for today so far (13:00, no window)' -Force | Out-Null
 
 foreach ($name in @('WeFlow Daily', 'WeFlow Daily Noon')) {
     $t = Get-ScheduledTask -TaskName $name
