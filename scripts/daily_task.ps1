@@ -128,6 +128,31 @@ if ($proc.ExitCode -eq 0 -and $rest.Count -eq 0) {
         }
     }
 
+    # Retrieval indexes lag behind unless something refreshes them: on 2026-10-22 the
+    # semantic index was still at 10-15 (7 days stale) and the phrase index at 10-17, so
+    # `search` simply could not find anything newer. Both run here, after the day is on
+    # disk, in their own logs -- a failure is recorded and never fails the day.
+    $searchScript = Join-Path $PSScriptRoot 'semantic_search.py'
+    if ($mode -eq 'day' -and (Test-Path $searchScript)) {
+        $idxOut = Join-Path $logDir ('index-{0}.log' -f $stamp)
+        $idxErr = Join-Path $logDir ('index-{0}.err.log' -f $stamp)
+        # `update` only embeds what is not in the index yet (4,061 new records on the first
+        # run after a week). `phrase-build` is local FTS, no API, so it rebuilds in full.
+        $idxProc = Start-Process -FilePath $python `
+            -ArgumentList @($searchScript, 'update', '--article-days', '30') `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $idxOut -RedirectStandardError $idxErr
+        $phraseProc = Start-Process -FilePath $python `
+            -ArgumentList @($searchScript, 'phrase-build') `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput (Join-Path $logDir ('phrase-{0}.log' -f $stamp)) `
+            -RedirectStandardError (Join-Path $logDir ('phrase-{0}.err.log' -f $stamp))
+        if ($idxProc.ExitCode -ne 0 -or $phraseProc.ExitCode -ne 0) {
+            Add-Content -Path (Join-Path $logDir 'daily-task.log') -Value `
+                ('===== {0}  index update failed (update={1}, phrase={2}), see {3} =====' -f `
+                    (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $idxProc.ExitCode, $phraseProc.ExitCode, $idxErr) -Encoding UTF8
+        }
+    }
+
     # Mail is a separate step on purpose: the day's product is already on disk, so a mail
     # failure must not turn a successful run into a failed one (and must not stop the
     # noon marker from being written). It has its own log pair.

@@ -1235,7 +1235,15 @@ def build_phrase_index(line: str = 'all', db_path=None, meta_path=None):
         conn.executemany('INSERT INTO hits(body, rid, line, label, date, title)'
                          ' VALUES (?, ?, ?, ?, ?, ?)', rows)
         conn.commit()
-        conn.execute('VACUUM')
+        # `VACUUM` 要写临时文件；在受限环境（沙箱 / %TEMP% 不可写）它会报
+        # `unable to open database file`，而**数据其实已经写进去了** —— 那一步只是把库压实。
+        # 所以它失败不能被当成"索引没建好"：2026-10-22 实测 155MB 的库内容完整，
+        # 却因为这一行让整个 phrase-build 的退出码变成非 0。
+        try:
+            conn.execute('VACUUM')
+        except Exception as exc:
+            print(f'[WARN] 短语索引已写入，但 VACUUM 失败（{type(exc).__name__}: {exc}）'
+                  '——只是没压实，查询不受影响', file=sys.stderr)
     finally:
         conn.close()
     return {'records': len(rows), 'byLine': by_line, 'textMissing': text_missing,
