@@ -153,18 +153,18 @@ if ($proc.ExitCode -eq 0 -and $rest.Count -eq 0) {
         }
     }
 
-    # Mail is a separate step on purpose: the day's product is already on disk, so a mail
-    # failure must not turn a successful run into a failed one (and must not stop the
-    # noon marker from being written). It has its own log pair.
-    #
-    # **Only the day pass mails.** The noon pass is a half day, so mailing it too means two
-    # emails a day where the second one repeats the first - the user asked for one email,
-    # and the complete day is the one worth reading (2026-10-20).
+    # **Both passes mail now.** The noon pass used to be silent, which read as "it never
+    # ran" - the only way to tell it had done anything was to open the log. The two emails
+    # are clearly different: the noon one is labelled 截至中午 and says the complete version
+    # follows next morning. Mail is still its own step with its own log pair, so a mail
+    # failure never fails the day nor blocks the noon marker.
     $mailScript = Join-Path $PSScriptRoot 'daily_mail.py'
     $mailOut = Join-Path $logDir ('daily-mail-{0}{1}.log' -f $stamp, $suffix)
     $mailErr = Join-Path $logDir ('daily-mail-{0}{1}.err.log' -f $stamp, $suffix)
-    if ($mode -eq 'day' -and (Test-Path $mailScript)) {
-        $mailProc = Start-Process -FilePath $python -ArgumentList @($mailScript, '--date', $targetDay) `
+    if (Test-Path $mailScript) {
+        $mailArgs = @($mailScript, '--date', $targetDay)
+        if ($mode -eq 'noon') { $mailArgs += @('--label', '截至中午') }
+        $mailProc = Start-Process -FilePath $python -ArgumentList $mailArgs `
             -NoNewWindow -Wait -PassThru -RedirectStandardOutput $mailOut -RedirectStandardError $mailErr
         if ($mailProc.ExitCode -ne 0) {
             Add-Content -Path (Join-Path $logDir 'daily-task.log') -Value `

@@ -423,6 +423,7 @@ def main():
     ap.add_argument('--date', required=True, help='YYYY-MM-DD')
     ap.add_argument('--to', default='', help='收件人；缺省用配置 dailyMailTo，再缺省发给自己')
     ap.add_argument('--topics', default=','.join(DEFAULT_TOPICS), help='逗号分隔的主题')
+    ap.add_argument('--label', default='', help='标题后缀，如「截至中午」——区分半日速览与次日完整版')
     ap.add_argument('--no-digest', action='store_true', help='不生成每主题的 AI 综述（省钱、更快）')
     ap.add_argument('--dry-run', action='store_true', help='只渲染，不发送')
     args = ap.parse_args()
@@ -449,7 +450,11 @@ def main():
     print(f'正文含 GitHub 链接: {with_repo} 篇')
 
     text_body, html_body, total = render(args.date, groups, digests, bodies, clusters)
-    subject = f'公众号日报 {args.date}：{" / ".join(t for t in topics if groups.get(t))} {total} 篇'
+    label = (args.label or '').strip()
+    suffix = f'（{label}）' if label else ''
+    subject = f'公众号日报 {args.date}{suffix}：{" / ".join(t for t in topics if groups.get(t))} {total} 篇'
+    if label:
+        text_body = f'【{label}】以下是到此刻为止收到的 {total} 篇。完整版会在次日凌晨按整天重发。\n\n' + text_body
 
     user, auth = smtp_settings()
     to = args.to or str(cfg.get('dailyMailTo') or '') or user
