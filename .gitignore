@@ -55,3 +55,8 @@ scripts/regen_wsl_keys.mjs
 !docs/JEV应用施工文档.md
 .DS_Store
 Thumbs.db
+
+# 测试在 %TEMP% 不可写时会落到仓库根，按前缀忽略
+weflow-multi-*/
+weflow-xor-*/
+weflow-voice-*/
