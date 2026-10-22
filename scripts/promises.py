@@ -48,9 +48,8 @@ def _clean(text):
 def same_account(name, wxid):
     """配置里的 wxid 与 `Name2Id` 里的账号名**可能是同一个人的两种写法**。
 
-    实测本机：配置是 `wxid_账号A_4c8e`，而 `Name2Id` 里只有
-    `wxid_账号A`（没有 `_4c8e` 后缀）——精确比较一个都匹配不上，
-    于是"我发的消息"一条也捞不到（第一版就是这么得到 0 条承诺的）。
+    实测本机：配置是 `wxid_账号A_后缀`，而 `Name2Id` 里只有 `wxid_账号A`（没有后缀）——
+    精确比较一个都匹配不上，于是"我发的消息"一条也捞不到（第一版就是这么得到 0 条承诺的）。
     """
     n, w = (name or '').strip(), (wxid or '').strip()
     if not n or not w:

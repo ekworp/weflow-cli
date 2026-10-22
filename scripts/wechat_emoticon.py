@@ -56,7 +56,7 @@ def derive_key(seed, wxid):
 
 
 def account_wxid(account_dir_name):
-    """`wxid_账号A_4c8e` -> `wxid_账号A`."""
+    """`wxid_账号A_后缀` -> `wxid_账号A`."""
     parts = account_dir_name.rsplit('_', 1)
     return parts[0] if len(parts) == 2 and len(parts[1]) == 4 else account_dir_name
 
