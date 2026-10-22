@@ -514,6 +514,15 @@ because nobody built it" look identical to a reader.
 - **`tags` is the configured category for any source that has one, by design.** The prompt for a categorised source is summary-only and explicitly says *不要输出主题、标签、相关度或概念字段*, and the code sets `tags = [category]` itself. Measured over the 1584 articles of the 11 stored days: 1396 carry exactly `[topic]`, 182 carry none, and only **6** carry real extracted tags - and those 6 are the corpus built without configured categories. The checkable signature is that **on every one of those days each source maps to exactly one topic** (36/40/15/43/41/27/35/36/3/36/6 sources, no exceptions), which is what topic-from-config produces and per-article classification does not. A live call through the production prompt returns real tags (`AI与数学, 人类数学家, 数学共同体, 人机关系, 学术人文`), so extraction itself is not broken - it is simply not asked for on that path. Practical consequence: to get meaningful tags for a source, leave its category unconfigured (and accept that its topic then comes from classification rather than from you).
 - **No real artifact on disk carries `includeScore`.** The six files in the 2026-09-05 output directory were written before that field existed, so the field has never been produced in a real run - which is why calibration has to re-score articles rather than read stored values.
 - The report's admission threshold (`INCLUDE_THRESHOLD = 0.5` on `includeScore`) is provisional in the same way and, unlike the old rule, it is actually applied: both loaders call one predicate. Turning it on **reduced** what the report collects, because the primary loader previously collected everything unfiltered. On a 6-article trial the scores straddled the cut point (0.48 and 0.63 on two engineering posts), so the cut point is doing real work rather than being decorative.
+- **Four read-only "questions WeChat cannot answer" commands ship as CLI, not just scripts.**
+  `today` (cross-year same-day recap), `network` (shared groups / introduction paths from `contact.db`),
+  `promises` (what I said I would do, with the follow-up evidence), `timeline` (one account's articles
+  over time). All four are `--json`-capable and read only; none sends or calls the assistant layer.
+  Two shared traps were fixed while wiring them: **contact names live in `contact.db`, never in the
+  message shards** (looking for a `contact` table there silently yields ids, so every name printed as
+  `47966561144@chatroom`), and **the configured `wxid` may carry a suffix the `Name2Id` table does not**
+  (`wxid_账号A_后缀` vs `wxid_账号A`), which made "messages I sent" match nothing until the comparison
+  became prefix-tolerant.
 - **Voice transcription is wired but not usable on this machine's audio - measured 2026-10-22.** The
   decode side is fine and verified: `media_*.db` holds 2121 clips, PILK turns a 15878-byte payload into
   8.4 s of 16 kHz mono at peak 27613 / 46% loud samples, so it is real speech rather than noise. The

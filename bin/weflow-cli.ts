@@ -7438,6 +7438,175 @@ program
     }
   })
 
+// ==================== today（那年今日）====================
+program
+  .command('today')
+  .description('那年今日：几年前的今天你在聊什么（只读本地库，不联网）')
+  .option('--years <list>', '往前看几年，逗号分隔', '1,3,5')
+  .option('--talker <name>', '只看某个会话（wxid 或昵称）')
+  .option('--limit <number>', '每天最多列几条', '6')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'on_this_day.py')
+    const limit = parseCliInteger(opts.limit, 'limit', 1, 200, opts.json)
+
+    try {
+      const args = [script, '--years', String(opts.years || '1,3,5'), '--limit', String(limit)]
+      if (opts.talker) args.push('--talker', String(opts.talker))
+      if (opts.json) args.push('--json')
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'TODAY_FAILED',
+          error: '那年今日不可用，请运行 check --json 检查配置和依赖',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '回溯失败')}`))
+      process.exit(1)
+    }
+  })
+
+// ==================== network（人脉图谱）====================
+program
+  .command('network')
+  .description('人脉图谱：共同群、谁能做引荐人（只读 contact.db，不碰聊天内容）')
+  .option('--groups', '列群概览（成员数）')
+  .option('--with <name>', '我和他共同在哪些群')
+  .option('--intro <name>', '谁适合把我介绍给他')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'network.py')
+
+    try {
+      const args = [script]
+      if (opts.groups) args.push('--groups')
+      if (opts.with) args.push('--with', String(opts.with))
+      if (opts.intro) args.push('--intro', String(opts.intro))
+      if (opts.json) args.push('--json')
+      if (args.length === 1) {
+        console.error(chalk.yellow('\n用法：network --groups | --with <名字> | --intro <名字>'))
+        process.exit(1)
+      }
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'NETWORK_FAILED',
+          error: '人脉图谱不可用，请运行 check --json 检查配置和依赖',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '查询失败')}`))
+      process.exit(1)
+    }
+  })
+
+// ==================== promises（欠账清单）====================
+program
+  .command('promises')
+  .description('欠账清单：我说过要给谁做什么、后来做了没有（规则判定，带原话与后续证据）')
+  .option('--days <number>', '看最近多少天', '60')
+  .option('--talker <name>', '只看某个会话')
+  .option('--limit <number>', '最多列几条', '30')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'promises.py')
+    const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
+    const limit = parseCliInteger(opts.limit, 'limit', 1, 500, opts.json)
+
+    try {
+      const args = [script, '--days', String(days), '--limit', String(limit)]
+      if (opts.talker) args.push('--talker', String(opts.talker))
+      if (opts.json) args.push('--json')
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'PROMISES_FAILED',
+          error: '欠账清单不可用，请运行 check --json 检查配置和依赖',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '统计失败')}`))
+      process.exit(1)
+    }
+  })
+
+// ==================== timeline（某号观点演变）====================
+program
+  .command('timeline')
+  .description('观点时间线：某个公众号历次文章与要点，可按时间看它说法的变化')
+  .option('--source <name>', '公众号名（子串匹配）')
+  .option('--list', '列出存了哪些号、各多少篇')
+  .option('--limit <number>', '最多列几篇（最近的在前）', '30')
+  .option('--ai', '让模型总结观点变化（需要 API key）')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'opinion_timeline.py')
+    const limit = parseCliInteger(opts.limit, 'limit', 1, 2000, opts.json)
+
+    try {
+      const args = [script, '--limit', String(limit)]
+      if (opts.list) args.push('--list')
+      if (opts.source) args.push('--source', String(opts.source))
+      if (opts.ai) args.push('--ai')
+      if (opts.json) args.push('--json')
+      if (!opts.list && !opts.source) {
+        console.error(chalk.yellow('\n用法：timeline --list | --source <公众号名>'))
+        process.exit(1)
+      }
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'TIMELINE_FAILED',
+          error: '观点时间线不可用，请先运行 daily 生成日报',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '读取失败')}`))
+      process.exit(1)
+    }
+  })
+
 // ==================== daily-server ====================
 program
   .command('daily-server')

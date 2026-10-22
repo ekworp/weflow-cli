@@ -122,13 +122,17 @@ def main():
         raise SystemExit('打不开任何消息分片')
 
     try:
+        # 联系人在 **contact.db**，不在消息库里 —— 从消息库找 `contact` 表一定落空，
+        # 输出里就只剩 `47966561144@chatroom` 和 `wxid_xxx`（第一版就是这样）。
         name_map = {}
-        for conn in conns:
-            try:
-                conn.cursor().execute('SELECT username, COALESCE(NULLIF(remark,""), NULLIF(nick_name,""), username) FROM contact')
-                name_map.update({r[0]: r[1] for r in conn.cursor().fetchall()})
-            except Exception:
-                pass
+        try:
+            from network import load_graph
+            people, _rooms, _members = load_graph(cfg)
+            name_map = {p['username']: (p['remark'] or p['nick'] or p['username'])
+                        for p in people.values()}
+        except Exception as exc:
+            print(f'[WARN] 读联系人失败（{type(exc).__name__}: {exc}），下面显示 id',
+                  file=sys.stderr)
 
         today = datetime.now(TZ)
         years = [int(y) for y in args.years.split(',') if y.strip().isdigit()]

@@ -128,15 +128,17 @@ def main():
 
     try:
         by_talker = load_messages(conns, args.days, my_wxid)
-        # 昵称映射
+        # 昵称在 **contact.db**，消息库里没有 `contact` 表 —— 从消息库找一定落空，
+        # 输出里就只剩 wxid（和 on_this_day.py 同一个坑）。
         name_map = {}
-        for conn in conns:
-            try:
-                cur = conn.cursor()
-                cur.execute('SELECT username, COALESCE(NULLIF(remark,""), NULLIF(nick_name,""), username) FROM contact')
-                name_map.update({r[0]: r[1] for r in cur.fetchall()})
-            except Exception:
-                pass
+        try:
+            from network import load_graph
+            people, _rooms, _members = load_graph(cfg)
+            name_map = {p['username']: (p['remark'] or p['nick'] or p['username'])
+                        for p in people.values()}
+        except Exception as exc:
+            print(f'[WARN] 读联系人失败（{type(exc).__name__}: {exc}），下面显示 id',
+                  file=sys.stderr)
     finally:
         for conn in conns:
             try:
