@@ -523,18 +523,24 @@ because nobody built it" look identical to a reader.
   `47966561144@chatroom`), and **the configured `wxid` may carry a suffix the `Name2Id` table does not**
   (`wxid_账号A_后缀` vs `wxid_账号A`), which made "messages I sent" match nothing until the comparison
   became prefix-tolerant.
-- **Voice transcription is wired but not usable on this machine's audio - measured 2026-10-22.** The
-  decode side is fine and verified: `media_*.db` holds 2121 clips, PILK turns a 15878-byte payload into
-  8.4 s of 16 kHz mono at peak 27613 / 46% loud samples, so it is real speech rather than noise. The
-  transcription side is not: `small`, `large-v3`, and `large-v3` with a Cantonese hint all return either
-  garbled text or **verbatim repetition** (`我做的事情都没有做过` x3), which is Whisper's failure mode on
-  dialect-heavy short clips. Sample rate is not the cause - decoding at 8000 and 16000 Hz yields the same
-  8.38 s, i.e. PILK resamples rather than shifting pitch. The working alternative (FunASR) could not be
-  installed: `pip install funasr` spent **23 minutes downloading only the wheel metadata** before being
-  killed, so the network path is the blocker. Deliberately **not** indexed: putting those transcripts into
-  the semantic/phrase index would poison retrieval, and a search that returns gibberish is worse than one
-  that returns nothing. `voice_transcribe.py` stays as the working decode + cache + resume layer, ready for
-  a better engine.
+- **Voice transcription works once four decode settings are on - measured 2026-10-22.** Default
+  `model.transcribe(...)` returned verbatim repetition (`我做的事情都没有做过` x3) on dialect-heavy clips,
+  which is Whisper's self-conditioning failure mode rather than an audio problem: the decode side was
+  verified good (15878-byte SILK → 8.4 s of 16 kHz mono, peak 27613, 46% loud samples, and decoding at
+  8000 vs 16000 Hz yields the same 8.38 s so PILK resamples rather than shifting pitch). The fix is the
+  combination in `transcribe_wav`: `condition_on_previous_text=False` (breaks the repetition chain),
+  `vad_filter=True` (silence is what invites hallucination), `compression_ratio_threshold=2.0` with a
+  `temperature` ladder (so a repeating output really escalates instead of stalling), and
+  `repetition_penalty=1.15`. Measured after the change: **4 of 5 clips readable**
+  (`你填一下交通补贴20元 兄弟`), where before it was 0 of 5. Residual errors remain on heavy dialect and
+  are reported as-is; there is no claim of accuracy here.
+- **Voice enters the *phrase* index, not the semantic one.** `build_phrase_index` appends
+  `output/.voice_index/voices.jsonl` as `type='voice'`, so `search --phrase` finds what was said out
+  loud - the one content class WeChat cannot search at all. It is deliberately kept out of the semantic
+  index (a second embedding bill for a dialect-approximate transcript is a bad trade) and out of the
+  `wiki`/`chat` line filters (those two are user-chosen scopes; voice is a third kind of evidence).
+  `voice_transcribe.py` owns decode + cache + resume, and the cache is content-addressed so a re-run
+  after ids shift still hits.
 - **Message shards are split by *time*, not by account or by size - measured 2026-10-22.** The four
   `message_*.db` files on this machine each cover a consecutive span, oldest to newest:
   `message_2.db` 2024-03-29 ~ 2024-08-28 (1 conversation table), `message_1.db` 2024-08-30 ~ 2025-08-28 (2),

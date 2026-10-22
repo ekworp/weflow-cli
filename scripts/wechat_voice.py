@@ -234,10 +234,35 @@ class TranscriptCache:
 
 
 def transcribe_wav(wav_path, model, beam_size=1, language=DEFAULT_LANGUAGE):
-    """Transcript for a WAV file, or '' when nothing was recognised."""
+    """Transcript for a WAV file, or '' when nothing was recognised.
+
+    `condition_on_previous_text=False` 是**针对复读**的：Whisper 会把已生成的文本当作
+    后续解码的上文条件，在听不清的时候这个条件会把同一句反复"确认"下去（实测同一段
+    方言语音稳定输出「我做的事情都没有做过」三遍）。关掉它以后每段独立解码，复读的
+    自我强化链就断了。`vad_filter` 再切掉静音——短语音里静音占比高时最容易触发幻觉。
+    """
     try:
-        segments, _ = model.transcribe(wav_path, language=language, beam_size=beam_size)
+        segments, _ = model.transcribe(
+            wav_path, language=language, beam_size=beam_size,
+            condition_on_previous_text=False,
+            vad_filter=True,
+            vad_parameters={'min_silence_duration_ms': 300},
+            no_speech_threshold=0.6,
+            # 复读的第二道闸：`compression_ratio_threshold` 判"这段输出是不是在重复自己"，
+            # 超了就提高温度重解（默认 2.4，实测偏松）；`temperature` 给一条回退阶梯，
+            # 让它在重复时真的敢走下一步而不是原地复读。
+            compression_ratio_threshold=2.0,
+            temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            repetition_penalty=1.15,
+        )
         return ''.join(segment.text for segment in segments).strip()
+    except TypeError:
+        # 老版本 faster-whisper 不认这些关键字：退回最朴素的调用，别因为参数报错丢掉转写。
+        try:
+            segments, _ = model.transcribe(wav_path, language=language, beam_size=beam_size)
+            return ''.join(segment.text for segment in segments).strip()
+        except Exception:
+            return ''
     except Exception:
         return ''
 

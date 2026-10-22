@@ -1166,6 +1166,11 @@ PHRASE_DB = PHRASE_INDEX_DIR / 'phrase.sqlite'
 PHRASE_MIN_CHARS = 3
 PHRASE_TEXT_LIMIT = FULL_TEXT_LIMIT
 
+# 语音转写清单（`voice_transcribe.py` 产出）。它不是语义索引的一部分——语音走的是另一个
+# 引擎、也不该为它再花一次 embedding 钱——但它同样是"原话"，所以并进**短语索引**：
+# `search --phrase` 于是能搜到语音说过什么，而语音是微信自己搜不到的东西。
+VOICE_JSONL = INDEX_DIR.parent / '.voice_index' / 'voices.jsonl'
+
 
 def escape_phrase(query):
     """把整串当**字面量**（而不是 FTS 语法）：外层加引号，内部 `"` 翻倍。"""
@@ -1224,6 +1229,27 @@ def build_phrase_index(line: str = 'all', db_path=None, meta_path=None):
         rows.append((text, str(item.get('id') or ''), key, _phrase_label(item),
                      str(item.get('date') or item.get('time') or ''),
                      str(item.get('title') or '')))
+
+    # 语音转写并进同一条短语线（`type='voice'`）。`--line chat|wiki` 时**不**带它——
+    # 那两条线是用户明确限定的范围，语音属于第三类证据。
+    if types is None and VOICE_JSONL.exists():
+        voice_rows = 0
+        try:
+            for line_text in VOICE_JSONL.read_text(encoding='utf-8').splitlines():
+                if not line_text.strip():
+                    continue
+                rec = json.loads(line_text)
+                body = str(rec.get('text') or '').strip()
+                if len(body) < PHRASE_MIN_CHARS:
+                    continue
+                rows.append((body, str(rec.get('id') or ''), 'voice',
+                             str(rec.get('talker') or ''), str(rec.get('time') or ''), ''))
+                voice_rows += 1
+        except Exception as exc:
+            print(f'[WARN] 读语音转写失败（{type(exc).__name__}: {exc}），这次不并入',
+                  file=sys.stderr)
+        if voice_rows:
+            by_line['voice'] = by_line.get('voice', 0) + voice_rows
     path = Path(db_path or PHRASE_DB)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
