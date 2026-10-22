@@ -1232,22 +1232,28 @@ def build_phrase_index(line: str = 'all', db_path=None, meta_path=None):
 
     # 语音转写并进同一条短语线（`type='voice'`）。`--line chat|wiki` 时**不**带它——
     # 那两条线是用户明确限定的范围，语音属于第三类证据。
-    if types is None and VOICE_JSONL.exists():
+    #
+    # 路径**在这里现算**（挂在 `OUTPUT_ROOT` 下），不写成模块级常量：常量在 import 时就固定，
+    # 测试把 `OUTPUT_ROOT` 指到临时目录后仍会读到真实 `output/` 里的语音，于是
+    # "3 条记录"变成 8 条（2026-10-22 就是这么红的）。
+    if types is None:
+        voice_file = Path(OUTPUT_ROOT) / '.voice_index' / 'voices.jsonl'
         voice_rows = 0
-        try:
-            for line_text in VOICE_JSONL.read_text(encoding='utf-8').splitlines():
-                if not line_text.strip():
-                    continue
-                rec = json.loads(line_text)
-                body = str(rec.get('text') or '').strip()
-                if len(body) < PHRASE_MIN_CHARS:
-                    continue
-                rows.append((body, str(rec.get('id') or ''), 'voice',
-                             str(rec.get('talker') or ''), str(rec.get('time') or ''), ''))
-                voice_rows += 1
-        except Exception as exc:
-            print(f'[WARN] 读语音转写失败（{type(exc).__name__}: {exc}），这次不并入',
-                  file=sys.stderr)
+        if voice_file.exists():
+            try:
+                for line_text in voice_file.read_text(encoding='utf-8').splitlines():
+                    if not line_text.strip():
+                        continue
+                    rec = json.loads(line_text)
+                    body = str(rec.get('text') or '').strip()
+                    if len(body) < PHRASE_MIN_CHARS:
+                        continue
+                    rows.append((body, str(rec.get('id') or ''), 'voice',
+                                 str(rec.get('talker') or ''), str(rec.get('time') or ''), ''))
+                    voice_rows += 1
+            except Exception as exc:
+                print(f'[WARN] 读语音转写失败（{type(exc).__name__}: {exc}），这次不并入',
+                      file=sys.stderr)
         if voice_rows:
             by_line['voice'] = by_line.get('voice', 0) + voice_rows
     path = Path(db_path or PHRASE_DB)
