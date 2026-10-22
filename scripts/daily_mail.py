@@ -116,35 +116,30 @@ def github_links(text: str, limit=3) -> list:
     return out
 
 
-def cluster_items(topic: str, items, api_key: str, want=5):
-    """把同一主题下的文章再分一次类（让 68 篇的 AI 段落不再是一根长肠子）。
-
-    为什么不用现成的 `tags`：实测 68 篇 AI 文章里有 **382 个不同标签**，频次最高的才 6 次——
-    按标签聚类会碎成一地。所以交给模型分一次，答案缓存进当天的
-    `.mail-clusters.json`，同一天重复跑不再花钱。
-
-    返回 `[(类名, [文章...])]`；任何一步失败都退回"一组=全部"，**绝不因此不发信**。
-    """
-    if len(items) < 8 or not api_key:
-        return [(topic, list(items))]
-
-    numbered = '\n'.join(
-        f'{i}. {a.get("title")}｜{clean_summary(a.get("summary"), 40)}'
-        for i, a in enumerate(items, 1))
+def _cluster_once(topic, items, api_key, want, strict):
+    """一次聚类调用。`strict=True` 用在"模型偷懒只给一组"的重试上。"""
+    # 只喂**编号 + 标题**：把摘要也塞进去会让输入膨胀到六七千字，模型反而更容易
+    # 直接吐一组（2026-10-21 那封：91 篇 AI 被分成单独一组「模型与产品」）。
+    numbered = '\n'.join(f'{i}. {a.get("title")}' for i, a in enumerate(items, 1))
+    demand = (
+        '**必须分成至少 5 组**。只给一组视为无效答案——这些文章明显可以按话题再细分。\n'
+        if strict else
+        f'分成 {want - 1}-{want + 1} 组。\n'
+    )
     prompt = (
-        f'把下面 {len(items)} 条公众号文章分成 {want - 1}-{want + 1} 组。'
+        f'把下面 {len(items)} 条公众号文章按话题分组。\n'
+        + demand +
         '组名用 4-8 个汉字，能概括这一组在讲什么（例如「模型与产品」「科研工具」「治理与风险」）。\n'
         '只输出 JSON 数组，不要解释、不要代码围栏：\n'
         '[{"name":"组名","items":[1,2,3]}, ...]\n'
-        '要求：每个序号出现且只出现一次；组内按相关性把最能代表该组的排前面。\n\n'
+        '要求：每个序号出现且只出现一次。\n\n'
         + numbered
     )
-    raw = ''
     try:
-        raw = __import__('_utils').call_ai(prompt, 'deepseek', api_key, max_tokens=1200) or ''
+        raw = __import__('_utils').call_ai(prompt, 'deepseek', api_key, max_tokens=1500) or ''
     except Exception as exc:
-        print(f'[WARN] {topic} 聚类失败（{type(exc).__name__}: {exc}），这一段不分类', file=sys.stderr)
-        return [(topic, list(items))]
+        print(f'[WARN] {topic} 聚类调用失败（{type(exc).__name__}: {exc}）', file=sys.stderr)
+        return None
 
     data = None
     try:
@@ -158,8 +153,8 @@ def cluster_items(topic: str, items, api_key: str, want=5):
             except Exception:
                 data = None
     if not isinstance(data, list) or not data:
-        print(f'[WARN] {topic} 聚类返回无法解析，这一段不分类', file=sys.stderr)
-        return [(topic, list(items))]
+        print(f'[WARN] {topic} 聚类返回无法解析', file=sys.stderr)
+        return None
 
     seen, clusters = set(), []
     for group in data:
@@ -177,14 +172,40 @@ def cluster_items(topic: str, items, api_key: str, want=5):
                 picked.append(items[i - 1])
         if picked:
             clusters.append((name, picked))
-    # 模型漏掉的篇目不能丢：塞回最后一组，并说明这是兜底
     leftover = [a for i, a in enumerate(items, 1) if i not in seen]
     if leftover:
         if clusters and len(leftover) <= max(3, len(items) // 4):
             clusters[-1][1].extend(leftover)
         else:
             clusters.append(('其他', leftover))
-    return clusters or [(topic, list(items))]
+    return clusters or None
+
+
+def cluster_items(topic: str, items, api_key: str, want=5):
+    """把同一主题下的文章再分一次类（让几十篇的段落不再是一根长肠子）。
+
+    为什么不用现成的 `tags`：实测 68 篇 AI 文章里有 **382 个不同标签**，频次最高的才 6 次——
+    按标签聚类会碎成一地。所以交给模型分一次。
+
+    **退化要重试**：2026-10-21 那天模型把 91 篇 AI 全塞进一组「模型与产品」，
+    版式当场退回上线前的样子（一根长肠子），而且完全不报错。现在"只给一组但篇数很多"
+    会被当成失败、用更硬的指令再要一次。
+
+    返回 `[(类名, [文章...])]`；任何一步失败都退回"一组=全部"，**绝不因此不发信**。
+    """
+    if len(items) < 8 or not api_key:
+        return [(topic, list(items))]
+
+    result = None
+    for strict in (False, True):
+        result = _cluster_once(topic, items, api_key, want, strict)
+        degenerate = result and len(result) == 1 and len(items) > 20
+        if result and not degenerate:
+            return result
+        if degenerate:
+            print(f'[WARN] {topic} 聚类退化成 1 组（{len(items)} 篇），{"再要求一次" if not strict else "仍失败"}',
+                  file=sys.stderr)
+    return result or [(topic, list(items))]
 
 
 def topic_digest(topic: str, items, api_key: str) -> str:
