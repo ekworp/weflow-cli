@@ -17,7 +17,7 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## 1.15.0
+## 1.15.1
 
 - **Four read-only answers to questions WeChat cannot answer.** `weflow-cli today` shows what you were
   talking about on this day in earlier years (it walks every shard and every conversation table, so
