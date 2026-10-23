@@ -1095,7 +1095,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\install_tas
 下游（AI 报告、统计）静默少一半。
 
 动作只有一句"跑那个脚本"，具体的事在仓库里的 `scripts/daily_task.ps1`（纯 ASCII、路径全部相对自身）。
-第一个位置参数是模式（`noon` = 今天；缺省 = 昨天）。它做四件事，每件都有理由：
+第一个位置参数是模式（`noon` = 今天；缺省 = 昨天）。
+
+> **动作是 `wscript.exe //B //Nologo run_hidden.vbs [noon]`，不是直接跑 PowerShell。**
+> `powershell.exe` 是**控制台程序**：计划任务一触发，Windows 会先给它建控制台窗口，之后 PowerShell
+> 才轮到隐藏自己 —— 结果就是每次运行都闪出一个黑框，全屏游戏时更明显（2026-10-22 实测：00:05 那次
+> 弹窗被人顺手关掉，进程以 `0xC000013A`（Ctrl+C 类中断）退出，那天就没有日报也没有邮件）。
+> `wscript.exe` 是没有控制台的 GUI 进程，`run_hidden.vbs` 内部再用 `WshShell.Run(cmd, 0, True)`
+> 隐藏子进程并等待它结束 —— 全程零窗口，而 `True` 让任务的"上次运行结果"仍然是真实退出码。
+
+它做五件事，每件都有理由：
 
 1. **跑目标天**：日终 `pipeline.py --yesterday --prefetch-bodies`；午报 `pipeline.py --date <今天> --prefetch-bodies`。
 2. **把输出落盘**：`logs/daily-<日期>[-noon].log` 与 `daily-<日期>[-noon].err.log`（`logs/` 已 gitignore）。
@@ -1110,6 +1119,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\install_tas
    午报也会写 index.html，只看它会让 00:05 跳过下午、留下一份"看着完整、实际半天"的日报。
    实际判据是 `.articles.json` 的 `generated_at`：**生成于目标日之后**（通常就是次日 00:0x），
    或当晚 23:00 之后，才算这天做完了。
+5. **渲染失败单独重试**：`pipeline.py` 的最后一环是渲染 `index.html`，而这一步已经挂过两次
+   （2026-10-18 无输出 11 小时；2026-10-23 在 README 之后中断，日报只剩 13:00 的半天版）。
+   抓取和摘要那时已经在 `.articles.json` 里，所以脚本会**单独**再跑一次 `generate_html.py`；
+   它成功就把这次运行当作成功，索引与邮件照常继续。判据是 `.articles.json` 比 `index.html` 新
+   （或页面不存在）——页面比数据新说明这一轮已经渲染过了，不重复。
+   **没有这一步，渲染慢一次就等于早上没有邮件**，因为发信挂在"整天成功"上。
 
 > 为什么不把 python 命令直接写进任务动作：① 实测 `Register-ScheduledTask` 对带嵌套引号的
 > `-Argument` 会报 `0x80004005`，而包一层脚本就不用跟引号搏斗；② 任务动作指向 CLI 那个 npm 包时，

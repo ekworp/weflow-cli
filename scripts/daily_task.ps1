@@ -119,6 +119,42 @@ if (Test-Path $out) {
 $proc = Start-Process -FilePath $python -ArgumentList $allArgs -NoNewWindow -Wait -PassThru `
     -RedirectStandardOutput $out -RedirectStandardError $err
 
+# Fallback for the HTML stage.
+#
+# `pipeline.py` fetches, summarises, writes the day, then renders `index.html`. That last step
+# has hung twice now (2026-10-18: 11 hours with no output; 2026-10-23: the run died after the
+# README and never produced the page). Losing the page also loses the mail, because mailing
+# happens only on success - so a single slow step silently costs the whole morning report.
+#
+# The fetch and summaries are already on disk at that point (`.articles.json`), so rendering is
+# retried on its own. `$proc` is replaced by the retry's exit code, which is what lets the mail
+# and index steps below run on a day where only the renderer failed.
+if ($proc.ExitCode -ne 0) {
+    $dayDir = Join-Path $root ('output\biz-daily\' + $targetDay)
+    $art = Join-Path $dayDir '.articles.json'
+    $idx = Join-Path $dayDir 'index.html'
+    $htmlScript = Join-Path $PSScriptRoot 'generate_html.py'
+    # Only retry when the data is there and the page is missing or older than the data:
+    # a page newer than `.articles.json` means rendering already happened this run.
+    $needsRender = (Test-Path $art) -and (Test-Path $htmlScript)
+    if ($needsRender -and (Test-Path $idx)) {
+        $needsRender = (Get-Item $art).LastWriteTime -gt (Get-Item $idx).LastWriteTime
+    }
+    if ($needsRender) {
+        Add-Content -Path (Join-Path $logDir 'daily-task.log') -Value `
+            ('===== {0}  [{1}] {2} pipeline exit {3}, retrying HTML only =====' -f `
+                (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $mode, $targetDay, $proc.ExitCode) -Encoding UTF8
+        $retryProc = Start-Process -FilePath $python `
+            -ArgumentList @($htmlScript, '--date', $targetDay) `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput (Join-Path $logDir ('html-retry-{0}{1}.log' -f $stamp, $suffix)) `
+            -RedirectStandardError (Join-Path $logDir ('html-retry-{0}{1}.err.log' -f $stamp, $suffix))
+        if ($retryProc.ExitCode -eq 0) {
+            $proc = $retryProc
+        }
+    }
+}
+
 if ($proc.ExitCode -eq 0 -and $rest.Count -eq 0) {
     # Marker for the noon pass only; the day pass is judged by generated_at above.
     if ($mode -eq 'noon') {
