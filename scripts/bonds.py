@@ -137,6 +137,14 @@ def shape_of(messages, now):
     span_days = max(1, ((last - min(stamps)) / 86400)) if len(stamps) > 1 else 1
     per_day = len(stamps) / span_days                    # 平时日均
     recent = sum(1 for t in stamps if (now - t) / 86400 <= 7)
+    # 最后一句原文。冷却名单里只写"已静默 45 天"没法决定要不要回 —— 补上这句话，
+    # 读者一眼就知道该说什么（2026-10-23：这是"复联提醒"缺的那一半）。
+    last_text = ''
+    for m in sorted(messages, key=lambda x: x.get('createTime') or 0, reverse=True):
+        text = ' '.join(str(m.get('content') or '').split())
+        if text:
+            last_text = text[:60]
+            break
     return {
         'messages': len(stamps),
         'activeDays': len(days),
@@ -145,6 +153,7 @@ def shape_of(messages, now):
         'recent7': recent,
         'mine': round(100.0 * sum(1 for m in messages if m.get('isSend')) / max(1, len(stamps))),
         'last': datetime.fromtimestamp(last, TZ).strftime('%Y-%m-%d') if last else '',
+        'lastText': last_text,
     }
 
 
@@ -253,6 +262,8 @@ def render(payload, limit=12):
             lines.append('  %-16s %5d 条 / %3d 个活跃天 / 已静默 %6.0f 天（最后一次 %s）%s'
                          % (p['name'][:16], p['messages'], p['activeDays'], p['silentDays'], p['last'],
                             '  ⚠只有微信这一条线' if 'only-wechat' in p['tags'] else ''))
+            if p.get('lastText'):
+                lines.append('      最后一句：%s' % p['lastText'])
     if view['heating']:
         lines.append('')
         lines.append('最近变热（近 7 天 ≥ 平时日均的 %.1f 倍）:' % HOT_RATIO)

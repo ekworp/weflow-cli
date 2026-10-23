@@ -17,6 +17,22 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.16.0
+
+- **`leads` - the offers and asks buried in chat, with the sentence that said them.** Scans recent
+  conversations for five signal families (contact details, price, purchase, partnership, a request)
+  and ranks them, because the ones worth answering combine "how much" with "here is my number". Every
+  hit keeps the original words and whether you have replied yet (没回 / 我回过 / 已跟进 / 已结束).
+  Rule-based and offline on purpose: the output is a shortlist to read, not a verdict.
+  Two filters had to exist before it was usable - the first version returned eight "leads" in thirty
+  days and **every one was a campus-recruiting poster or a shopping promo**, because those are exactly
+  the messages salted with 合作 / 采购 / 报价. Adverts are now dropped, a signal must sit inside a
+  question or a request, and `@mentions` plus URLs are stripped before matching (group nicknames often
+  contain a phone number, and a URL with a long numeric id reads as one).
+- **`bonds` now shows the last thing said in a cooling conversation.** "已静默 304 天" does not tell
+  you whether to reach out; the final line does. That was the missing half of a "who should I contact"
+  reminder - the ranking and the silence were already computed.
+
 ## 1.15.1
 
 - **Four read-only answers to questions WeChat cannot answer.** `weflow-cli today` shows what you were
