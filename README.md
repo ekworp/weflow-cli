@@ -310,6 +310,7 @@ weflow-cli config set assistantGroupRequireMention true
 | 帮我起草回复（默认只出文字） | `weflow-cli draft <联系人> --dry-run` · `--yes`（**只有** `--pick N --send --yes` 会真的替你发出去；两步缺一不可）|
 | 关系温度 | `weflow-cli bonds`（谁在冷却、谁在变热、谁只有微信这一条线；只读本地库，不联网、不调模型）|
 | 我说过要给谁做什么 | `weflow-cli promises --days 180`（带回原话与后续证据，规则判定，不调模型）|
+| 聊天里的生意线索 | `weflow-cli leads --days 60 --min-score 4`（报价/采购/合作/需求信号，带原话与"我回过没有"）|
 | 那年今日 | `weflow-cli today --years 1,3,5`（几年前的今天在聊什么）|
 | 人脉图谱 | `weflow-cli network --groups` · `--with <名字>`（共同群）· `--intro <名字>`（谁能引荐；只读 contact.db）|
 | 某号观点演变 | `weflow-cli timeline --list` · `--source <公众号名>`（按时间看它说法的变化）|

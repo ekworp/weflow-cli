@@ -7561,6 +7561,47 @@ program
     }
   })
 
+// ==================== leads（线索雷达）====================
+program
+  .command('leads')
+  .description('线索雷达：聊天里的报价/采购/合作/需求信号，带原话与跟进状态（规则判定，不调模型）')
+  .option('--days <number>', '看最近多少天', '30')
+  .option('--min-score <number>', '最低分，4 分以上更接近真实生意', '2')
+  .option('--limit <number>', '最多列几条', '20')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'leads.py')
+    const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
+    const minScore = parseCliInteger(opts.minScore, 'min-score', 1, 50, opts.json)
+    const limit = parseCliInteger(opts.limit, 'limit', 1, 500, opts.json)
+
+    try {
+      const args = [script, '--days', String(days), '--min-score', String(minScore),
+                    '--limit', String(limit)]
+      if (opts.json) args.push('--json')
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'LEADS_FAILED',
+          error: '线索雷达不可用，请运行 check --json 检查配置和依赖',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '统计失败')}`))
+      process.exit(1)
+    }
+  })
+
 // ==================== timeline（某号观点演变）====================
 program
   .command('timeline')
