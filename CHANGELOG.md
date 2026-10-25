@@ -17,7 +17,7 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## 1.17.0（未发布）
+## 1.17.0
 
 - **`sync cursor-probe`：稳定游标从"一句 false"变成一条看得见的路径（D-027）。**
   `capabilities --json` 新增 `cursorReadiness`（五条判据 × 四个消息后端的代码事实），
@@ -52,6 +52,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   产 QQ 知识卡（`QQ-` 前缀，与微信卡同形状、同下游），`search-index --include-imports` 把
   QQ 会话收进语义与短语索引（id 带 `chat:qq:` 段）。没有微信库的机器也能用（纯 QQ 场景，
   端到端有测试）。字段映射表见 `docs/DATA_CONTRACT.md`。
+
+- **`replay`：关系网络的时间重放。** `weflow-cli replay` 出按月文本回放（哪些边断了、
+  哪些新长出来、哪些最持久），`--out out.html` 出可播放的单文件动画：按天推进、边用 30 天
+  滚动窗口、节点标签自动避让、播放速度可调；守恒校验内建，稀薄月份显式标注而非假装数据
+  完整；另带静态总结页（断了哪些 / 最持久 / 新出现 + 月度柱状图）。数据全部来自本地库，
+  不联网、不调模型。
 
 ## 1.16.0
 
