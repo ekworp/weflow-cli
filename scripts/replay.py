@@ -266,7 +266,7 @@ def layout(frames):
     pos = {'me': (0.5, 0.5)}
     for i, g in enumerate(groups):
         a = 2 * math.pi * i / max(1, len(groups))
-        pos[g] = (0.5 + 0.36 * math.cos(a), 0.5 + 0.36 * math.sin(a))
+        pos[g] = (0.5 + 0.42 * math.cos(a), 0.5 + 0.42 * math.sin(a))
 
     home = {}
     for f in frames:
@@ -351,6 +351,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     <div class="k"><b>当天消息</b><span id="m"></span></div>
     <div class="k"><b>30 天窗口互动</b><span id="w"></span></div>
     <div class="k"><b>当天会话 / 发言者</b><span id="tp"></span></div>
+    <div class="k"><b>图上节点 / 边</b><span id="ne"></span></div>
     <div class="k"><b>图上门槛</b><span>≥ __MINW__ 条</span></div>
     <div id="warn"></div>
     <div class="sec">断掉的关系（窗口内曾 ≥ __GONEMIN__ 条）</div>
@@ -415,12 +416,54 @@ function draw(){
 
   const maxN = Math.max.apply(null, f.nodes.map(n=>n.weight).concat([1]));
   const ranked = f.nodes.slice().sort((a,b)=>b.weight-a.weight);
-  const labelled = {};
+
+  // 标签避让：按权重降序尝试放置，与已放标签的矩形重叠就跳过。
+  // 不这样做的话，图上 30 多个群名会互相盖住（2026-10-25 实测反馈："太拥挤了"）。
+  const boxes = [];
+  function place(label, x, y, color, font){
+    ctx.font = font;
+    const w = ctx.measureText(label).width, h = 15;
+    const cands = [[x, y - h/2], [x - w, y - h/2], [x - w/2, y - h - 4], [x - w/2, y + 4]];
+    for (const c of cands){
+      const box = {x:c[0], y:c[1], w:w, h:h};
+      let hit = false;
+      for (const b of boxes){
+        if (box.x < b.x + b.w && box.x + box.w > b.x &&
+            box.y < b.y + b.h && box.y + box.h > b.y){ hit = true; break; }
+      }
+      if (hit) continue;
+      boxes.push(box);
+      ctx.textAlign='left'; ctx.textBaseline='top';
+      ctx.lineWidth = 3; ctx.strokeStyle='rgba(13,16,20,.9)';
+      ctx.strokeText(label, box.x, box.y);
+      ctx.fillStyle = color; ctx.fillText(label, box.x, box.y);
+      return true;
+    }
+    return false;
+  }
+
+  // 群名太长会把整张图盖住：超过 14 字截断；没有真名的群（`xxx@chatroom`）不标，靠悬停。
+  const shortName = s => {
+    if (/@chatroom$/i.test(s) || /^\d+$/.test(s)) return '';
+    return s.length > 14 ? s.slice(0, 14) + '…' : s;
+  };
+
+  const groupFont = '600 12px -apple-system,"Microsoft YaHei",sans-serif';
+  const personFont = '11px -apple-system,"Microsoft YaHei",sans-serif';
   let personLabels = 0;
   for (const n of ranked){
-    if (n.kind === 'group' || personLabels < 12){
-      labelled[n.id] = true;
-      if (n.kind !== 'group') personLabels++;
+    if (n.kind === 'group'){
+      const nm = shortName(n.label);
+      if (!nm) continue;
+      const a = at(n.id,P); if (!a) continue;
+      const rad = 6+11*(n.weight/maxN);
+      place(nm, a[0]+rad+4, a[1], '#c9c2ff', groupFont);
+    } else if (personLabels < 8){
+      const nm = shortName(n.label);
+      if (!nm) continue;
+      const a = at(n.id,P); if (!a) continue;
+      const rad = 2.5+6*(n.weight/maxN);
+      if (place(nm, a[0]+rad+4, a[1], '#9aa3b5', personFont)) personLabels++;
     }
   }
 
@@ -429,17 +472,8 @@ function draw(){
     const rad = n.kind==='group' ? 6+11*(n.weight/maxN) : 2.5+6*(n.weight/maxN);
     ctx.beginPath(); ctx.arc(a[0],a[1],rad,0,7);
     ctx.fillStyle = n.kind==='group' ? '#7c6cff' : '#d7dce6';
-    ctx.globalAlpha = n.kind==='group' ? 0.95 : 0.78;
+    ctx.globalAlpha = n.kind==='group' ? 0.95 : 0.7;
     ctx.fill(); ctx.globalAlpha = 1;
-    if (labelled[n.id]){
-      ctx.font = (n.kind==='group' ? '600 12px' : '11px') + ' -apple-system,"Microsoft YaHei",sans-serif';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      const tx = a[0] + rad + 4, ty = a[1];
-      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(13,16,20,.85)';
-      ctx.strokeText(n.label, tx, ty);
-      ctx.fillStyle = n.kind==='group' ? '#c9c2ff' : '#aeb6c6';
-      ctx.fillText(n.label, tx, ty);
-    }
   }
 
   const me = at('me',P);
@@ -457,6 +491,7 @@ function draw(){
   document.getElementById('m').textContent = f.messages.toLocaleString();
   document.getElementById('w').textContent = f.window.toLocaleString();
   document.getElementById('tp').textContent = f.talkers + ' / ' + f.people;
+  document.getElementById('ne').textContent = f.nodes.length + ' / ' + f.edges.length;
   document.getElementById('label').textContent = (idx+1) + ' / ' + F.length;
   document.getElementById('slider').value = idx;
 
