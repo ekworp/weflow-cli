@@ -17,6 +17,14 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.17.0（未发布）
+
+- **修了主分支上四处红的回归测试**（`npm test` 在 master 上本来就挂着 4 条，stash 验证过与
+  新特性无关）：`today` / `promises` 曾把 `--talker` 放进子进程 argv（进程列表可见），改走
+  `WEFLOW_TALKER` 环境变量（D-020，`test/privacy-paths` 转绿）；`dailyMailTo` 补齐默认值三处
+  登记（`test/config-keys` 三条转绿）；`scripts/**/*.vbs` 进 npm 包——`run_hidden.vbs` 之前被
+  files allowlist 漏掉（`test/pack-contents` 转绿）。
+
 ## 1.16.0
 
 - **`leads` - the offers and asks buried in chat, with the sentence that said them.** Scans recent

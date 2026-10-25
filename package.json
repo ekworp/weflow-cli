@@ -12,6 +12,7 @@
     "scripts/**/*.py",
     "scripts/**/*.ps1",
     "scripts/**/*.cmd",
+    "scripts/**/*.vbs",
     "scripts/data/",
     "mcp-server/",
     "bin/",

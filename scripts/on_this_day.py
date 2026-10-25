@@ -107,7 +107,7 @@ def main():
     ap = argparse.ArgumentParser(description='那几年的今天你在聊什么')
     ap.add_argument('--years', default=','.join(str(y) for y in DEFAULT_YEARS),
                     help='往前看几年，逗号分隔（默认 1,3,5）')
-    ap.add_argument('--talker', default='', help='只看某个会话（wxid 或昵称）')
+    ap.add_argument('--talker', default=os.environ.get('WEFLOW_TALKER', ''), help='只看某个会话（wxid 或昵称）')
     ap.add_argument('--limit', type=int, default=6, help='每天最多列几条（默认 6）')
     ap.add_argument('--json', action='store_true')
     args = ap.parse_args()

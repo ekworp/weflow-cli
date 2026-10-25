@@ -7455,12 +7455,12 @@ program
 
     try {
       const args = [script, '--years', String(opts.years || '1,3,5'), '--limit', String(limit)]
-      if (opts.talker) args.push('--talker', String(opts.talker))
       if (opts.json) args.push('--json')
+      // D-020：会话标识不进子进程 argv（进程列表里看得见），走 WEFLOW_TALKER。
       const { stdout } = await execFileAsync(getPythonCommand(), args, {
         timeout: 300_000,
         maxBuffer: 10 * 1024 * 1024,
-        env: pythonProcessEnv(),
+        env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
       })
       console.log(stdout)
     } catch (e: any) {
@@ -7539,12 +7539,12 @@ program
 
     try {
       const args = [script, '--days', String(days), '--limit', String(limit)]
-      if (opts.talker) args.push('--talker', String(opts.talker))
       if (opts.json) args.push('--json')
+      // D-020：同 today——会话标识走 WEFLOW_TALKER，不进 argv。
       const { stdout } = await execFileAsync(getPythonCommand(), args, {
         timeout: 300_000,
         maxBuffer: 10 * 1024 * 1024,
-        env: pythonProcessEnv(),
+        env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
       })
       console.log(stdout)
     } catch (e: any) {

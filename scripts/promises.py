@@ -109,7 +109,7 @@ def classify(follow):
 def main():
     ap = argparse.ArgumentParser(description='我说过要给谁做什么，后来做了没有')
     ap.add_argument('--days', type=int, default=60)
-    ap.add_argument('--talker', default='', help='只看某个会话（wxid 或昵称子串）')
+    ap.add_argument('--talker', default=os.environ.get('WEFLOW_TALKER', ''), help='只看某个会话（wxid 或昵称子串）')
     ap.add_argument('--limit', type=int, default=30, help='最多列几条（默认 30）')
     ap.add_argument('--json', action='store_true')
     args = ap.parse_args()
