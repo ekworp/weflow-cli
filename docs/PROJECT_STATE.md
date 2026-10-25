@@ -130,6 +130,8 @@ The daily workflow supports `dailyAiEnabled=false` for a persistent no-AI mode, 
 
 Date-bounded message exports and `wechat.export_messages` page through the selected conversation before applying the result limit. Older matching dates are therefore not hidden by a newer, nonmatching first page. Versioned envelopes report requested bounds, returned count, and conservative `mayHaveMore` metadata. `sync` adds a local checkpoint on top of the same overlapping-window approach, but **a stable incremental cursor is still not exposed** - it must be supported by every relevant database backend before it is advertised (D-027), and `capabilities --json` reports `stableCursor: false` for both.
 
+**The path from `false` to `true` is visible now, not just the verdict** (2026-10-23): `capabilities --json` 的 `read.exports.incrementalRead` 多了 `cursorReadiness`（五条判据 × 四个后端的代码事实，及指向探针的 `probe:` 命令串——`check_readme_commands.py` 把 `probe:` 与 `cli:`/`preview:` 一起校验），`sync cursor-probe --json` 实测 NT 数据侧：schema 检查**全量**（每张消息表的锚点列），身份检查**有界采样**（每分片取 5 张表、每表两端各 500 行，结果自带 `exhaustive: false`），server_id 以字符串上报（int64 过 2^53 会丢精度）。本机实测（2026-10-23）：4 个分片全开、211 张表 0 缺列、采样 5,398 行**全部**带非零 server_id 且 0 重复——**数据侧判据在这台机器上已满足**；`stableCursor` 仍为 false，剩下的两块是读取器侧（合并顺序键 `(createTime, localId)` 的 localId 不跨分片可比）与其余三个后端（raw-4x / wcdb / 3x 无下推无覆盖报告）。探针不翻结论，只摊开路径。
+
 ## Not Verified (and what closing it would take)
 
 Same shape as the launcher reverse-engineering report's closing section ("what we could not do, and why"): an

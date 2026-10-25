@@ -19,6 +19,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.17.0（未发布）
 
+- **`sync cursor-probe`：稳定游标从"一句 false"变成一条看得见的路径（D-027）。**
+  `capabilities --json` 新增 `cursorReadiness`（五条判据 × 四个消息后端的代码事实），
+  `sync cursor-probe --json` 实测 NT 数据侧——schema 全量检查、身份有界采样（自带
+  `exhaustive: false`）。本机实测：211 张表 0 缺列、采样 5,398 行全部带非零 server_id 且
+  0 重复；`stableCursor` 仍为 false，差的在哪、下一块是什么，逐条摊开给下游看。
+
 - **修了主分支上四处红的回归测试**（`npm test` 在 master 上本来就挂着 4 条，stash 验证过与
   新特性无关）：`today` / `promises` 曾把 `--talker` 放进子进程 argv（进程列表可见），改走
   `WEFLOW_TALKER` 环境变量（D-020，`test/privacy-paths` 转绿）；`dailyMailTo` 补齐默认值三处

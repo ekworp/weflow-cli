@@ -1275,6 +1275,120 @@ def get_messages(conns, talker, limit=100, offset=0, name_map=None, own_wxid=Non
     return {"messages": collected}
 
 
+def cursor_probe(db_path, key_hex, salt_hex, passphrase='',
+                 tables_per_shard=5, rows_per_table=500):
+    """Measure what a stable incremental cursor would need on this database.
+
+    D-027 keeps `stableCursor: false` until every message backend can honour
+    the same semantics. This probe answers the NT backend's **data-side** half:
+    whether every message table carries the anchor columns, and whether sampled
+    rows actually hold a nonzero `server_id` (the reader's identity falls back
+    to localId+createTime without one, and `local_id` is per-shard, so those
+    rows cannot be resumed across shards). Duplicate server ids are collected
+    across the sample too - an id that appears in two places cannot key a
+    cursor, whatever the column definition says.
+
+    Sampling is bounded and says so (`exhaustive: false`): `tables_per_shard`
+    tables per shard (sorted names, deterministic) read at both rowid ends,
+    `rows_per_table` rows each. A full scan of every shard would cost minutes
+    on a real account; the schema check IS exhaustive - `PRAGMA table_info` is
+    cheap, so every Msg_* table's anchor columns are checked, not sampled.
+
+    Read-only: no write, no network, nothing leaves stdout.
+    """
+    pairs, failures = connect_message_shards_detailed(
+        db_path, key_hex, salt_hex, passphrase)
+    shard_items = []
+    totals = {'tables': 0, 'tablesSampled': 0, 'rowsSampled': 0,
+              'serverIdMissing': 0}
+    anchor_missing_total = 0
+    # server_id(str) -> {(shard, table)} it was sampled in. A set per id keeps
+    # the two rowid ends of one small table from double-counting the same row
+    # as a "duplicate" - both ends see it, but it is one location.
+    id_locations = {}
+
+    for failure in failures:
+        shard_items.append({
+            'name': failure['name'], 'opened': False, 'reason': failure['reason'],
+            'tables': None,
+        })
+
+    for path, conn in pairs:
+        item = {'name': os.path.basename(path), 'opened': True, 'reason': None}
+        try:
+            tables = sorted(msg_tables(conn))
+            item['tables'] = len(tables)
+            totals['tables'] += len(tables)
+
+            # Schema half: exhaustive over every message table.
+            anchor_missing = []
+            for table in tables:
+                cols = table_columns(conn.cursor(), table)
+                missing = [c for c in MESSAGE_ANCHOR_COLUMNS if c not in cols]
+                if missing and missing not in anchor_missing:
+                    anchor_missing.append(missing)
+            anchor_missing_total += len(anchor_missing)
+            item['anchorColumnsMissing'] = anchor_missing
+
+            # Data half: bounded sample, both rowid ends per table. A table
+            # shorter than the bound hands the same rows to both ends - they
+            # are one sample, not two, so rowids are deduplicated per table
+            # (and the same id read at both ends must not look "duplicated").
+            sample_targets = tables[:tables_per_shard]
+            item['tablesSampled'] = len(sample_targets)
+            totals['tablesSampled'] += len(sample_targets)
+            sampled = 0
+            missing_ids = 0
+            for table in sample_targets:
+                c = conn.cursor()
+                seen_rowids = set()
+                table_ids = set()
+                for order in ('ASC', 'DESC'):
+                    c.execute(
+                        'SELECT rowid, server_id FROM "%s" ORDER BY rowid %s LIMIT ?'
+                        % (table, order), (rows_per_table,))
+                    for rowid, server_id in c.fetchall():
+                        if rowid in seen_rowids:
+                            continue
+                        seen_rowids.add(rowid)
+                        sampled += 1
+                        if server_id is None or server_id == 0:
+                            missing_ids += 1
+                        else:
+                            table_ids.add(str(int(server_id)))
+                for sid in table_ids:
+                    id_locations.setdefault(sid, set()).add((item['name'], table))
+            item['rowsSampled'] = sampled
+            item['serverIdMissing'] = missing_ids
+            totals['rowsSampled'] += sampled
+            totals['serverIdMissing'] += missing_ids
+        except Exception as exc:
+            item['reason'] = 'READ_FAILED: %s' % str(exc).split('\n')[0][:120]
+        finally:
+            shard_items.append(item)
+            conn.close()
+
+    duplicates = {sid: locs for sid, locs in id_locations.items() if len(locs) > 1}
+    return {
+        'shards': shard_items,
+        'schemaAnchorMissingTables': anchor_missing_total,
+        'sample': {
+            'tablesPerShard': tables_per_shard,
+            'rowsPerTable': rows_per_table,
+            'exhaustive': False,
+            'tablesTotal': totals['tables'],
+            'tablesSampled': totals['tablesSampled'],
+            'rowsSampled': totals['rowsSampled'],
+            'serverIdMissing': totals['serverIdMissing'],
+            'duplicateServerIds': len(duplicates),
+            'duplicateServerIdSamples': [
+                {'serverId': sid, 'locations': sorted('%s/%s' % loc for loc in locs)}
+                for sid, locs in sorted(duplicates.items())[:20]
+            ],
+        },
+    }
+
+
 def get_contacts(conns, limit=200, keyword=None):
     """Get contacts from NT database, merged across every shard.
 
@@ -1627,9 +1741,22 @@ def main():
     fav_list_parser.add_argument('--key', default=os.environ.get('WEFLOW_NT_KEY'), required=not os.environ.get('WEFLOW_NT_KEY'), help='Key hex (64 chars)')
     fav_list_parser.add_argument('--limit', type=int, default=100)
     fav_list_parser.add_argument('--offset', type=int, default=0)
-    fav_list_parser.add_argument('--keyword', default=os.environ.get('WEFLOW_QUERY_KEYWORD'), help='Search keyword')
+    fav_list_parser.add_argument('--keyword', default=os.environ.get('WEFLOW_QUERY_KEYWORD'), help='Filter by keyword')
     fav_list_parser.add_argument('--type', type=int, dest='fav_type',
                                  help='Filter by type: 1=text 2=image 4=video 5=article 14=chatrecord')
+
+    # cursor-probe command: the data-side half of D-027's stable-cursor answer.
+    cursor_parser = sub.add_parser(
+        'cursor-probe',
+        help='Probe what a stable incremental cursor would need here (read-only, bounded sample)')
+    cursor_parser.add_argument('--db', default=os.environ.get('WEFLOW_DB_PATH'), required=not os.environ.get('WEFLOW_DB_PATH'), help='Path to NT database')
+    cursor_parser.add_argument('--key', default=os.environ.get('WEFLOW_NT_KEY'), required=not os.environ.get('WEFLOW_NT_KEY'), help='Key hex (64 chars)')
+    cursor_parser.add_argument('--salt', default=os.environ.get('WEFLOW_NT_SALT'), required=not os.environ.get('WEFLOW_NT_SALT'), help='Salt hex (32 chars)')
+    cursor_parser.add_argument('--passphrase', default=os.environ.get('WEFLOW_NT_PASSPHRASE'), help='Shared passphrase for deriving per-shard keys')
+    cursor_parser.add_argument('--tables-per-shard', type=int, default=5,
+                               help='Message tables sampled per shard for the identity half (schema half is exhaustive)')
+    cursor_parser.add_argument('--rows-per-table', type=int, default=500,
+                               help='Rows read at each rowid end per sampled table')
 
     args = parser.parse_args()
 
@@ -1811,6 +1938,13 @@ def main():
         result = get_favorites(args.db, args.key, args.limit, args.offset,
                                args.keyword, getattr(args, 'fav_type', None))
         print(json.dumps(result, ensure_ascii=True, default=str))
+
+    elif args.command == 'cursor-probe':
+        result = cursor_probe(args.db, args.key, args.salt,
+                              getattr(args, 'passphrase', '') or '',
+                              tables_per_shard=args.tables_per_shard,
+                              rows_per_table=args.rows_per_table)
+        print(json.dumps(result, ensure_ascii=True))
 
     else:
         parser.print_help()

@@ -246,8 +246,9 @@ def command_forms(text):
 def capability_commands(cli=None):
     """`capabilities --json` 里**手写**的命令串 → [(字段路径, 命令行)]。
 
-    收 `cli` **与 `preview`** 两个字段：`preview` 是"两阶段安全路径"里先跑的那一条（用户与 agent
-    都按它来），所以它和 `cli` 一样会被手写漂移。这个对象的其余部分要么是布尔/契约名，要么
+    收 `cli`、`preview` **与 `probe`** 三个字段：`preview` 是"两阶段安全路径"里先跑的那一条，
+    `probe` 是指向**诊断/探测命令**的那一条（`cursorReadiness.probe`）——用户与 agent 都会
+    照着跑，所以它们和 `cli` 一样会被手写漂移。这个对象的其余部分要么是布尔/契约名，要么
     （`safety.mcpSurface`）是从真实注册表派生的 —— 派生那半不用这儿管。
     """
     cli = cli or os.path.join(ROOT, 'cli.cjs')
@@ -264,7 +265,7 @@ def capability_commands(cli=None):
     def walk(node, where):
         if isinstance(node, dict):
             for key, value in node.items():
-                if key in ('cli', 'preview') and isinstance(value, str):
+                if key in ('cli', 'preview', 'probe') and isinstance(value, str):
                     out.append((where + '.' + key, value))
                 else:
                     walk(value, where + '.' + key)
@@ -407,7 +408,7 @@ def main():
                   % (len(findings), checked, doc_checked, script_checked, cap_forms))
         else:
             print('命令面与实现一致：文档命令 %d 条 + `py scripts/…` 调用 %d 条 + capabilities 的 %d 种写法'
-                  '（来自 %d 条 `cli:`/`preview:` 串），0 处对不上。'
+                  '（来自 %d 条 `cli:`/`preview:`/`probe:` 串），0 处对不上。'
                   % (doc_checked, script_checked, cap_forms, len(caps)))
     # 反空扫只对**缺省语料**生效：那批文档里一定有命令，扫到 0 条说明判据/提取器坏了，不该报通过。
     # 显式 `--files <夹具>` 时不算失败 —— 夹具本来就可能只含某一类。

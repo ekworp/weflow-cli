@@ -75,6 +75,42 @@ export interface NtMessagesResult extends NtResult {
   shards?: ShardReport
 }
 
+/** One shard's outcome in a `cursor-probe` run (nt_decrypt.py cursor-probe). */
+export interface NtCursorProbeShard {
+  /** basename only - the child never reports a full path */
+  name: string
+  opened: boolean
+  reason: string | null
+  /** number of Msg_* tables; null when the shard could not be read at all */
+  tables: number | null
+  tablesSampled?: number
+  /** per-table missing anchor-column sets, deduplicated; empty = every table has all three */
+  anchorColumnsMissing?: string[][]
+  rowsSampled?: number
+  /** sampled rows whose server_id was 0 or NULL (identity degrades for them) */
+  serverIdMissing?: number
+}
+
+export interface NtCursorProbeSample {
+  tablesPerShard: number
+  rowsPerTable: number
+  exhaustive: boolean
+  tablesTotal: number
+  tablesSampled: number
+  rowsSampled: number
+  serverIdMissing: number
+  /** sampled nonzero server ids seen in more than one (shard, table) location */
+  duplicateServerIds: number
+  duplicateServerIdSamples?: Array<{ serverId: string; locations: string[] }>
+}
+
+export interface NtCursorProbeResult extends NtResult {
+  shards?: NtCursorProbeShard[]
+  /** shards with at least one message table missing an anchor column */
+  schemaAnchorMissingTables?: number
+  sample?: NtCursorProbeSample
+}
+
 export interface NtContactsResult extends NtResult {
   contacts?: Contact[]
 }
@@ -390,6 +426,29 @@ export class NtCore {
       return { success: false, error: result.error }
     }
     return { success: true, contacts: result.contacts || [] }
+  }
+
+  /**
+   * The NT backend's data-side answer to D-027's stable-cursor question:
+   * anchor columns per message table (exhaustive) and a bounded sample of
+   * `server_id` coverage at both rowid ends of a few tables per shard.
+   * Read-only; the sampling bounds are labelled `exhaustive: false` in the
+   * result because they are a measurement, not a guarantee.
+   */
+  async cursorProbe(opts: { tablesPerShard?: number; rowsPerTable?: number } = {}): Promise<NtCursorProbeResult> {
+    const args: string[] = ['cursor-probe']
+    if (opts.tablesPerShard != null) args.push('--tables-per-shard', String(opts.tablesPerShard))
+    if (opts.rowsPerTable != null) args.push('--rows-per-table', String(opts.rowsPerTable))
+    const result = await this.callPython(args)
+    if (result.error) {
+      return { success: false, error: result.error }
+    }
+    return {
+      success: true,
+      shards: result.shards || [],
+      schemaAnchorMissingTables: result.schemaAnchorMissingTables,
+      sample: result.sample,
+    }
   }
 
   // ====== SNS (朋友圈) ======

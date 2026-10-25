@@ -511,5 +511,108 @@ class MessageWindowTests(unittest.TestCase):
                 self.assertNotIn('\\', item['name'])
 
 
+class CursorProbeTests(unittest.TestCase):
+    """`cursor-probe` 是 D-027 稳定游标问题的数据侧答案，这里钉四件事：
+
+    身份缺口要数对（server_id 为 0 的行）；采样端重叠**不得**把同一行看成重复
+    （比采样上限短的表两头读的是同一批行）；schema 检查是全量的（没被采样的表
+    缺列也要报）；报告不带绝对路径（它可能进 state/issue）。探针输出会被下游
+    当成"这台库离稳定游标还差什么"的依据，数错一个方向就是错判一台库。
+    """
+
+    KEY = 'a' * 64
+    SALT = 'b' * 32
+
+    def _probe(self, tmp, **kwargs):
+        return nt.cursor_probe(os.path.join(tmp, 'message_0.db'),
+                               self.KEY, self.SALT, **kwargs)
+
+    def test_missing_server_ids_are_counted_and_short_tables_do_not_fake_duplicates(self):
+        # 3 rows carry server ids, 3 do not. rows_per_table=10 exceeds the row
+        # count, so both rowid ends see the same 6 rows: the dedup by rowid
+        # must hold rowsSampled at 6, and no id may be reported duplicated.
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'), rows=[
+                row(1, 1_700_000_000, server_id=101),
+                row(2, 1_700_000_001, server_id=0),
+                row(3, 1_700_000_002, server_id=103),
+                row(4, 1_700_000_003, server_id=0),
+                row(5, 1_700_000_004, server_id=105),
+                row(6, 1_700_000_005, server_id=0),
+            ])
+            result = self._probe(tmp, tables_per_shard=5, rows_per_table=10)
+            self.assertTrue(result['shards'][0]['opened'])
+            self.assertEqual(result['shards'][0]['serverIdMissing'], 3)
+            sample = result['sample']
+            self.assertEqual(sample['rowsSampled'], 6)
+            self.assertEqual(sample['serverIdMissing'], 3)
+            self.assertEqual(sample['duplicateServerIds'], 0)
+            self.assertEqual(sample['exhaustive'], False)
+
+    def test_a_server_id_in_two_shards_is_a_duplicate_with_both_locations(self):
+        # One id present in both shards: it cannot key a cursor, and the
+        # report has to say where it was seen so the finding is checkable.
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'), rows=[
+                row(1, 1_700_000_000, server_id=777),
+                row(2, 1_700_000_001, server_id=101),
+            ])
+            make_shard(os.path.join(tmp, 'message_1.db'), rows=[
+                row(1, 1_700_000_002, server_id=777),
+            ])
+            result = self._probe(tmp)
+            sample = result['sample']
+            self.assertEqual(sample['duplicateServerIds'], 1)
+            self.assertEqual(len(sample['duplicateServerIdSamples']), 1)
+            entry = sample['duplicateServerIdSamples'][0]
+            self.assertEqual(entry['serverId'], '777')
+            self.assertEqual(len(entry['locations']), 2)
+            self.assertIn('message_0.db', entry['locations'][0])
+            self.assertIn('message_1.db', entry['locations'][1])
+            # serverId is a string on purpose: WeChat server ids are int64s
+            # and JSON.parse in the TS caller loses precision past 2^53.
+            self.assertIsInstance(entry['serverId'], str)
+
+    def test_schema_check_reaches_tables_the_sample_does_not(self):
+        # Two tables, tables_per_shard=1: only the alphabetically-first is
+        # sampled. The second table lacks server_id entirely - an anchor
+        # column - and must still be reported, because the schema half is
+        # exhaustive rather than sampled.
+        other = 'wxid_synthetic_other'
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'), rows=[
+                row(1, 1_700_000_000, server_id=101),
+            ])
+            conn = sqlite3.connect(os.path.join(tmp, 'message_0.db'))
+            try:
+                table = 'Msg_' + hashlib.md5(other.encode()).hexdigest()
+                conn.execute(
+                    'CREATE TABLE "%s" (local_id INTEGER, create_time INTEGER,'
+                    ' local_type INTEGER, real_sender_id INTEGER,'
+                    ' message_content TEXT)' % table)
+                conn.commit()
+            finally:
+                conn.close()
+            result = self._probe(tmp, tables_per_shard=1, rows_per_table=10)
+            item = result['shards'][0]
+            self.assertEqual(item['tables'], 2)
+            self.assertEqual(item['tablesSampled'], 1)
+            # anchorColumnsMissing lists the per-table missing sets; server_id
+            # is what the second table lacks.
+            self.assertIn(['server_id'], item['anchorColumnsMissing'])
+            self.assertEqual(result['schemaAnchorMissingTables'], 1)
+
+    def test_the_probe_report_never_carries_an_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_shard(os.path.join(tmp, 'message_0.db'), rows=[
+                row(1, 1_700_000_000, server_id=101)])
+            result = self._probe(tmp)
+            blob = json.dumps(result)
+            self.assertNotIn(tmp, blob)
+            self.assertNotIn(tmp.replace('\\', '/'), blob)
+            for item in result['shards']:
+                self.assertEqual(os.path.basename(item['name']), item['name'])
+
+
 if __name__ == '__main__':
     unittest.main()

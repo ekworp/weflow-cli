@@ -127,3 +127,51 @@ test('an unconfigured machine is refused by name, not by stack trace', () => {
     assert.equal(payload(result.stdout).code, 'NOT_INITIALIZED')
   })
 })
+
+// D-027 的路径可见层：stableCursor 仍是 false，但 false → true 的判据要摊开，
+// 且指向的探针命令必须真实存在（capabilities 里那条 `probe:` 串由
+// check_readme_commands.py 单独校验，这里跑的是命令本身）。
+test('capabilities exposes the cursor path and the probe command runs unconfigured', () => {
+  withHome((home) => {
+    const caps = payload(runCli(home, ['capabilities', '--json']).stdout)
+    const incremental = caps.read?.exports?.incrementalRead
+    assert.equal(incremental.stableCursor, false)
+    const readiness = incremental.cursorReadiness
+    assert.ok(readiness, 'cursorReadiness should be registered next to stableCursor')
+    assert.ok(Array.isArray(readiness.criteria) && readiness.criteria.length === 5)
+    // Four message backends, each with its code-level facts.
+    const backends = readiness.backends
+    assert.deepEqual(Object.keys(backends).sort(),
+      ['legacy-3x', 'nt', 'raw-sqlite-4x', 'wcdb-4x'])
+    assert.equal(backends.nt.windowPushdown, true)
+    assert.equal(backends.nt.liveProbe, true)
+    assert.equal(backends['raw-sqlite-4x'].coverageReport, false)
+    assert.equal(backends['legacy-3x'].windowPushdown, false)
+
+    // The probe string is a command users and agents will copy; it has to run.
+    const probe = runCli(home, String(readiness.probe).split(' '))
+    assert.equal(probe.status, 0, `probe command failed: ${probe.stderr}`)
+    const body = payload(probe.stdout)
+    assert.equal(body.schema, 'weflow-cursor-probe/v1')
+    // Unconfigured temp home: honest "cannot judge", not a stack trace.
+    assert.equal(body.success, true)
+    assert.equal(body.backend, null)
+    assert.equal(body.probedLive, false)
+    assert.equal(body.stableCursor, false)
+    assert.deepEqual(body.criteria.map((c: any) => c.id), [
+      'stable-identity', 'globally-comparable-order', 'window-pushdown',
+      'coverage-report', 'every-backend',
+    ])
+    // The conclusion is not the probe's to flip.
+    assert.equal(body.criteria.find((c: any) => c.id === 'every-backend').met, false)
+    assert.equal(body.criteria.find((c: any) => c.id === 'globally-comparable-order').met, false)
+  })
+})
+
+test('cursor-probe rejects out-of-range sampling bounds', () => {
+  withHome((home) => {
+    const result = runCli(home, ['sync', 'cursor-probe', '--tables-per-shard', '0', '--json'])
+    assert.equal(result.status, 1)
+    assert.equal(payload(result.stdout).code, 'INVALID_ARGUMENT')
+  })
+})

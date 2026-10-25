@@ -178,3 +178,20 @@ talker|l:<localId>|t:<createTime>     否则
 - [消息数据契约](DATA_CONTRACT.md)
 - [技术决策记录](DECISIONS.md)
 - [项目当前状态](PROJECT_STATE.md)
+
+## 稳定游标的路径可见（`sync cursor-probe`）
+
+D-027 的结论仍然成立：**没有稳定游标**，增量读取就是"重叠时间窗 + 本地去重"。2026-10-23
+起，`false` 这个结论背后的路径是可查的，而不是一个黑盒布尔：
+
+- `capabilities --json` 的 `read.exports.incrementalRead.cursorReadiness` 列出五条判据
+  （稳定身份 / 跨分片可比的顺序键 / 时间窗下推 / 覆盖报告 / 所有后端同时满足）与四个消息后端
+  （`nt` / `raw-sqlite-4x` / `wcdb-4x` / `legacy-3x`）各自的代码事实；其中 `probe:` 指向的命令串
+  由 `check_readme_commands.py` 与 `cli:`/`preview:` 一起校验。
+- `sync cursor-probe --json`（只读、本地、无确认门）实测 NT 后端的**数据侧**：schema 检查全量
+  （每张消息表的锚点列），身份检查有界采样（每分片 5 张表、每表两端各 500 行，可调），结果自带
+  `exhaustive: false`。server_id 以**字符串**上报（int64 过 2^53 在 JSON.parse 里会丢精度）。
+  探针不翻结论：`stableCursor` 恒为 `false`，直到 D-027 的条件满足。
+
+判据与后端事实的单一来源是 `src/services/cursorProbe.ts`（代码事实）与 `nt_decrypt.py
+cursor-probe`（数据事实）；改读取器（下推 / 报告 / 顺序键）时同步改那张表。

@@ -7,6 +7,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { SYNC_SCHEMA, SYNC_SOURCE, syncStateStore } from '../src/services/syncState.js'
 import { SyncRangeRequiredError, runSync } from '../src/services/syncService.js'
+import { probeCursorReadiness } from '../src/services/cursorProbe.js'
 import { dbPathService } from '../src/core/dbPathService.js'
 import { keyService } from '../src/core/keyService.js'
 import { NtCore } from '../src/core/ntCore.js'
@@ -312,7 +313,30 @@ program
           versionedContract: 'weflow-message/v1',
           rawContractPreserved: true,
           coverage: ['requestedFrom', 'requestedTo', 'requestedLimit', 'returned', 'mayHaveMore', 'oldestCreateTime', 'newestCreateTime'],
-          incrementalRead: { mode: 'overlapping-time-window', stableCursor: false },
+          incrementalRead: {
+            mode: 'overlapping-time-window',
+            stableCursor: false,
+            // D-027 的另一半：光写 false 是句结论，这里把 false → true 的**路径**
+            // 摊开。probe 指向的那条命令会实测 NT 数据侧判据（采样有界、结果里
+            // 自带 exhaustive=false）；backends 里的字段是代码事实，改读取器时同步改。
+            cursorReadiness: {
+              probe: 'sync cursor-probe --json',
+              criteria: [
+                'stable-identity: 每条消息都有非零且不重复的 server_id（缺失时身份退化为按分片的 localId+createTime，不能跨分片续读）',
+                'globally-comparable-order: 跨分片合并的顺序键可比（现在是 createTime+localId，localId 不跨分片可比）',
+                'window-pushdown: 时间窗下推进读取（现在只有 NT 后端）',
+                'coverage-report: 后端能报告本次读取是否完整（现在只有 NT 的分片报告）',
+                'every-backend: 上述各项在所有消息后端同时成立（D-027 的总门）',
+              ],
+              backends: {
+                'nt': { identity: 'server_id（退化为 localId+createTime）', windowPushdown: true, coverageReport: true, liveProbe: true },
+                'raw-sqlite-4x': { identity: 'MsgSvrID 列被读取、覆盖率未实测', windowPushdown: false, coverageReport: false, liveProbe: false },
+                'wcdb-4x': { identity: 'server_id 随原生 API 返回、未实测', windowPushdown: false, coverageReport: false, liveProbe: false },
+                'legacy-3x': { identity: 'MsgSvrID 列被读取、覆盖率未实测', windowPushdown: false, coverageReport: false, liveProbe: false },
+              },
+              advertisedWhen: 'every backend reports true on every criterion above',
+            },
+          },
         },
         favorites: {
           cli: 'fav list --json',
@@ -1804,6 +1828,53 @@ syncCmd
     }
     console.log('')
     if (!success) process.exit(1)
+  })
+
+// 稳定游标的"路径可见"探针（D-027）。只读、本地、无确认门——与 `check` 同一副姿态：
+// 它是诊断，不是副作用。`stableCursor` 的结论**不会**因为它翻 true；它做的是把
+// "还差什么"逐条摊开给下游（she-love-me、MCP 客户端）看。
+syncCmd
+  .command('cursor-probe')
+  .description('探测当前消息后端离稳定增量游标还差什么（只读，NT 后端带实测采样）')
+  .option('--json', '输出 JSON 格式')
+  .option('--tables-per-shard <n>', '每分片采样的会话表数量（schema 检查始终全量）', '5')
+  .option('--rows-per-table <n>', '每张表两端各采样的行数', '500')
+  .action(async (opts) => {
+    const parseBound = (raw: string, label: string): number | undefined => {
+      const n = Number(raw)
+      if (!Number.isInteger(n) || n < 1 || n > 10_000) {
+        if (opts.json) { console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', error: `${label} 必须是 1-10000 的整数` })); process.exit(1) }
+        console.error(chalk.red(`✗ ${label} 必须是 1-10000 的整数`))
+        process.exit(1)
+      }
+      return n
+    }
+    let report
+    try {
+      report = await probeCursorReadiness({
+        tablesPerShard: parseBound(opts.tablesPerShard, '--tables-per-shard'),
+        rowsPerTable: parseBound(opts.rowsPerTable, '--rows-per-table'),
+      })
+    } catch (error: any) {
+      if (opts.json) { console.log(JSON.stringify({ success: false, code: 'CURSOR_PROBE_FAILED', error: error?.message || '探测失败' })); process.exit(1) }
+      console.error(chalk.red(`✗ 探测失败: ${error?.message || error}`))
+      process.exit(1)
+    }
+    if (opts.json) { console.log(JSON.stringify(report)); return }
+
+    console.log(chalk.cyan('\n稳定游标探针（结论不变：stableCursor = false，D-027）'))
+    console.log(chalk.gray(`  后端: ${report.backend ?? '（未配置）'} — ${report.backendNote}`))
+    console.log(chalk.gray(`  实测: ${report.probedLive ? `已采样（exhaustive=false）` : '未运行（该后端无实测探针或未初始化）'}`))
+    for (const c of report.criteria) {
+      const mark = c.met === null ? '?' : c.met ? '✓' : '✗'
+      console.log(`  ${mark} ${c.id}`)
+      console.log(chalk.gray(`      ${c.detail}`))
+    }
+    if (report.sample) {
+      const sm = report.sample
+      console.log(chalk.gray(`  采样: ${sm.rowsSampled} 行 / ${sm.tablesSampled} 表（共 ${sm.tablesTotal} 表，每表两端各 ${sm.rowsPerTable} 行）`))
+    }
+    console.log('')
   })
 
 // ==================== contacts ====================
