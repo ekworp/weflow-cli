@@ -60,3 +60,4 @@ Thumbs.db
 weflow-multi-*/
 weflow-xor-*/
 weflow-voice-*/
+!docs/REPLAY.md
