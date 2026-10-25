@@ -324,6 +324,7 @@ weflow-cli config set assistantGroupRequireMention true
 | 那年今日 | `weflow-cli today --years 1,3,5`（几年前的今天在聊什么）|
 | 人脉图谱 | `weflow-cli network --groups` · `--with <名字>`（共同群）· `--intro <名字>`（谁能引荐；只读 contact.db）|
 | 某号观点演变 | `weflow-cli timeline --list` · `--source <公众号名>`（按时间看它说法的变化）|
+| 关系网络时间重放 | `weflow-cli replay`（按月展开，生成可播放的单文件 HTML；看哪条边断了，不只是图变大）|
 | 本机判断层 | `weflow-cli decide --request <file> --dry-run` · `--yes` |
 | 导出聊天记录 | `weflow-cli export <联系人> <json\|txt\|html\|excel>` |
 | 同步检查点 | `weflow-cli sync run <联系人> --since <日期>` · `sync status` · `sync verify` · `sync cursor-probe`（离稳定增量游标还差什么，实测当前后端）|

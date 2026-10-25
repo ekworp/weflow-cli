@@ -7907,6 +7907,43 @@ program
     }
   })
 
+// ==================== replay（关系时间重放）====================
+program
+  .command('replay')
+  .description('关系网络时间重放：按月展开，生成可播放的单文件 HTML（本地、离线、不调模型）')
+  .option('--out <file>', '输出路径', 'output/replay.html')
+  .option('--min-weight <number>', '当月互动量门槛，低于此不计入', '10')
+  .option('--json', '只输出聚合结果（验收用）')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'replay.py')
+    const minWeight = parseCliInteger(opts.minWeight, 'min-weight', 1, 10000, opts.json)
+
+    try {
+      const args = [script, '--min-weight', String(minWeight), '--out', String(opts.out)]
+      if (opts.json) args.push('--json')
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 600_000,
+        maxBuffer: 64 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'REPLAY_FAILED',
+          error: '时间重放不可用，请运行 check --json 检查配置和依赖',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '生成失败')}`))
+      process.exit(1)
+    }
+  })
+
 // ==================== timeline（某号观点演变）====================
 program
   .command('timeline')
