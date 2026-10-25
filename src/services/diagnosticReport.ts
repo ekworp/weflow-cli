@@ -49,6 +49,12 @@ export interface DiagnosticInput {
     dataDirMatchesConfig?: boolean | null
     dataDirs?: string[]
     unusableVersionDirs?: Array<{ dir: string; files: number }>
+    /** D-130：本机加载版本 vs 本包验证版本（check 那边算好传进来） */
+    compatibility?: {
+      verifiedVersion: string
+      verifiedAt: string
+      verdict: 'verified' | 'newer-than-verified' | 'older-than-verified' | 'unknown'
+    }
   }
   /** 最近一次失败的原文（可选；`redactForReport` 会再过一遍） */
   lastError?: string | null
@@ -157,6 +163,14 @@ export function diagnose(input: DiagnosticInput): DiagnosticFinding[] {
         hint: '指向它的加载会失败。如果客户端起不来，先看这里；正常情况下可以忽略。',
       })
     }
+    if (client.compatibility?.verdict === 'newer-than-verified') {
+      out.push({
+        level: 'warning',
+        title: `本机微信（${client.version}）比本版本验证过的 ${client.compatibility.verifiedVersion} 更新`,
+        hint: '如果读不出数据，先怀疑版本变化——去 GitHub 看有没有更新版本的 weflow-cli，'
+          + '或把这份报告贴进 issue（版本差就是第一条线索）。',
+      })
+    }
   }
 
   if (!out.length) {
@@ -209,6 +223,14 @@ export function renderDiagnosticReport(input: DiagnosticInput): string {
   } else {
     say(`运行中: ${yesNo(client.running)}`)
     say(`加载版本: ${client.version || `未知${client.note ? `（${client.note}）` : ''}`}`)
+    if (client.compatibility) {
+      const v = client.compatibility.verdict
+      const word = v === 'verified' ? '就是验证过的版本'
+        : v === 'newer-than-verified' ? '比验证过的更新（读不出数据先怀疑这里）'
+        : v === 'older-than-verified' ? '比验证过的更旧（一般兼容）'
+        : '无法判定（微信没在运行或探测失败）'
+      say(`与本版本的关系: ${word}（本版本验证过 ${client.compatibility.verifiedVersion}，${client.compatibility.verifiedAt}）`)
+    }
     if (client.dataDirs?.length) say(`客户端自报数据目录: ${client.dataDirs.join('、')}`)
     say(`与配置推出来的同一份: ${yesNo(client.dataDirMatchesConfig)}`)
     if (client.unusableVersionDirs?.length) {

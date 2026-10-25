@@ -1,0 +1,48 @@
+/**
+ * 微信版本兼容（D-130）：验证版本的单一事实源与纯比较。
+ *
+ * 比较函数是判定的**唯一实现**（check 的 json/report/人类输出、capabilities 全走它），
+ * 这里钉它的四种判定与边界：相等 / 更新 / 更旧 / 缺段补零 / 形状不猜 / 没在跑。
+ * WECHAT_VERIFIED 的形状（四段数字 + ISO 日期）也钉住——它是发布物的一部分，写坏了
+ * 用户看到的"验证过的版本"就是一句瞎话。
+ */
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { join } from 'node:path'
+import { WECHAT_VERIFIED, compareWechatVersions } from '../src/services/wechatCompat.js'
+
+test('compareWechatVersions：四种判定与边界', () => {
+  assert.equal(compareWechatVersions('4.1.15.56', '4.1.15.56'), 'verified')
+  assert.equal(compareWechatVersions('4.1.15.56', '4.1.15.55'), 'newer-than-verified')
+  assert.equal(compareWechatVersions('4.1.15.60', '4.1.15.56'), 'newer-than-verified')
+  assert.equal(compareWechatVersions('4.1.16.0', '4.1.15.56'), 'newer-than-verified', '第三段进位也是更新')
+  assert.equal(compareWechatVersions('4.1.15.55', '4.1.15.56'), 'older-than-verified')
+  // 缺段按 0：4.1.15 < 4.1.15.56
+  assert.equal(compareWechatVersions('4.1.15', '4.1.15.56'), 'older-than-verified')
+  // 形状不对不猜
+  assert.equal(compareWechatVersions('v4.1.15', '4.1.15.56'), 'unknown')
+  assert.equal(compareWechatVersions('4.1.x.56', '4.1.15.56'), 'unknown')
+  // 微信没在跑 / 探测失败
+  assert.equal(compareWechatVersions(null, '4.1.15.56'), 'unknown')
+  assert.equal(compareWechatVersions(undefined, '4.1.15.56'), 'unknown')
+})
+
+test('WECHAT_VERIFIED 的形状：四段数字 + ISO 日期（它是发布物的一部分）', () => {
+  assert.match(WECHAT_VERIFIED.version, /^\d+\.\d+\.\d+\.\d+$/,
+    '版本号必须是四段数字——check 的报告、capabilities 都直接展示它')
+  assert.match(WECHAT_VERIFIED.verifiedAt, /^\d{4}-\d{2}-\d{2}$/, '日期必须是 YYYY-MM-DD')
+  assert.ok(WECHAT_VERIFIED.verifiedHow.length > 10, '验证方式必须写清（改这个常量的门槛就是真实验证）')
+})
+
+test('capabilities --json 暴露 compatibility.wechat，与单一事实源一致', () => {
+  const result = spawnSync(process.execPath, [
+    '--import', 'tsx', join(process.cwd(), 'bin', 'weflow-cli.ts'), 'capabilities', '--json',
+  ], { cwd: process.cwd(), encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  const body = JSON.parse(result.stdout)
+  const compat = body.compatibility?.wechat
+  assert.ok(compat, 'capabilities 该有 compatibility.wechat（D-130）')
+  assert.equal(compat.verifiedVersion, WECHAT_VERIFIED.version, '与 wechatCompat.ts 的常量一致——两处各写一份迟早漂')
+  assert.equal(compat.verifiedAt, WECHAT_VERIFIED.verifiedAt)
+})

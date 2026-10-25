@@ -4109,3 +4109,29 @@ ROADMAP P1 给 she-love-me 预留的同一条路；qchat-cli 因此**一行不�
   weflow 的纪律——QQ 号与 wxid 同级敏感；知识卡与索引沿用各自既有的出境确认门。
 - `--source all` 在微信库不可用时**降级**为只处理 QQ（说一声，不是静默）；`build
   --include-imports` 在没有微信库的机器上也能建索引（纯 QQ 用户是真实场景）。
+
+## D-130: 验证过的微信版本有单一事实源，check 主动比对，发布必须记录
+
+**Status:** Active
+
+**Decision.** 本包"最后用真实数据验证过的微信版本"只写在 `src/services/wechatCompat.ts` 的
+`WECHAT_VERIFIED` 一处（版本 + 日期 + 验证方式）。三条接线全部只读它：`capabilities --json`
+的 `compatibility.wechat`（机器可读）、`check`（含 `--json` / `--report` / 人类输出）拿本机
+**实际加载**的版本与之比对给出四态判定（verified / newer-than-verified / older-than-verified /
+unknown——"微信没在跑"是 unknown，不是"没问题"）、`docs/RELEASING.md` 的发布清单要求每个
+CHANGELOG 版本段记录验证版本（不涉及微信数据读取的版本写明"本版不涉及"）。
+
+**Reason.** 微信 4.x 几周一更，而"这版验证过哪个微信"原来只活在 PROJECT_STATE 的一段散文里：
+CHANGELOG 不记、机器读不到。用户升级微信后读不出数据时，第一个该被回答的问题（"你的微信
+比我们验证过的新吗"）没有任何面能回答——issue 里的反复沟通就是这么来的。check 本来就在探测
+实际加载的版本（D-107/D-125），差的只是把两边的数字放到一起说一句话。
+
+**Consequences.**
+- 更新 `WECHAT_VERIFIED` 的门槛是**一次真实数据验证**（不只是"进程起来了"），验证日期与
+  读了什么写进 `verifiedHow`；没验证不许改——这正是常量存在的意义。
+- `compareWechatVersions` 是判定的唯一实现（纯函数：四段数字逐段比、缺段补零、形状不猜），
+  测试钉住四种判定与边界。
+- `newer-than-verified` 在 `check --report` 里升为 warning（它就是"读不出数据"的第一嫌疑人），
+  人类输出与 report 的措辞共用 `describeCompatVerdict` / 渲染器里的一份，不各写一套。
+- 判定是**对"本机此刻"的陈述**，不是兼容性承诺：说"verified"只是"这个组合验证过"，
+  "older"一般兼容但没有保证——措辞已按此收敛。

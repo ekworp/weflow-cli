@@ -33,6 +33,7 @@ import type { ChatSession } from '../src/types.js'
 import { disabledIds, describeSkill, readSkillBody, scanSkills, skillRoots, skillState } from '../src/services/assistantSkills.js'
 import { assistantScenes, validateSceneId, type Scene } from '../src/services/assistantScenes.js'
 import { detectWechatClient, reportedDataDirs, samePath } from '../src/services/wechatClient.js'
+import { WECHAT_VERIFIED, compareWechatVersions, describeCompatVerdict } from '../src/services/wechatCompat.js'
 
 const program = new Command()
 
@@ -305,6 +306,14 @@ program
     const data = {
       schema: 'weflow-capabilities/v1',
       version: CLI_VERSION,
+      // D-130：本包最后用真实数据验证过的微信版本（单一事实源 wechatCompat.ts）。
+      // check 的判定也从同一处读；发布清单要求 CHANGELOG 每版记录（来源就是这里）。
+      compatibility: {
+        wechat: {
+          verifiedVersion: WECHAT_VERIFIED.version,
+          verifiedAt: WECHAT_VERIFIED.verifiedAt,
+        },
+      },
       read: {
         sessions: { cli: 'sessions --json', mcp: 'wechat.list_sessions' },
         messages: { cli: 'messages <talker> --json', mcp: 'wechat.export_messages' },
@@ -8263,6 +8272,12 @@ program
           // 只报条数与最近时间（不读崩溃内容）
           crashRecords: client.crashRecords,
           caveats: client.caveats,
+          // D-130：本机实际加载的版本 vs 本包验证过的版本（判定只有这一份实现）
+          compatibility: {
+            verifiedVersion: WECHAT_VERIFIED.version,
+            verifiedAt: WECHAT_VERIFIED.verifiedAt,
+            verdict: compareWechatVersions(client.version, WECHAT_VERIFIED.version),
+          },
         },
       }
       return data
@@ -8302,6 +8317,7 @@ program
           dataDirMatchesConfig: data.wechatClient.dataDirMatchesConfig,
           dataDirs: data.wechatClient.dataDirs,
           unusableVersionDirs: data.wechatClient.unusableVersionDirs,
+          compatibility: data.wechatClient.compatibility,
         },
       }))
       return
@@ -8358,6 +8374,14 @@ program
           console.log(`  ${dep.padEnd(20)} ${chalk.gray('○ (pip install scrapling)')}`)
         }
       }
+    }
+
+    // 3.5 微信版本兼容（D-130）：本机加载的 vs 本包验证过的
+    {
+      const verdict = compareWechatVersions(client.version, WECHAT_VERIFIED.version)
+      const mark = verdict === 'verified' ? chalk.green('✓') : verdict === 'newer-than-verified' ? chalk.yellow('⚠') : chalk.gray('·')
+      console.log(chalk.white('\n微信版本兼容:'))
+      console.log(`  ${mark} ${client.version ?? '未知（微信没在运行）'} · ${describeCompatVerdict(verdict, WECHAT_VERIFIED.version)}`)
     }
 
     // 4. Config
