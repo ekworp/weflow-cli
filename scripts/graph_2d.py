@@ -64,7 +64,8 @@ def main(argv=None):
     if not any((vault / concepts).is_dir() for _line, _root, concepts in g.wl.KNOWLEDGE_LINES):
         return g._fail('Vault 里没有概念目录：%s（先跑 `wiki compile`，或用 --vault 指定）' % vault, args.json)
 
-    nodes, links = g.build_graph(vault, min_degree=args.min_degree, line=args.line)
+    nodes, links, evidence = g.build_graph(vault, min_degree=args.min_degree, line=args.line,
+                                           with_evidence=True)
     if args.dry_run:
         if args.json:
             print(json.dumps({'success': True, 'action': 'graph-2d', 'dryRun': True, 'dims': 2,
@@ -81,8 +82,10 @@ def main(argv=None):
         return g._fail('缺件：%s（应当在 %s 下随包发）' % ('、'.join(missing), g.LIB_DIR), args.json)
 
     data = json.dumps({'nodes': nodes, 'links': links}, ensure_ascii=False, separators=(',', ':'))
-    # 页面数据一份（含线的展示名），缓存键用抽掉展示名的那一份 —— 理由见 graph_3d.py
-    html_data = json.dumps({'nodes': nodes, 'links': links, 'lineLabels': g._utils.LINE_LABELS},
+    # 页面数据一份（含线的展示名与**边证据**），缓存键用抽掉展示名的那一份 —— 理由见 graph_3d.py。
+    # 证据不进 `data`：布局用不到它，混进缓存键会让所有旧坐标一夜作废。
+    html_data = json.dumps({'nodes': nodes, 'links': links, 'lineLabels': g._utils.LINE_LABELS,
+                            'edgeEvidence': evidence},
                            ensure_ascii=False, separators=(',', ':'))
     # 与 3D 分开分槽：同一张图的 2D 与 3D 坐标不通用，各存一份（见 graph_3d.py 里那段注释）
     digest = g.layout_key(data, 2, args.ticks)
@@ -121,7 +124,7 @@ def main(argv=None):
 </style></head>
 <body>
 <canvas id="cv"></canvas>
-<div id="hud"><div id="stats"></div><div id="info">点一个概念看它连着谁 · 拖动平移 · 滚轮缩放</div></div>
+<div id="hud"><div id="stats"></div><div id="info">点一个概念看它连着谁 · 点一条边看它凭什么连着 · 拖动平移 · 滚轮缩放</div></div>
 <input id="q" placeholder="搜概念，回车跳过去">
 <div id="tag">2D · 坐标构建期算好 · 双击空白复位</div>
 <div id="boot">正在画…</div>
@@ -139,11 +142,13 @@ def main(argv=None):
                           'nodes': len(nodes), 'links': len(links), 'out': str(out),
                           'vault': str(vault), 'mb': round(mb, 2),
                           'minDegree': args.min_degree, 'line': args.line,
+                          'evidenceEdges': len(evidence),
                           'selfContained': True, 'readsLocalData': True, 'invokesAI': False,
                           'sendsNothing': True}, ensure_ascii=False))
     else:
         print('已生成 %s' % out)
-        print('  概念 %d / 链接 %d / 文件 %.1f MB · 2D' % (len(nodes), len(links), mb))
+        print('  概念 %d / 链接 %d / 带共同来源证据的边 %d / 文件 %.1f MB · 2D'
+              % (len(nodes), len(links), len(evidence), mb))
     return 0
 
 

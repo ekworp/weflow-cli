@@ -76,11 +76,19 @@ def run_layout(cache_dir, digest, dims, ticks):
                     str(ticks), digest, str(dims), params], check=True)
 
 
-def build_graph(vault, min_degree=0, line='all'):
+def build_graph(vault, min_degree=0, line='all', with_evidence=False):
     """`min_degree` / `line` 只在**产出**这一步过滤，改动的是给页面看的点集。
 
     `min_degree` 用的是**原图里**的度数（"它总共连了 ≥N 个概念"），不是子图里重算的 ——
     否则每放大一次门槛，度数就变一次，同一个数在不同页面上含义不同。
+
+    `with_evidence=True` 时额外返回 `evidence`：每条边凭**哪些共同来源卡片**连起来
+    （两页 `## 来源` 段的交集）。D-033 的精神——给用户看的每个判断都要能对回证据，
+    而图上一条边正是"这两个概念有关系"这个判断。**只进 2D 页面**，不进布局缓存
+    那份数据（`data` 仍只有 nodes/links，缓存 key 不变、旧坐标不作废）。每条边带
+    交集总数 + 最多 2 个名字（页面体积随边数线性走，名字是贵的那部分），没有
+    交集的边**不进表**——前端对查不到的边说"来自正文 [[链接]]、无共同出处"，
+    比编一个空列表诚实。
     """
     pages = []
     # 概念目录清单来自 `_utils.KNOWLEDGE_LINES`（经 `wiki_lint` 透出）。**别再在这里硬编码**：
@@ -107,11 +115,20 @@ def build_graph(vault, min_degree=0, line='all'):
         for stem in stems:
             other_line.setdefault(stem, lbl)
     edges = set()
+    # 每页的来源卡片名（`## 来源` 段里那些 `[[卡片]]` 链接；建边时被排除的正是这一段）。
+    sources = {}
     for p in pages:
         body = p['body']
         at = body.find('## 来源')
-        if at != -1:
-            body = body[:at]
+        tail = '' if at == -1 else body[at:]
+        body = body[:at] if at != -1 else body
+        if with_evidence:
+            key = _utils.concept_key(p['line'], p['stem'])
+            sources[key] = {
+                name.replace('.md', '').strip()
+                for _sec, name in wl.links_by_section(tail)
+                if _sec == '来源'
+            }
         mine = _utils.concept_key(p['line'], p['stem'])
         for _sec, name in wl.links_by_section(body):
             t = name.replace('.md', '').strip()
@@ -139,7 +156,16 @@ def build_graph(vault, min_degree=0, line='all'):
         # （error: node not found），而且只在跑布局时才炸 —— 页面那边看着像"库坏了"。
         links = [pair for pair in links if pair[0] in keep and pair[1] in keep]
         nodes = [n for n in nodes if n['id'] in keep]
-    return nodes, links
+    if not with_evidence:
+        return nodes, links
+    evidence = {}
+    for a, b in links:
+        shared = sources.get(a, set()) & sources.get(b, set())
+        if shared:
+            # 主键是 `线:名字`，线内名字已经过文件名清洗（`|` 等字符会被换成 `_`，
+            # 见 D-060 那批），所以 `|` 不可能出现在两侧名字里——做分隔符是安全的。
+            evidence['|'.join(sorted((a, b)))] = [len(shared)] + sorted(shared)[:2]
+    return nodes, links, evidence
 
 
 VIEWER = r'''

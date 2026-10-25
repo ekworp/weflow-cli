@@ -31,6 +31,10 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   （`sqlcipher3-binary` 根本没有 Windows 发行版）；两段式（`--dry-run` 计划 / `--yes` 执行），
   pip 瞬时网络失败重试一次，装完验证 `import sqlcipher3` 与运行时确实优先 venv。
 
+- **2D 概念图谱：点一条边看它凭什么连着。** 每条边算出两页 `## 来源` 的交集（共同来源卡片），
+  点边高亮并列出；没有共同来源的边如实说明"来自页面正文里的 [[链接]]"。每边最多带 2 个名字
+  （页面体积有界），证据只进页面载荷——布局缓存键不变，旧坐标不作废。3D 不带。
+
 - **修了主分支上四处红的回归测试**（`npm test` 在 master 上本来就挂着 4 条，stash 验证过与
   新特性无关）：`today` / `promises` 曾把 `--talker` 放进子进程 argv（进程列表可见），改走
   `WEFLOW_TALKER` 环境变量（D-020，`test/privacy-paths` 转绿）；`dailyMailTo` 补齐默认值三处

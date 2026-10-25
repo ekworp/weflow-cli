@@ -267,3 +267,118 @@ test('CLI：--flat 走 2D 入口（声明、路由、透传三处都在）', () 
     assert.ok(existsSync(out), '页面该写出来')
   })
 })
+
+/** 甲乙共享一张来源卡、甲丙不共享：边证据该一有一无，且"无"的那条要能被前端诚实说出。 */
+function evidenceVault(dir: string): string {
+  const wiki = join(dir, 'Wiki', 'Concepts')
+  mkdirSync(wiki, { recursive: true })
+  writeFileSync(join(wiki, '甲.md'), concept('甲',
+    '见 [[乙]] [[丙]]。\n\n## 来源\n\n- [[2026-09-12-共同文章]] — 标题\n- [[2026-09-13-甲独有]] — 标题\n'), 'utf8')
+  writeFileSync(join(wiki, '乙.md'), concept('乙',
+    '见 [[甲]]。\n\n## 来源\n\n- [[2026-09-12-共同文章]] — 标题\n'), 'utf8')
+  writeFileSync(join(wiki, '丙.md'), concept('丙',
+    '不引用别人。\n\n## 来源\n\n- [[2026-09-14-丙独有]] — 标题\n'), 'utf8')
+  return dir
+}
+
+test('边证据：共享来源的边带出处，不共享的边不在表里（前端会说"来自正文链接"）', () => {
+  withTemp((tmp) => {
+    const vault = evidenceVault(tmp)
+    const out = join(tmp, 'ge.html')
+    const r = run2d(tmp, ['--vault', vault, '--out', out, '--json'])
+    assert.equal(r.status, 0, `退出码 ${r.status}：${r.stderr.slice(0, 400)}`)
+    const body = payload(r.stdout)
+    assert.equal(body.nodes, 3)
+    assert.equal(body.evidenceEdges, 1, '只有甲乙那条边有共同来源')
+
+    const html = readFileSync(out, 'utf8')
+    const data = /window\.__DATA__ = (\{.*?\});/s.exec(html)
+    assert.ok(data, '页面该有 __DATA__')
+    const parsed = JSON.parse(data![1])
+    const keys = Object.keys(parsed.edgeEvidence)
+    assert.equal(keys.length, 1)
+    // 键是两侧排序后的 `id|id`（甲 U+7532 > 乙 U+4E59，所以乙在前）
+    assert.equal(keys[0], 'wiki:乙|wiki:甲')
+    assert.deepEqual(parsed.edgeEvidence[keys[0]], [1, '2026-09-12-共同文章'])
+  })
+})
+
+test('边检查：点边能命中，证据文案如实（有出处说出处，没出处说来自正文链接）', () => {
+  withTemp((tmp) => {
+    const vault = evidenceVault(tmp)
+    const out = join(tmp, 'ge.html')
+    const built = run2d(tmp, ['--vault', vault, '--out', out, '--json'])
+    assert.equal(built.status, 0, built.stderr.slice(0, 300))
+    const html = readFileSync(out, 'utf8')
+    const data = /window\.__DATA__ = (\{.*?\});/s.exec(html)
+    const pos = /window\.__POS__ = "([^"]*)";/.exec(html)
+    assert.ok(data && pos, '页面该有 __DATA__ 与 __POS__')
+
+    const calls: Record<string, number> = {}
+    const ctx = fakeContext(calls)
+    const dom = new JSDOM(`<canvas id="cv"></canvas>
+      <div id="hud"><div id="stats"></div><div id="info"></div></div>
+      <input id="q"><div id="boot"></div>`, { runScripts: 'outside-only' })
+    const { window } = dom
+    ;(window as any).HTMLCanvasElement.prototype.getContext = (() => ctx) as any
+    ;(window as any).__DATA__ = JSON.parse(data![1])
+    ;(window as any).__POS__ = pos![1]
+    try {
+      window.eval(VIEWER)
+    } catch (error) {
+      assert.fail(`视图脚本抛异常（页面会是一片空白）：${String(error)}`)
+    }
+
+    const g2 = (window as any).__GRAPH2D__
+    assert.ok(g2, '把手要在')
+    assert.equal(g2.nodes, 3)
+
+    // fit() 之后取"甲乙"那条边的中点：nearestEdge 该命中它。
+    // 甲乙边：evidence 里的那条。先找到它（哪条 k 连着甲和乙）。
+    let pairK = -1
+    for (let k = 0; k < g2.edges * 2; k += 2) {
+      const [a, b] = g2.edgeAt(k)
+      const ids = (JSON.parse(data![1]) as any).nodes
+      const names = [ids[a].name, ids[b].name]
+      if (names.includes('甲') && names.includes('乙')) { pairK = k; break }
+    }
+    assert.ok(pairK >= 0, '该找到甲乙那条边')
+    const [ia, ib] = g2.edgeAt(pairK)
+    const [xa, ya] = g2.xy(ia)
+    const [xb, yb] = g2.xy(ib)
+    const mx = g2.view.x + ((xa + xb) / 2) * g2.view.scale
+    const my = g2.view.y + ((ya + yb) / 2) * g2.view.scale
+    const hit = g2.nearestEdge(mx, my)
+    assert.ok(hit >= 0, '边中点该命中一条边')
+    const [ha, hb] = g2.edgeAt(hit)
+    const ids = (JSON.parse(data![1]) as any).nodes
+    assert.ok(
+      (ids[ha].name === '甲' && ids[hb].name === '乙') || (ids[ha].name === '乙' && ids[hb].name === '甲'),
+      `命中的该是甲乙边，实际 ${ids[ha].name}-${ids[hb].name}`)
+
+    // 空白处不命中（3 个点撑开的图，角落里通常离所有边都远；tolerance 5px）
+    assert.equal(g2.nearestEdge(2, 2), -1, '图外角落不该命中任何边')
+
+    // 证据文案：甲乙边说出处；甲丙边如实说"没有共同来源卡片"
+    const withEv = g2.edgeInfoText(pairK)
+    assert.ok(/共同来源 1 个/.test(withEv), `该报共同来源数：${withEv}`)
+    assert.ok(/2026-09-12-共同文章/.test(withEv), `该带卡片名：${withEv}`)
+    let noEvK = -1
+    for (let k = 0; k < g2.edges * 2; k += 2) {
+      const [a, b] = g2.edgeAt(k)
+      const names = [ids[a].name, ids[b].name]
+      if (names.includes('甲') && names.includes('丙')) { noEvK = k; break }
+    }
+    assert.ok(noEvK >= 0, '该找到甲丙那条边')
+    const noEv = g2.edgeInfoText(noEvK)
+    assert.ok(/没有共同来源卡片/.test(noEv), `无证据的边要如实说：${noEv}`)
+    assert.ok(/\[\[链接\]\]/.test(noEv), `要说清边来自正文链接：${noEv}`)
+
+    // 聚焦边会写 HUD 且不抛异常（draw 里的高亮分支在跑）
+    g2.setEdgeFocus(pairK)
+    const info = window.document.getElementById('info')!.textContent || ''
+    assert.ok(/共同来源/.test(info), `HUD 该显示证据：${info}`)
+    g2.draw()
+    assert.ok((calls.stroke || 0) >= 1, '聚焦边后重绘要真的描边')
+  })
+})

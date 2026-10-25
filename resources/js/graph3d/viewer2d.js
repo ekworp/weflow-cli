@@ -46,6 +46,15 @@
     adj[E[k + 1]].push(E[k])
   }
 
+  // ---- 边证据（D-033：图上一条边就是"这两个概念有关系"的判断，判断要能对回出处） ----
+  // `id|id`（两侧排序后拼；构建侧保证了 `|` 不会出现在名字里）→ [共同来源数, 名字…最多 2 个]。
+  // 没有共同来源的边**不在这张表里**：那种边来自页面正文里的 [[链接]]（相关概念/跨线回退），
+  // 前端照样能说、说得诚实——比揣一个空列表冒充"查过了"强。
+  const EV = new Map(Object.entries(data.edgeEvidence || {}))
+  const evKey = (i, j) => (nodes[i].id < nodes[j].id
+    ? `${nodes[i].id}|${nodes[j].id}`
+    : `${nodes[j].id}|${nodes[i].id}`)
+
   const bucketOf = (line) => (line === 'wiki' || line === 'chat' ? line : 'other')
   const LINE_COLOR = { wiki: '#6ea8fe', chat: '#f0a35e', other: '#8b98b3' }
 
@@ -93,7 +102,7 @@
   const hudInfo = document.getElementById('info')
   const boot = document.getElementById('boot')
   const q = document.getElementById('q')
-  const HINT = '拖动平移 · 滚轮缩放 · 点一个概念看它连谁 · 双击空白复位'
+  const HINT = '拖动平移 · 滚轮缩放 · 点一个概念看它连谁 · 点一条边看它凭什么连着 · 双击空白复位'
 
   let ctx = null
   try {
@@ -111,6 +120,8 @@
   let hovered = -1
   let focus = -1
   let neighbours = null
+  // 聚焦的边（E 里的偏移 k，端点 E[k]/E[k+1]）。点概念与点边互斥：后点的清掉先点的。
+  let edgeFocus = -1
 
   const cssW = () => canvas.clientWidth || window.innerWidth || 800
   const cssH = () => canvas.clientHeight || window.innerHeight || 600
@@ -178,6 +189,39 @@
     return best
   }
 
+  /** 点到线段的距离（屏幕坐标）。 */
+  function segDist(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const len2 = dx * dx + dy * dy
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2))
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+  }
+
+  /**
+   * 屏幕坐标 → 命中的边（E 里的偏移 k；找不到 -1）。只在边**画得出来**时命中
+   * （与 draw 里同一道缩放门槛）：看不见的边被"点中"，用户会以为图坏了。
+   * 整趟 O(边数)，但只在点击时跑一次。
+   */
+  function nearestEdge(px, py, tol = 5) {
+    if (MEDIAN_EDGE * view.scale < EDGE_MIN_PX) return -1
+    const s = view.scale
+    const ox = view.x
+    const oy = view.y
+    let best = -1
+    let bestD = tol
+    for (let k = 0; k < E.length; k += 2) {
+      const d = segDist(px, py,
+        ox + X[E[k]] * s, oy + Y[E[k]] * s,
+        ox + X[E[k + 1]] * s, oy + Y[E[k + 1]] * s)
+      if (d <= bestD) {
+        bestD = d
+        best = k
+      }
+    }
+    return best
+  }
+
   function draw() {
     const w = cssW()
     const h = cssH()
@@ -198,9 +242,14 @@
     // ---- 世界坐标：点与线 ----
     ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy)
 
-    // 聚焦时把无关的点线压暗（不是藏起来）：结构还在，但一眼看得出它连的是谁
-    const dimOthers = focus >= 0
-    const near = (i) => !dimOthers || i === focus || (neighbours !== null && neighbours.has(i))
+    // 聚焦（点或边）时把无关的点线压暗（不是藏起来）：结构还在，但一眼看得出连的是谁
+    const dimOthers = focus >= 0 || edgeFocus >= 0
+    const edgeEnds = edgeFocus >= 0 ? [E[edgeFocus], E[edgeFocus + 1]] : null
+    const near = (i) => {
+      if (!dimOthers) return true
+      if (focus >= 0) return i === focus || (neighbours !== null && neighbours.has(i))
+      return i === edgeEnds[0] || i === edgeEnds[1]
+    }
 
     // 屏幕上的边短到看不清时，整批不画（见 MEDIAN_EDGE 那段）
     const drawEdges = MEDIAN_EDGE * s >= EDGE_MIN_PX
@@ -221,6 +270,17 @@
       ctx.lineTo(xj, yj)
     }
     ctx.stroke()
+    // 聚焦的那条边再描一遍亮的：主批它已经画过（两端点都 near），这里覆盖成高亮。
+    if (edgeFocus >= 0 && drawEdges) {
+      const i = edgeEnds[0]
+      const j = edgeEnds[1]
+      ctx.lineWidth = 2.2 / s
+      ctx.strokeStyle = '#8fd6a8'
+      ctx.beginPath()
+      ctx.moveTo(X[i], Y[i])
+      ctx.lineTo(X[j], Y[j])
+      ctx.stroke()
+    }
 
     // 一趟扫完（ORDER 已按线排好，每段一个桶一次 fill），而不是为了分色把全部点扫三遍
     for (let b = 0; b < 3; b += 1) {
@@ -257,6 +317,10 @@
     const extra = []
     if (hovered >= 0 && !labelledSet.has(hovered)) extra.push(hovered)
     if (focus >= 0 && focus !== hovered && !labelledSet.has(focus)) extra.push(focus)
+    // 边聚焦时两端点的名字必须出现——它们就是这条判断的两个主角
+    if (edgeEnds) {
+      for (const i of edgeEnds) if (!extra.includes(i)) extra.push(i)
+    }
     // **聚焦时的候选换成"它自己 + 它连着的那些"**：其余点都压暗了，给它们画名字只会糊住
     // 中间那个。邻居按度数从高到低（`LABEL_MAX` 截断时先给连接多的），所以同一张图每次
     // 画出来的名字是一样的。
@@ -265,7 +329,7 @@
     // 于是点开一个枢纽（小图里就是点开任何一个点）画布上**一个名字都没有**，正好与上面
     // "一眼看得出它连的是谁"相反（2026-10-11 修）。
     const focusLabels = []
-    if (dimOthers) {
+    if (dimOthers && focus >= 0) {
       focusLabels.push(focus)
       if (neighbours) {
         for (const j of [...neighbours].sort((a, b) => (nodes[b].deg || 0) - (nodes[a].deg || 0))) {
@@ -281,7 +345,7 @@
       const sx = ox + X[i] * s
       const sy = oy + Y[i] * s
       if (sx < -40 || sy < -20 || sx > w + 40 || sy > h + 20) continue
-      const forced = i === hovered || i === focus
+      const forced = i === hovered || i === focus || (edgeEnds !== null && (i === edgeEnds[0] || i === edgeEnds[1]))
       if (!forced) {
         if (shownLabels >= LABEL_MAX) continue
         let clash = false
@@ -316,8 +380,26 @@
     })
   }
 
+  /** 一条边的人类可读证据：共同来源卡片；查不到时说清这条边是凭什么连的。 */
+  function edgeInfoText(k) {
+    const a = nodes[E[k]]
+    const b = nodes[E[k + 1]]
+    const head = `${label(a)} ⟷ ${label(b)}`
+    const ev = EV.get(evKey(E[k], E[k + 1]))
+    if (!ev) {
+      return `${head} · 两页没有共同来源卡片——这条边来自页面正文里的 [[链接]]`
+    }
+    const count = ev[0] || 0
+    const names = ev.slice(1).join('、')
+    const more = count > ev.length - 1
+      ? ` 等 ${count} 个（完整清单见两页的「## 来源」段）`
+      : ''
+    return `${head} · 共同来源 ${count} 个：${names}${more}`
+  }
+
   function setFocus(i) {
     focus = i
+    edgeFocus = -1
     if (i >= 0) {
       neighbours = new Set(adj[i])
       if (hudInfo) {
@@ -329,6 +411,14 @@
       neighbours = null
       if (hudInfo) hudInfo.textContent = HINT
     }
+    scheduleDraw()
+  }
+
+  function setEdgeFocus(k) {
+    edgeFocus = k
+    focus = -1
+    neighbours = null
+    if (hudInfo) hudInfo.textContent = k >= 0 ? edgeInfoText(k) : HINT
     scheduleDraw()
   }
 
@@ -371,9 +461,16 @@
     dragging = false
     if (moved > 3) return // 拖过就是平移，不算点选
     const rect = canvas.getBoundingClientRect()
-    setFocus(pick(event.clientX - rect.left, event.clientY - rect.top))
+    const px = event.clientX - rect.left
+    const py = event.clientY - rect.top
+    const hit = pick(px, py)
+    if (hit >= 0) setFocus(hit)
+    else setEdgeFocus(nearestEdge(px, py)) // 没点中概念就试边；试不上自然复位
   })
-  canvas.addEventListener('dblclick', () => setFocus(-1))
+  canvas.addEventListener('dblclick', () => {
+    setFocus(-1)
+    setEdgeFocus(-1)
+  })
   canvas.addEventListener('pointerleave', () => {
     if (hovered >= 0) {
       hovered = -1
@@ -443,6 +540,11 @@
   window.addEventListener('resize', resize)
   resize()
   fit()
-  // 给冒烟测试一个把手：能问它"画了多少个点、多少条线"
-  window.__GRAPH2D__ = { nodes: N, edges: E.length / 2, draw, fit, view }
+  // 给冒烟测试一个把手：能问它"画了多少个点、多少条线"，也能驱动边命中与边证据
+  window.__GRAPH2D__ = {
+    nodes: N, edges: E.length / 2, draw, fit, view,
+    nearestEdge, edgeInfoText, setEdgeFocus, setFocus,
+    edgeAt: (k) => [E[k], E[k + 1]],
+    xy: (i) => [X[i], Y[i]],
+  }
 })()
