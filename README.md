@@ -137,7 +137,15 @@ weflow-cli check
 > - 马上能用：换成 `weflow-cli.cmd check`（`.cmd` 那份包装不走 PowerShell 策略）；
 > - 一次性解决：`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`，然后重开终端。
 
-安装标准 Windows 4.x 工作流所需的 Python 依赖：
+一条命令装好 Python 依赖（推荐）——它会在 `~/.weflow-cli/venv` 建一个本工具**自管**的虚拟环境
+并安装依赖，之后的 Python 工作流会优先用它，不用再管 PATH 上哪个 Python 可用
+（Windows 上自动改用 `sqlcipher3-wheels` 预编译轮，省去装编译器的麻烦）：
+
+```powershell
+weflow-cli setup
+```
+
+也可以手动安装（效果相同；从源码运行时在仓库根目录执行）：
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -303,7 +311,7 @@ weflow-cli config set assistantGroupRequireMention true
 
 | 目标 | 命令 |
 | --- | --- |
-| 检查环境与配置 | `weflow-cli check` · `weflow-cli config show` |
+| 检查环境与配置 | `weflow-cli check` · `weflow-cli setup`（自管 Python venv，一条命令装依赖） · `weflow-cli config show` |
 | 初始化或手动指定路径 | `weflow-cli init [--path <目录>]` |
 | 浏览聊天数据 | `weflow-cli sessions` · `weflow-cli messages <联系人>` · `weflow-cli contacts` |
 | 谁在等我回话 | `weflow-cli awaiting --dry-run` · `weflow-cli awaiting --yes` |

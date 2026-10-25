@@ -1,6 +1,7 @@
 import { execFileSync } from 'child_process'
 import { delimiter, join } from 'path'
-import { accessSync, constants } from 'fs'
+import { accessSync, constants, existsSync } from 'fs'
+import { homedir } from 'os'
 
 let cached: string | null = null
 
@@ -15,6 +16,26 @@ function isExecutable(path: string): boolean {
   } catch {
     return false
   }
+}
+
+/** `weflow-cli setup` 建的自管 venv 的解释器路径；没建过就是 null。 */
+export function managedVenvPython(): string | null {
+  const exe = process.platform === 'win32'
+    ? join(homedir(), '.weflow-cli', 'venv', 'Scripts', 'python.exe')
+    : join(homedir(), '.weflow-cli', 'venv', 'bin', 'python')
+  return existsSync(exe) ? exe : null
+}
+
+/**
+ * 候选序：自管 venv 永远排最前，其余按调用方给的序。纯函数，供测试钉住
+ * "建了 venv 就该优先用它"这件事——它坏了的表现是 setup 装好了包、
+ * 运行时却仍在用 PATH 上的解释器，两边各自"正常"。
+ */
+export function orderCandidates(
+  managed: string | null,
+  rest: string[],
+): string[] {
+  return managed ? [managed, ...rest.filter(c => c !== managed)] : [...rest]
 }
 
 /** 按顺序返回 PATH 中所有可用的 Python 解释器（含命令名候选） */
@@ -55,13 +76,16 @@ function hasSqlcipher(cmd: string): boolean {
 }
 
 function detect(): string {
+  // 自管 venv（`weflow-cli setup`）优先：它就是为了"这台机器有一个能
+  // import sqlcipher3 的 Python"而存在的。venv 坏了（装完又被卸了包）会
+  // 自然落到下面的 PATH 候选——行为退回 setup 之前，而不是更糟。
+  const ordered = orderCandidates(managedVenvPython(), candidates())
   // 优先选择能 import sqlcipher3 的解释器（NT 解密核心依赖），
   // 避免命中 PATH 中仅有基础库的裸 Python 环境（如被 IDE 注入的 VM Python 抢占）。
-  const list = candidates()
-  for (const cmd of list) {
+  for (const cmd of ordered) {
     if (canRun(cmd) && hasSqlcipher(cmd)) return cmd
   }
-  for (const cmd of list) {
+  for (const cmd of ordered) {
     if (canRun(cmd)) return cmd
   }
   return 'python'
@@ -70,4 +94,9 @@ function detect(): string {
 export function getPythonCommand(): string {
   cached ??= detect()
   return cached
+}
+
+/** setup 装完后清缓存，让同一进程里后续的 getPythonCommand 看见新 venv。 */
+export function clearPythonCommandCache(): void {
+  cached = null
 }

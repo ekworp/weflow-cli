@@ -25,6 +25,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   `exhaustive: false`）。本机实测：211 张表 0 缺列、采样 5,398 行全部带非零 server_id 且
   0 重复；`stableCursor` 仍为 false，差的在哪、下一块是什么，逐条摊开给下游看。
 
+- **`weflow-cli setup`：一条命令装好 Python 环境（自管 venv）。** 在 `~/.weflow-cli/venv`
+  建虚拟环境并安装依赖，之后所有 Python 工作流优先用它——PATH 上只有商店占位 python
+  （exit 9009）的那类 issue 从根上消掉。Windows 上自动用 `sqlcipher3-wheels` 预编译轮
+  （`sqlcipher3-binary` 根本没有 Windows 发行版）；两段式（`--dry-run` 计划 / `--yes` 执行），
+  pip 瞬时网络失败重试一次，装完验证 `import sqlcipher3` 与运行时确实优先 venv。
+
 - **修了主分支上四处红的回归测试**（`npm test` 在 master 上本来就挂着 4 条，stash 验证过与
   新特性无关）：`today` / `promises` 曾把 `--talker` 放进子进程 argv（进程列表可见），改走
   `WEFLOW_TALKER` 环境变量（D-020，`test/privacy-paths` 转绿）；`dailyMailTo` 补齐默认值三处

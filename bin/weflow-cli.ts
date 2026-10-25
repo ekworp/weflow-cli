@@ -8,6 +8,7 @@ import { homedir } from 'os'
 import { SYNC_SCHEMA, SYNC_SOURCE, syncStateStore } from '../src/services/syncState.js'
 import { SyncRangeRequiredError, runSync } from '../src/services/syncService.js'
 import { probeCursorReadiness } from '../src/services/cursorProbe.js'
+import { planSetup, runSetup } from '../src/services/setupVenv.js'
 import { dbPathService } from '../src/core/dbPathService.js'
 import { keyService } from '../src/core/keyService.js'
 import { NtCore } from '../src/core/ntCore.js'
@@ -697,6 +698,96 @@ program
       },
     }
     console.log(JSON.stringify(data, null, 2))
+  })
+
+// ==================== setup（自管 Python venv） ====================
+// Issues 里最大的两类环境噪音（PowerShell 策略 / 商店占位 python 的 9009）里，
+// 后者的根因是"没有能 import sqlcipher3 的 Python"。这条命令一次性解决：
+// 在 ~/.weflow-cli/venv 建 venv 并装 requirements，之后 getPythonCommand() 优先用它。
+program
+  .command('setup')
+  .description('创建自管 Python 虚拟环境 (~/.weflow-cli/venv) 并安装依赖；之后所有 Python 工作流优先用它')
+  .option('--dry-run', '只看计划：venv 位置、用哪个 Python 建、装哪些包（不动任何东西）')
+  .option('--yes', '跳过交互确认（机器执行路径）')
+  .option('--recreate', '删除现有 venv 后重建（默认已存在则复用）')
+  .option('--with-3x', '同时安装 requirements-3x.txt（微信 3.x 旧版密钥提取）')
+  .option('--with-voice', '同时安装 requirements-voice.txt（本机语音转写）')
+  .option('--non-interactive', '禁止交互提问；与 --yes 配合用于脚本')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    let plan
+    try {
+      plan = await planSetup({ recreate: !!opts.recreate, with3x: !!opts.with3x, withVoice: !!opts.withVoice })
+    } catch (error: any) {
+      if (opts.json) { console.log(JSON.stringify({ success: false, code: 'SETUP_PLAN_FAILED', error: String(error?.message || error).slice(0, 200) })); process.exit(1) }
+      console.error(chalk.red(`✗ 计划失败: ${error?.message || error}`))
+      process.exit(1)
+    }
+
+    if (opts.dryRun || !opts.yes) {
+      const preview = {
+        success: true,
+        dryRun: true,
+        action: 'setup.venv',
+        venvDir: plan.venvDir,
+        venvExists: existsSync(plan.venvDir),
+        creator: plan.creator,
+        requirementFiles: plan.requirementFiles,
+        packages: plan.packages,
+        substitutions: plan.substitutions,
+        recreate: plan.recreate,
+        createsUnder: plan.createsUnder,
+        network: plan.network,
+        // 密钥/数据库一个都不碰：这条命令只写 ~/.weflow-cli/venv
+        readsLocalData: false,
+      }
+      if (opts.dryRun) {
+        if (opts.json) { console.log(JSON.stringify(preview)); return }
+        console.log(chalk.cyan('\nsetup 计划（--dry-run，不执行）'))
+        console.log(chalk.gray(`  venv: ${plan.venvDir}${existsSync(plan.venvDir) ? '（已存在，默认复用）' : ''}`))
+        console.log(chalk.gray(`  创建者: ${plan.creator ?? '未找到可运行的 Python（先装 Python 3.10+）'}`))
+        console.log(chalk.gray(`  安装: ${plan.packages.join(' ')}`))
+        for (const sub of plan.substitutions) console.log(chalk.gray(`  替换: ${sub}`))
+        console.log(chalk.gray('  网络请求: pip 访问 PyPI；不读聊天数据、不碰密钥\n'))
+        return
+      }
+      if (opts.json) {
+        console.log(JSON.stringify({ ...preview, success: false, dryRun: false, code: 'CONFIRMATION_REQUIRED' }))
+        process.exit(1)
+      }
+      if (process.env.WEFLOW_NON_INTERACTIVE || opts.nonInteractive) {
+        console.error(chalk.red('✗ 非交互模式需要 --yes'))
+        process.exit(1)
+      }
+      const { confirmed } = await inquirer.prompt([{
+        type: 'confirm',
+        name: 'confirmed',
+        message: `将在 ${plan.venvDir} 创建虚拟环境并安装 ${plan.packages.length} 个包（pip 需要访问 PyPI）。继续吗？`,
+        default: false,
+      }])
+      if (!confirmed) {
+        console.log(chalk.gray('已取消'))
+        return
+      }
+    }
+
+    const result = await runSetup(plan, (line) => console.log(chalk.gray(`  ${line}`)))
+    if (opts.json) {
+      console.log(JSON.stringify(result))
+      if (!result.success) process.exit(1)
+      return
+    }
+    console.log(chalk.cyan('\nPython 环境 setup'))
+    for (const step of result.steps) {
+      console.log(`  ${step.ok ? '✓' : '✗'} ${step.name}${step.detail ? chalk.gray(` — ${step.detail}`) : ''}`)
+    }
+    if (result.success) {
+      console.log(chalk.green(`\n完成。之后的 Python 工作流会优先用: ${result.venvPython}`))
+      console.log(chalk.gray('  下一步: weflow-cli check 验证环境，weflow-cli init 初始化本地数据'))
+    } else {
+      console.log(chalk.red(`\n失败（${result.error ?? '见上方步骤'}）。把 --json 输出贴到 issue 里最好排查。`))
+      process.exit(1)
+    }
   })
 
 // ==================== init ====================
