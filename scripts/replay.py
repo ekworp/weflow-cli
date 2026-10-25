@@ -197,7 +197,8 @@ def build_frames(per_day, names, min_weight, window):
                 filtered += 1
                 continue
             edges['pg:' + who + ':' + room] = {'src': 'p:' + who, 'dst': 'g:' + room,
-                                               'kind': 'member', 'label': '', 'weight': weight}
+                                               'kind': 'member',
+                                               'label': names.get(who, who), 'weight': weight}
 
         for eid, e in edges.items():
             if eid not in prev_edges:
@@ -563,6 +564,194 @@ resize();
 """
 
 
+SUMMARY_TEMPLATE = r"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>关系网络：这些年到底变了什么</title>
+<style>
+  :root{--bg:#0d1014;--card:#141a22;--fg:#e8ebf2;--dim:#8b93a3;--line:#232b38;
+        --gone:#ef4444;--new:#4ade80;--group:#a99bff;--accent:#4f46e5}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:28px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:32px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card b{display:block;font-size:24px;font-variant-numeric:tabular-nums}
+  .card span{color:var(--dim);font-size:12px}
+  h2{font-size:17px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .note{background:#3a2a12;color:#f5c26b;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:20px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:12px;padding:6px 8px;
+     border-bottom:1px solid var(--line)}
+  td{padding:6px 8px;border-bottom:1px solid #1b2230;vertical-align:top}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim);white-space:nowrap}
+  .gone{color:var(--gone)}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;
+       background:#1e2635;color:var(--dim);margin-left:6px}
+  .bar{display:flex;align-items:flex-end;gap:2px;height:120px;margin:10px 0 4px;
+       background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .bar div{flex:1;background:var(--accent);border-radius:2px 2px 0 0;min-height:2px;position:relative}
+  .bar div:hover{background:#7c6cff}
+  .axis{display:flex;justify-content:space-between;color:var(--dim);font-size:11px}
+  .empty{color:var(--dim);font-size:14px;padding:8px 0}
+  code{background:#1e2635;padding:1px 6px;border-radius:4px;font-size:13px}
+</style></head><body><div class="wrap">
+
+<h1>这些年，关系到底变了什么</h1>
+<div class="sub">__SPAN__ · 全部数字来自本地聊天记录，不联网、不调模型</div>
+
+<div class="cards">
+  <div class="card"><b>__TOTAL__</b><span>条消息</span></div>
+  <div class="card"><b>__DAYS__</b><span>天有对话</span></div>
+  <div class="card"><b>__PEOPLE__</b><span>个发言者</span></div>
+  <div class="card"><b>__RELATIONS__</b><span>段关系（单聊 + 群）</span></div>
+  <div class="card"><b>__GONE_N__</b><span>段已经断了</span></div>
+</div>
+
+__SPARSE_NOTE__
+
+<h2>消息量：每月的对话密度</h2>
+<div class="bar">__BARS__</div>
+<div class="axis"><span>__FIRST_MONTH__</span><span>__LAST_MONTH__</span></div>
+
+<h2>已经断掉的关系 <span class="tag">最后出现距今超过 30 天，且曾经很活跃</span></h2>
+__GONE_TABLE__
+
+<h2>最持久的关系 <span class="tag">按"第一次到最后一次"的跨度排</span></h2>
+__LONG_TABLE__
+
+<h2>最近三个月才出现的关系 <span class="tag">新的连接</span></h2>
+__NEW_TABLE__
+
+<h2>怎么读这份总结</h2>
+<p style="color:var(--dim);font-size:14px">
+  · <b>断掉</b>的意思是"过去 30 天窗口里，这条关系的互动量掉到门槛以下"，不等于绝交 ——
+  可能是事情做完了、可能转到了线下、也可能只是这个月没说话。<br>
+  · 权重是<b>互动量</b>（消息条数），不是亲密度：和同事一天 50 条是工作，和家人一周 3 条是亲近。<br>
+  · 早期（2024-03 ~ 2025-09）只有一两个会话被记录，那段时间的"关系少"是<b>数据缺失</b>，不是没聊。<br>
+  · 想看它是怎么一天天变成这样的，打开 <code>replay.html</code>，按播放键。
+</p>
+
+</div></body></html>
+"""
+
+
+def build_summary(frames, total):
+    """把帧序列压成"人读的结论"：断了哪些、哪段最久、哪些是新的。"""
+    life = {}
+    import re as _re
+    for f in frames:
+        day = f['day']
+        for e in f['edges']:
+            # **只看"我和谁/我和哪个群"**。`member`（某人在某群发言）是第三层关系，
+            # 放进总结会把"断掉的关系"淹成几百行 id（2026-10-25 实测）。
+            if e['kind'] not in ('dm', 'group'):
+                continue
+            label = _re.sub(r'[\u3000\s]+', ' ', e['label'] or '').strip()
+            # 没解析到名字的（不在 contact.db 的已删好友/陌生群）不占位置：
+            # `p:wxid_x` 和 `12345@chatroom` 对读者没有意义。
+            if not label or label.startswith('p:') or label.endswith('@chatroom'):
+                continue
+            key = e['kind'] + '|' + label
+            cur = life.get(key)
+            if cur is None:
+                life[key] = {'label': label, 'kind': e['kind'],
+                             'first': day, 'last': day, 'peak': e['weight'],
+                             'samples': 1}
+            else:
+                cur['last'] = day
+                cur['peak'] = max(cur['peak'], e['weight'])
+                cur['samples'] += 1
+
+    last_day = frames[-1]['day']
+    from datetime import date as _date
+    end = _date.fromisoformat(last_day)
+    cut30 = (end - timedelta(days=30)).isoformat()
+    cut90 = (end - timedelta(days=90)).isoformat()
+
+    gone = [v for v in life.values() if v['last'] < cut30 and v['peak'] >= GONE_MIN_WEIGHT]
+    gone.sort(key=lambda v: v['last'], reverse=True)
+
+    living = [v for v in life.values() if v['last'] >= cut30]
+    long_lived = sorted(living, key=lambda v: (v['last'], v['first']), reverse=True)
+    long_lived = sorted(living, key=lambda v: _date.fromisoformat(v['last']).toordinal()
+                        - _date.fromisoformat(v['first']).toordinal(), reverse=True)
+
+    fresh = [v for v in life.values() if v['first'] >= cut90]
+    fresh.sort(key=lambda v: v['first'], reverse=True)
+
+    months = {}
+    for f in frames:
+        m = f['day'][:7]
+        months[m] = months.get(m, 0) + f['messages']
+    peak = max(months.values()) if months else 1
+    bars = ''.join(
+        f'<div style="height:{max(2, round(v * 100 / peak))}%" title="{m}：{v} 条"></div>'
+        for m, v in sorted(months.items()))
+
+    sparse_days = sum(1 for f in frames if f['completeness'] == 'sparse')
+    sparse_note = ('<div class="note">⚠ 有 %d 天（约占 %.0f%%）处于<b>数据稀薄</b>状态，'
+                   '主要落在 2024-03 到 2025-09 之间。那段时间只有一两个会话被记录，'
+                   '所以下面的"关系少"是数据缺失，不是你那时没聊天。</div>'
+                   % (sparse_days, 100.0 * sparse_days / max(1, len(frames)))
+                   ) if sparse_days else ''
+
+    def table(rows, cols, empty):
+        if not rows:
+            return f'<div class="empty">{empty}</div>'
+        head = ''.join(f'<th>{c[0]}</th>' for c in cols)
+        body = ''
+        for r in rows:
+            tds = ''.join(f'<td class="{c[2]}">{r[c[1]]}</td>' for c in cols)
+            body += f'<tr>{tds}</tr>'
+        return f'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
+
+    kind_cn = {'dm': '单聊', 'group': '群', 'member': '群成员'}
+    gone_rows = [{'name': v['label'], 'kind': kind_cn.get(v['kind'], v['kind']),
+                  'last': v['last'], 'peak': v['peak']} for v in gone[:25]]
+    long_rows = [{'name': v['label'], 'kind': kind_cn.get(v['kind'], v['kind']),
+                  'first': v['first'], 'last': v['last'], 'peak': v['peak']}
+                 for v in long_lived[:20] if v['first'] != v['last']]
+    new_rows = [{'name': v['label'], 'kind': kind_cn.get(v['kind'], v['kind']),
+                 'first': v['first'], 'peak': v['peak']} for v in fresh[:20]]
+
+    html = SUMMARY_TEMPLATE
+    repl = {
+        '__SPAN__': f'{frames[0]["day"]} ~ {last_day}',
+        '__TOTAL__': f'{total:,}',
+        '__DAYS__': str(len(frames)),
+        '__PEOPLE__': str(len({n['label'] for f in frames for n in f['nodes']
+                               if n['kind'] == 'person'})),
+        '__RELATIONS__': str(len(life)),
+        '__GONE_N__': str(len(gone)),
+        '__SPARSE_NOTE__': sparse_note,
+        '__BARS__': bars,
+        '__FIRST_MONTH__': frames[0]['day'][:7],
+        '__LAST_MONTH__': last_day[:7],
+        '__GONE_TABLE__': table(
+            gone_rows,
+            [('对象', 'name', ''), ('类型', 'kind', 'num'),
+             ('最后出现', 'last', 'num'), ('窗口峰值', 'peak', 'num')],
+            '没有断掉的关系 —— 过去 30 天里所有活跃关系都还在。'),
+        '__LONG_TABLE__': table(
+            long_rows,
+            [('对象', 'name', ''), ('类型', 'kind', 'num'),
+             ('第一次', 'first', 'num'), ('最近', 'last', 'num'), ('峰值', 'peak', 'num')],
+            '数据太少，还算不出"最持久"。'),
+        '__NEW_TABLE__': table(
+            new_rows,
+            [('对象', 'name', ''), ('类型', 'kind', 'num'),
+             ('第一次出现', 'first', 'num'), ('峰值', 'peak', 'num')],
+            '最近三个月没有新出现的关系。'),
+    }
+    for k, v in repl.items():
+        html = html.replace(k, v)
+    return html
+
+
 def render_html(frames, pos, conservation, filtered, min_weight):
     data = {'frames': frames, 'conservation': conservation, 'filtered': filtered}
     return (HTML_TEMPLATE
@@ -599,9 +788,12 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_html(frames, layout(frames), conservation, filtered, args.min_weight),
                    encoding='utf-8')
+    summary = out.with_name(out.stem + '-summary.html')
+    summary.write_text(build_summary(frames, total), encoding='utf-8')
     print(f'天数 {len(frames)}，消息 {total}，守恒 {conservation["equal"]}，'
           f'过滤边 {filtered}，分片失败 {len(failed)}')
     print(f'已生成 {out}（{out.stat().st_size/1024/1024:.1f} MB）')
+    print(f'已生成 {summary}（{summary.stat().st_size/1024:.0f} KB，静态总结）')
     if not conservation['equal']:
         print(f'[WARN] 守恒不成立：各帧之和 {summed} ≠ 全库 {total}，'
               f'画面里"断掉的边"可能是假象', file=sys.stderr)
