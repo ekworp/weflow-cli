@@ -331,6 +331,7 @@ weflow-cli config set assistantGroupRequireMention true
 | QQ 聊天导入 | `weflow-cli import qchat <qchat导出>` · `import list` · `import show <会话>` （读 qchat-cli 的 JSON 导出；之后 `chat-notes --source qq` 产知识卡、`search-index --include-imports` 进搜索）|
 | 公众号日报与阅读器 | `weflow-cli daily` · `weflow-cli daily-server` · `weflow-cli review` |
 | 朋友圈缓存 | `weflow-cli sns timeline` · `weflow-cli sns users` · `weflow-cli sns stats` |
+| 联系人头像 | `weflow-cli avatar <联系人>` · `avatar --list` · `avatar --all`（读 head_image.db，头像本体在库里，缓存清理不丢） |
 | 微信收藏 | `weflow-cli fav list` · `weflow-cli fav export markdown` · `weflow-cli fav set-key` |
 | 微信读书 | `weflow-cli weread shelf` · `notes` · `search` · `stats`（key 从 https://weread.qq.com/r/weread-skills 拿，见 [OPERATIONS.md](./OPERATIONS.md)） |
 | 知识库 | `weflow-cli vault` · `weflow-cli wiki` · `weflow-cli search <query>` · `weflow-cli chat`（语义检索需先 `config set dashscopeApiKey`；`search --phrase <词> --line all` 连语音转写一起搜）|

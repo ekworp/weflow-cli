@@ -35,6 +35,7 @@ scripts/regen_wsl_keys.mjs
 !AGENTS.md
 !OPERATIONS.md
 !docs/PROJECT_STATE.md
+!docs/NT_DATABASES.md
 !docs/DECISIONS.md
 !docs/EVIDENCE_GUIDE.md
 !docs/DATA_CONTRACT.md
