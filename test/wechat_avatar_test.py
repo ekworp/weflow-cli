@@ -40,7 +40,7 @@ def make_db(path, rows):
 class AvatarTests(unittest.TestCase):
     def test_db_path_derivation(self):
         got = av.head_image_db_path(
-            r'D:\w\db_storage\message\message_0.db')
+            'D:/w/db_storage/message/message_0.db')
         self.assertEqual(got.parts[-2:], ('head_image', 'head_image.db'))
         self.assertEqual(got.parts[-3], 'db_storage')
 
