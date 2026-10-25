@@ -9,6 +9,7 @@ import { SYNC_SCHEMA, SYNC_SOURCE, syncStateStore } from '../src/services/syncSt
 import { SyncRangeRequiredError, runSync } from '../src/services/syncService.js'
 import { probeCursorReadiness } from '../src/services/cursorProbe.js'
 import { planSetup, runSetup } from '../src/services/setupVenv.js'
+import { planImportQchat, runImportQchat, listImports, readImportedSession } from '../src/services/qchatImport.js'
 import { dbPathService } from '../src/core/dbPathService.js'
 import { keyService } from '../src/core/keyService.js'
 import { NtCore } from '../src/core/ntCore.js'
@@ -788,6 +789,142 @@ program
       console.log(chalk.red(`\n失败（${result.error ?? '见上方步骤'}）。把 --json 输出贴到 issue 里最好排查。`))
       process.exit(1)
     }
+  })
+
+// ==================== import（外部 IM 数据导入，D-129） ====================
+// 边界是**文件契约**：读 qchat-cli `qce export --format json` 的产物，归一化落到
+// output/imports/qq/，之后 chat-notes / search-index 就能把 QQ 会话当普通聊天线处理。
+const importCmd = program
+  .command('import')
+  .description('导入外部 IM 的聊天记录（当前支持 qchat-cli 的 JSON 导出），并入本地知识管道')
+
+importCmd
+  .command('qchat <path>')
+  .description('导入 qchat-cli 的 JSON 导出（单文件或目录；按 messageId 去重，重复导入安全）')
+  .option('--dry-run', '只看会导入什么：文件、会话、条数（不写任何东西）')
+  .option('--yes', '确认执行（写本地存储 output/imports/qq/）')
+  .option('--own-id <qq>', '可选：自己的 QQ 号，用来标 isSend（不给则该字段缺省为未知）')
+  .option('--json', '输出 JSON 格式')
+  .action(async (inputPath: string, opts) => {
+    let plan
+    try {
+      plan = planImportQchat(inputPath)
+    } catch (error: any) {
+      if (opts.json) { console.log(JSON.stringify({ success: false, code: 'IMPORT_PLAN_FAILED', error: String(error?.message || error).slice(0, 200) })); process.exit(1) }
+      console.error(chalk.red(`✗ 计划失败: ${error?.message || error}`))
+      process.exit(1)
+    }
+
+    const preview = {
+      success: true,
+      dryRun: true,
+      action: 'import.qchat',
+      input: inputPath,
+      files: plan.files.map(f => ({
+        file: basename(f.file), ok: f.ok,
+        ...(f.reason ? { reason: f.reason } : {}),
+        sessions: f.sessions.map(s => ({ id: s.id, name: s.name, type: s.type, messages: s.messages })),
+      })),
+      sessionsFound: plan.sessionsFound,
+      messagesTotal: plan.messagesTotal,
+      storeRoot: plan.storeRoot,
+      ownIdProvided: Boolean(opts.ownId),
+      readsLocalData: true,
+      writesLocalStore: true,
+      invokesAI: false,
+      network: false,
+    }
+    if (opts.dryRun) {
+      if (opts.json) { console.log(JSON.stringify(preview)); return }
+      console.log(chalk.cyan('\nimport qchat 计划（--dry-run，不执行）'))
+      console.log(chalk.gray(`  存储: ${plan.storeRoot}`))
+      for (const f of plan.files) {
+        if (f.ok) {
+          for (const sess of f.sessions) {
+            console.log(chalk.gray(`  ✓ ${basename(f.file)} → 会话「${sess.name}」（${sess.type}，${sess.messages} 条）`))
+          }
+        } else {
+          console.log(chalk.yellow(`  ✗ ${basename(f.file)} — ${f.reason}`))
+        }
+      }
+      if (opts.ownId) console.log(chalk.gray(`  isSend 判定: 按自己的 QQ 号 ${String(opts.ownId).slice(0, 4)}…`))
+      console.log('')
+      return
+    }
+    if (!opts.yes) {
+      if (opts.json) {
+        console.log(JSON.stringify({ ...preview, success: false, dryRun: false, code: 'CONFIRMATION_REQUIRED' }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`✗ 需要确认：将把 ${plan.messagesTotal} 条消息写入本地存储 ${plan.storeRoot}。加 --yes 执行`))
+      process.exit(1)
+    }
+
+    const result = runImportQchat(inputPath, opts.ownId ? String(opts.ownId) : undefined)
+    if (opts.json) {
+      console.log(JSON.stringify(result))
+      if (!result.success) process.exit(1)
+      return
+    }
+    if (!result.success) {
+      console.error(chalk.red(`✗ 没有可导入的文件（${result.filesSkipped} 个被跳过，原因见 --dry-run）`))
+      process.exit(1)
+    }
+    console.log(chalk.cyan('\n导入完成'))
+    for (const sess of result.sessions) {
+      console.log(chalk.green(`  ✓ 「${sess.name}」共 ${sess.total} 条（新增 ${sess.added}、更新 ${sess.updated}、原样 ${sess.unchanged}）`))
+    }
+    if (result.filesSkipped) console.log(chalk.yellow(`  ⚠ 跳过 ${result.filesSkipped} 个不认识的文件`))
+    console.log(chalk.gray(`  存储: ${result.storeRoot}`))
+    console.log(chalk.gray('  下一步: weflow-cli import list 查看；chat-notes --source qq 产知识卡；search-index --include-imports 进搜索'))
+  })
+
+importCmd
+  .command('list')
+  .description('列出已导入的会话')
+  .option('--json', '输出 JSON 格式')
+  .action((opts) => {
+    const entries = listImports()
+    if (opts.json) { console.log(JSON.stringify({ success: true, sessions: entries })); return }
+    if (!entries.length) {
+      console.log(chalk.gray('\n还没有导入任何会话。先跑 weflow-cli import qchat <qchat 导出文件>'))
+      return
+    }
+    console.log(chalk.cyan(`\n已导入 ${entries.length} 个会话`))
+    for (const e of entries) {
+      const span = e.newestCreateTime
+        ? `${new Date((e.oldestCreateTime ?? 0) * 1000).toLocaleDateString('zh-CN')} ~ ${new Date(e.newestCreateTime * 1000).toLocaleDateString('zh-CN')}`
+        : '（无消息）'
+      console.log(`  「${e.name}」（${e.type}，${e.messages} 条，${span}）`)
+    }
+    console.log('')
+  })
+
+importCmd
+  .command('show <sessionId>')
+  .description('读回一个已导入会话的消息（验证导入）')
+  .option('-n, --limit <n>', '只看最近 N 条（0 = 全部）', '20')
+  .option('--json', '输出 JSON 格式')
+  .action((sessionId: string, opts) => {
+    const limit = Number(opts.limit)
+    if (!Number.isInteger(limit) || limit < 0) {
+      if (opts.json) { console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', error: 'limit 必须是 ≥ 0 的整数' })); process.exit(1) }
+      console.error(chalk.red('✗ limit 必须是 ≥ 0 的整数'))
+      process.exit(1)
+    }
+    const data = readImportedSession(sessionId, limit)
+    if (!data) {
+      if (opts.json) { console.log(JSON.stringify({ success: false, code: 'IMPORT_SESSION_NOT_FOUND' })); process.exit(1) }
+      console.error(chalk.red(`✗ 没有会话 ${sessionId} 的导入记录`))
+      process.exit(1)
+    }
+    if (opts.json) { console.log(JSON.stringify({ success: true, ...data })); return }
+    console.log(chalk.cyan(`\n「${data.session.name}」共 ${data.messages.length} 条（存储里全部 ${listImports().find(e => e.id === sessionId)?.messages ?? '?'} 条）`))
+    for (const m of data.messages) {
+      const who = m.isSend === undefined ? m.senderName : (m.isSend ? '我' : m.senderName)
+      console.log(chalk.gray(`[${new Date(m.createTime * 1000).toLocaleString('zh-CN')}] ${who}(${m.messageType}): `) + m.parsedContent.slice(0, 80))
+    }
+    console.log('')
   })
 
 // ==================== init ====================
@@ -5366,6 +5503,7 @@ program
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--days <n>', '聊天记录收最近多少天（默认 90）')
     .option('--article-days <n>', '日报文章收最近多少个日期目录（默认 30）')
+    .option('--include-imports', '把 weflow-cli import qchat 导入的 QQ 会话也收进索引（聊天半边）')
     .option('--dry-run', '仅预览，不读取数据库、调用网络或写入索引')
     .option('--yes', '确认构建或重建索引')
     .option('--json', '输出 JSON 格式')
@@ -5414,6 +5552,7 @@ program
         mode: opts.full ? 'full' : 'incremental',
         chatDays,
         articleDays,
+        includeImports: !!opts.includeImports,
         readsLocalData: true,
         usesCloudEmbedding: true,
         replacesExistingIndex: !!opts.full,
@@ -5451,6 +5590,7 @@ program
       const args: string[] = [script, 'build', '--days', String(chatDays),
                               '--article-days', String(articleDays)]
       if (opts.full) args.push('--full')
+      if (opts.includeImports) args.push('--include-imports')
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {
           // 30 分钟：全量重建实测要跑二十分钟以上（16k 条 / 1500+ 批），而这里原来给的是 5 分钟 --
@@ -6135,6 +6275,7 @@ program
     .description('把最近一段时间的会话整理成知识卡（之后用 wiki compile 聚成概念页）—— **只写本地文件，不发送**')
     .option('--days <n>', '看最近多少天', '30')
     .option('--limit <n>', '最多处理几个会话', '40')
+    .option('--source <source>', '聊天来源：wechat（默认）/ qq（只读 import qchat 导入的会话，不碰微信库）/ all（都要）', 'wechat')
     .option('--dry-run', '仅预览：几个会话、多少字符会发给生成模型（只读本地，零出境）')
     .option('--yes', '确认把对话发送给生成模型')
     .option('--transcribe-voice',
@@ -6148,12 +6289,13 @@ program
       const script = join(pkgRoot, 'scripts', 'chat_notes.py')
       const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
       const limit = parseCliInteger(opts.limit, 'limit', 1, 200, opts.json)
+      requireCliChoice(opts.source, ['wechat', 'qq', 'all'], 'source', opts.json)
       // 与 `draft` 同一条纪律：**"确认过了"只用一个变量**，参数在确认之后才拼
       let confirmed = !!opts.yes
       if (!opts.dryRun && !confirmed) {
         const preview = {
           success: false, dryRun: false, action: 'chat-notes',
-          code: 'CONFIRMATION_REQUIRED', days, limit,
+          code: 'CONFIRMATION_REQUIRED', days, limit, source: opts.source,
           readsLocalChat: true, invokesAI: true, writesLocalFiles: true, sendsNothing: true,
         }
         if (opts.json) {
@@ -6173,6 +6315,7 @@ program
         }
       }
       const args = [script, '--days', String(days), '--limit', String(limit),
+                    '--source', String(opts.source),
                     ...(confirmed ? ['--yes'] : []),
                     ...(opts.transcribeVoice ? ['--transcribe-voice'] : []),
                     ...(opts.json ? ['--json'] : []),

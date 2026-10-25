@@ -46,6 +46,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   登记（`test/config-keys` 三条转绿）；`scripts/**/*.vbs` 进 npm 包——`run_hidden.vbs` 之前被
   files allowlist 漏掉（`test/pack-contents` 转绿）。
 
+- **`weflow-cli import qchat`：QQ 聊天进知识库与搜索（qchat-cli 一行不用改，D-129）。**
+  读 `qce export --format json` 的导出（单文件或目录），按全局唯一的 messageId 去重合并、
+  重复导入安全；两段式命令面。落盘后两条管道各开一个显式开关：`chat-notes --source qq|all`
+  产 QQ 知识卡（`QQ-` 前缀，与微信卡同形状、同下游），`search-index --include-imports` 把
+  QQ 会话收进语义与短语索引（id 带 `chat:qq:` 段）。没有微信库的机器也能用（纯 QQ 场景，
+  端到端有测试）。字段映射表见 `docs/DATA_CONTRACT.md`。
+
 ## 1.16.0
 
 - **`leads` - the offers and asks buried in chat, with the sentence that said them.** Scans recent

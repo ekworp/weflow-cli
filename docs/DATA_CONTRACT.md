@@ -72,3 +72,28 @@ This is a best-effort synchronization recipe. It must not treat a timestamp as a
 ## Future Direction
 
 The existing CLI export is the compatibility layer for the first integration. The same contract is available through the versioned, read-only MCP tool `wechat.export_messages`. It accepts `contact` and optional `limit`, `from`, and `to` values, returns JSON directly, and never returns database paths or keys. It preserves the same authorization, local-only default, field semantics, and privacy rules rather than bypassing the CLI boundary.
+
+## QQ Imports (qchat-cli)
+
+A second upstream now feeds this contract's vocabulary: `weflow-cli import qchat <file-or-dir>`
+reads a `qchat-cli` JSON export (`qce export --format json`) and lands it in a local private
+store `output/imports/qq/sessions/` (schema `weflow-import/qq-v1`, D-129). The store itself is
+not a stable contract; what is stable is the **field semantics**, which are exactly
+`weflow-message/v1`'s:
+
+| qchat-cli field | imported as | Notes |
+| --- | --- | --- |
+| `messageId` | `serverId` | Server-side globally unique (OneBot) - dedup/merge keys on it, no overlapping-window dance needed. |
+| `timestamp` | `createTime` | Unix seconds. |
+| `sender.id` | `senderUsername` | A QQ number; treat as sensitive, same level as a wxid. |
+| `sender.card` / `sender.name` | `senderName` | Group card first, then nickname. |
+| `content` / `rawMessage` | `parsedContent` / `rawContent` | Same guidance as the table above. |
+| (derived from `segments`) | `messageType` | OneBot segment types map onto the same stable names (`record→voice`, `reply→quote`, `json/xml→card`, …). |
+| — | `isSend` | Only present when the import ran with `--own-id`; absent means unknown, not false. |
+
+Consumers wired today (both opt-in, defaults unchanged): `chat-notes --source qq|all` produces
+QQ knowledge cards (names prefixed `QQ-`, same card shape and same downstream wiki consumer as
+WeChat conversations), and `search-index --include-imports` adds QQ sessions to the semantic
+index (record ids carry a `chat:qq:` segment, so a record's origin is always readable from the
+id; the phrase index derives from the semantic index and follows). Querying QQ sessions through
+`sessions` / `messages` is deliberately not part of this round (D-129).

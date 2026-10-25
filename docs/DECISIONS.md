@@ -4076,3 +4076,36 @@ strict 模式（且非本地推理）下工具拒绝取图、`toApiMessages` 再
 - MIME 从文件头魔数判定（png / jpeg / webp），不信任文件名扩展名——文件名来自服务端报文。
 - MCP 面不变：`look_at_image` 本来就不在 MCP 表里（文本传输接不到侧信道的图）。
 - 审计 `IMAGE_SENT` 的 `ids=` 对入站图片为空（没有 local_id）——`n=` 照记，能对上"这轮发了几张"。
+
+
+## D-129: qchat-cli 的消息从**文件契约**进来，不做进程耦合，也不当第五个消息后端
+
+**Status:** Active
+
+**Decision.** `weflow-cli import qchat <文件|目录>` 读 qchat-cli `qce export --format json`
+的产物，归一化落到本地私有存储 `output/imports/qq/sessions/`（schema `weflow-import/qq-v1`，
+字段语义与 `weflow-message/v1` 对齐：serverId/createTime/parsedContent/rawContent 与 13 个稳定
+messageType）。下游两条已落地的管道各开一个**显式开关**：`chat-notes --source qq|all` 产 QQ
+知识卡（卡片名带 `QQ-` 前缀，与微信卡同一形状、同一消费端），`search-index --include-imports`
+把 QQ 会话收进语义索引（记录 id 带 `chat:qq:` 段，与微信记录天然不撞；短语索引从语义索引
+派生，自动跟上）。默认行为逐字不变。
+
+**Reason.** 两个仓库的数据获取层性质不同（weflow 直读本地加密库、离线可查；qchat 走
+NapCatQQ/OneBot 在线服务）。让 weflow 直连 OneBot 当第五个 `chatService` 后端，等于把 qchat
+的整个客户端层复刻进 weflow、两个工具抢同一个轮询——且 `chatService` 的四个后端全是"解本地
+库"的，混进一个在线 API 客户端会改变这层的性质。文件契约让边界可枚举、可版本化，也正是
+ROADMAP P1 给 she-love-me 预留的同一条路；qchat-cli 因此**一行不用改**。
+
+**Consequences.**
+- QQ 的 `messageId` 是服务端全局唯一：去重/合并按它做，**不需要**微信侧那套重叠时间窗；
+  对 D-027 而言 qq 来源天然满足 stable-identity 判据。
+- `isSend` 只在导入时给了 `--own-id` 才写；缺省就是未知，消费方按未知处理（知识卡的行
+  标签落到群名片/昵称）。不为"好看"猜方向。
+- 存储是 **weflow 的私有形状**，不承诺稳定；对外承诺的边界是 `weflow-message/v1` 那套
+  字段语义。将来 qchat 侧产出中立契约（如 `im-message/v1`）时，读取器多认一个 schema 即可。
+- 查询层（`sessions`/`messages` 按 QQ 会话直查、per-source 路由）**明确不在本决策内**：
+  等真实需求出现再做，届时 QQ 号与 wxid 的命名空间隔离（`qq:` 前缀已备好）是第一件事。
+- 隐私边界对齐：导入的是用户本人授权的 QQ 数据（qchat 侧靠 OneBot 授权），落盘后继承
+  weflow 的纪律——QQ 号与 wxid 同级敏感；知识卡与索引沿用各自既有的出境确认门。
+- `--source all` 在微信库不可用时**降级**为只处理 QQ（说一声，不是静默）；`build
+  --include-imports` 在没有微信库的机器上也能建索引（纯 QQ 用户是真实场景）。

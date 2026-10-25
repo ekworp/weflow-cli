@@ -39,6 +39,7 @@ test('Semantic index writes require a read-only preview and explicit confirmatio
     mode: 'full',
     chatDays: 90,
     articleDays: 30,
+    includeImports: false,
     readsLocalData: true,
     usesCloudEmbedding: true,
     replacesExistingIndex: true,

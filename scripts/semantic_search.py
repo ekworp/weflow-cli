@@ -268,6 +268,36 @@ def collect_chat_messages(conns, name_map, days=90, per_talker=500):
     return items
 
 
+def collect_imported_chat_items(days=90):
+    """导入的 QQ 会话 → 与微信聊天同形状的索引记录（--include-imports）。
+
+    形状必须与 collect_chat_messages 逐字段一致（id/type/talker/sender/time/text），
+    否则同一条记录在两半索引里语义不同。id 带 qq: 段：与微信记录的
+    chat:<talker>:<ts>:<rid> 天然不撞，也永远可分辨来源。文本阈值（>=10 字）与
+    截断（500 字）同微信侧——索引是要花钱嵌的，两侧口径不同就是两种相关性。
+    """
+    import imported_chats
+
+    items = []
+    for sess in imported_chats.sessions():
+        meta = sess.get('session') or {}
+        talker = 'QQ-%s' % (meta.get('name') or meta.get('id') or '未命名')
+        for m in imported_chats.session_messages(sess, days=days):
+            text = (m.get('parsedContent') or '').strip()
+            if len(text) < 10:
+                continue
+            dt = datetime.fromtimestamp(m.get('createTime') or 0, tz=TZ)
+            items.append({
+                'id': 'chat:qq:%s:%s' % (meta.get('id') or '', m.get('serverId') or ''),
+                'type': 'chat',
+                'talker': talker,
+                'sender': m.get('senderName') or '',
+                'time': dt.strftime('%Y-%m-%d %H:%M'),
+                'text': text[:500],
+            })
+    return items
+
+
 _ARTICLE_BOILERPLATE = frozenset({
     '在小说阅读器读本章', '去阅读', '在公众号小说中沉浸阅读',
 })
@@ -396,7 +426,7 @@ def _save_index(base_vectors, base_meta, pairs):
     os.replace(tmp_m, META_FILE)
     return len(meta)
 
-def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30):
+def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30, include_imports: bool = False):
     """Build or update the semantic index.
 
     `days` / `article_days` 决定这个索引**记多久**：它们原先写死在两处调用里
@@ -421,8 +451,12 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
     # Load DB
     config = load_config()
     nt_db = config.get('ntDbPath', '')
-    if not nt_db:
+    # --include-imports 时没有微信库也能建索引（纯 QQ 用户是真实场景）；
+    # 但要说出"聊天半边只有导入的"，不然窗口行读起来像微信也收了。
+    if not nt_db and not include_imports:
         return {"error": "未初始化，请先运行 weflow-cli init"}
+    if not nt_db and include_imports:
+        print('[WARN] 未配置微信库：聊天半边只用导入的会话', file=sys.stderr)
 
     nt_key = decrypt_lock(config.get('ntKey', ''))
     nt_salt = config.get('ntSalt', '')
@@ -439,6 +473,16 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
     # Collect items
     items = []
     shards_failed = []
+    if not nt_db:
+        # 没有微信库：跳过 NT 那半（name_map/分片都不存在），导入与文章照收。
+        # 收完直接走同一个收尾（嵌入与写盘），不在这里复制粘贴后半段。
+        if include_imports:
+            items.extend(collect_imported_chat_items(days=days))
+        items.extend(collect_articles(article_days=article_days))
+        new_items = [item for item in items if item['id'] not in existing_ids]
+        print(f"总数据: {len(items)} 条, 新数据: {len(new_items)} 条", file=sys.stderr)
+        return _build_embed_and_write(api_key, items, new_items, existing_ids,
+                                   full, days, article_days, shards_failed=[])
     try:
         import nt_decrypt  # 懒加载：纯逻辑路径（关键词/重排/测试）不该被它拖住
         passphrase = decrypt_lock(config.get('favPassphrase') or config.get('decryptKey') or '')
@@ -460,13 +504,29 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
     except Exception as e:
         print(f"[WARN] 聊天消息收集失败: {e}", file=sys.stderr)
 
+    if include_imports:
+        imported = collect_imported_chat_items(days=days)
+        items.extend(imported)
+        print(f"导入会话: +{len(imported)} 条", file=sys.stderr)
+
     article_items = collect_articles(article_days=article_days)
     items.extend(article_items)
 
-    # Filter new items
     new_items = [item for item in items if item['id'] not in existing_ids]
     print(f"总数据: {len(items)} 条, 新数据: {len(new_items)} 条", file=sys.stderr)
 
+    return _build_embed_and_write(api_key, items, new_items, existing_ids,
+                                   full, days, article_days, shards_failed)
+
+
+
+def _build_embed_and_write(api_key, items, new_items, existing_ids, full,
+                           days, article_days, shards_failed):
+    """build_index 的收尾：去重过滤在调用方做完了，这里管嵌入、断点落盘与返回。
+
+    抽出来是因为聊天半边现在有两条收集路（微信库 / 导入会话），尾巴必须只有一份——
+    复制一份的代价是断点续跑、全零批次不落盘这些坑只在一半路径上修过。
+    """
     if not new_items:
         return {"status": "up_to_date", "total": len(items),
                 "chatDays": days, "articleDays": article_days,
@@ -1522,11 +1582,15 @@ def main():
     p = subparsers.add_parser('build')
     p.add_argument('--api-key', help='DeepSeek API key（优先从 config 读取）')
     p.add_argument('--full', action='store_true', help='全量重建')
+    p.add_argument('--include-imports', action='store_true',
+                   help='把 weflow-cli import qchat 导入的 QQ 会话也收进索引（聊天半边；id 带 qq: 段）')
     add_window_args(p)
 
     # update
     p = subparsers.add_parser('update')
     p.add_argument('--api-key', help='DeepSeek API key（优先从 config 读取）')
+    p.add_argument('--include-imports', action='store_true',
+                   help='同 build：把导入的 QQ 会话收进增量')
     add_window_args(p)
 
     # search
@@ -1582,9 +1646,13 @@ def main():
                or get_dashscope_key(config))
 
     if args.command == 'build':
-        result = build_index(api_key, full=args.full, days=args.days, article_days=args.article_days)
+        result = build_index(api_key, full=args.full, days=args.days,
+                             article_days=args.article_days,
+                             include_imports=getattr(args, 'include_imports', False))
     elif args.command == 'update':
-        result = build_index(api_key, full=False, days=args.days, article_days=args.article_days)
+        result = build_index(api_key, full=False, days=args.days,
+                             article_days=args.article_days,
+                             include_imports=getattr(args, 'include_imports', False))
     elif args.command == 'phrase-build':
         result = build_phrase_index(line=args.line)
         result['success'] = 'error' not in result

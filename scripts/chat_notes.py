@@ -46,6 +46,7 @@ from _utils import (CHAT_CARD_PREFIX, LinkNamer, SEPARATOR,  # noqa: E402
                     call_deepseek, decrypt_lock, get_api_key, line_concepts_path, load_config,
                     note_path as _shared_note_path, plain, write_with_frontmatter)
 from reply_debt import collect_conversations, format_line  # noqa: E402
+import imported_chats  # noqa: E402  （`weflow-cli import qchat` 落下的会话，单一读者见那边的模块注释）
 
 import nt_decrypt  # noqa: E402
 # 语音转写：**只读它的缓存**（`output/.voice-cache`，内容寻址）。模型加载在 wechat_voice 内部，
@@ -336,11 +337,84 @@ def attach_voice_transcripts(messages, voice_map, cache):
     return enriched, pending
 
 
-def collect(out_root, days, limit, transcribe_voice=False):
-    """读本地库：最近有动静的会话 + 每个会话窗口内的对话。**不调用任何模型。**"""
+# QQ 非文本消息的占位词表：与微信侧 parsedContent 的显示形态同一套词汇
+#（`[图片]`/`[语音]`…），format_line 不用知道消息来自哪个 IM。
+QQ_TYPE_LABELS = {
+    'image': '图片', 'voice': '语音', 'video': '视频', 'emoji': '表情',
+    'location': '位置', 'card': '卡片', 'link': '链接', 'quote': '引用',
+    'call': '通话', 'system': '系统消息', 'other': '非文本',
+}
+
+
+def qq_format_message(m):
+    """存储里的 QQ 消息 → format_line 认的形状。
+
+    `isSend` 缺省（导入时没给 --own-id）按 False 处理：这一行的标签落到
+    senderDisplay（群名片/昵称），私聊里就是对方的名字——分得清谁说的，
+    只是"我自己说的"那句会标成名字。要精确就导入时给 --own-id。
+    """
+    text = (m.get('parsedContent') or '').strip()
+    if not text:
+        label = QQ_TYPE_LABELS.get(m.get('messageType'), '非文本')
+        text = '[%s]' % label
+    return {
+        'createTime': m.get('createTime') or 0,
+        'isSend': bool(m.get('isSend')),
+        'senderDisplay': m.get('senderName') or '',
+        'parsedContent': text,
+    }
+
+
+def collect_imported(out_root, days, limit):
+    """导入的 QQ 会话 → 与微信会话同形状的卡片原料。**不调模型、不读微信库。**"""
+    cutoff = int((datetime.now(TZ) - timedelta(days=days)).timestamp())
+    cards, thin = [], []
+    for sess in imported_chats.sessions()[:limit]:
+        meta = sess.get('session') or {}
+        in_window = [m for m in sess.get('messages', [])
+                     if isinstance(m, dict) and (m.get('createTime') or 0) >= cutoff]
+        if not in_window:
+            continue
+        # 名字带 QQ- 前缀：卡片文件名、概念页来源都靠它和微信会话区分开
+        name = 'QQ-%s' % (meta.get('name') or meta.get('id') or '未命名')
+        lines = [format_line(qq_format_message(m), NOTE_MSG_CHARS)
+                 for m in reversed(in_window)]
+        lines, dropped = trim_to_budget(lines)
+        chars = len(chr(10).join(lines))
+        if not worth_a_card(len(lines), chars):
+            thin.append({'name': name, 'messages': len(lines), 'chars': chars})
+            continue
+        cards.append({'talker': 'qq:%s' % (meta.get('id') or ''),
+                      'name': name,
+                      'messages': len(lines), 'chars': chars, 'lines': lines,
+                      'truncated': False, 'dropped': dropped})
+    return cards, thin
+
+
+def collect(out_root, days, limit, transcribe_voice=False, source='wechat'):
+    """读本地库：最近有动静的会话 + 每个会话窗口内的对话。**不调用任何模型。**
+
+    `source`：`wechat`（默认，行为与从前逐字一致）/ `qq`（只读 import qchat 落下的会话，
+    不碰微信库）/ `all`（微信优先，微信库打不开时降级只跑 QQ 并说一声）。
+    """
+    if source == 'qq':
+        cards, thin = collect_imported(out_root, days, limit)
+        return {'cards': cards, 'skipped': thin, 'outRoot': out_root,
+                'voice': {'enriched': 0, 'pending': 0}}, None
     config = load_config()
     db = config.get('ntDbPath', '')
+
+    def qq_only(reason):
+        # `--source all` 的降级：微信库打不开不该连 QQ 那半也一起没掉，但要说一声
+        print('微信库不可用（%s），--source all 降级为只处理导入的 QQ 会话' % reason,
+              file=sys.stderr)
+        cards, thin = collect_imported(out_root, days, limit)
+        return {'cards': cards, 'skipped': thin, 'outRoot': out_root,
+                'voice': {'enriched': 0, 'pending': 0}}, None
+
     if not db:
+        if source == 'all':
+            return qq_only('配置里没有 ntDbPath')
         print('配置里没有 ntDbPath，先运行 weflow-cli init', file=sys.stderr)
         return None, 'no-db'
     conns = nt_decrypt.connect_message_shards(
@@ -348,6 +422,8 @@ def collect(out_root, days, limit, transcribe_voice=False):
         # 口令的回退链与 `draft_reply.py` 那条路逐字一致：两处读出不同的库才是怪事
         decrypt_lock(config.get('favPassphrase') or config.get('decryptKey') or ''))
     if not conns:
+        if source == 'all':
+            return qq_only('无法打开消息数据库')
         print('无法打开消息数据库，请检查密钥（weflow-cli check）', file=sys.stderr)
         return None, 'no-conn'
     try:
@@ -408,6 +484,10 @@ def collect(out_root, days, limit, transcribe_voice=False):
             cards.append({'talker': item['talker'], 'name': item['name'],
                           'messages': len(lines), 'chars': chars, 'lines': lines,
                           'truncated': truncated, 'dropped': dropped})
+        if source == 'all':
+            qq_cards, qq_thin = collect_imported(out_root, days, limit)
+            cards.extend(qq_cards)
+            thin.extend(qq_thin)
         return {'cards': cards, 'skipped': thin, 'outRoot': out_root, 'voice': voice_total}, None
     finally:
         for conn in conns:
@@ -428,6 +508,8 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(description='聊天知识卡（把会话变成 Wiki 的输入；只产文本，不发送）')
     parser.add_argument('--days', type=int, default=DEFAULT_DAYS, help='看最近多少天（默认 30）')
+    parser.add_argument('--source', choices=['wechat', 'qq', 'all'], default='wechat',
+                        help='聊天来源：wechat（默认）/ qq（只读 weflow-cli import qchat 导入的会话）/ all（都要）')
     parser.add_argument('--limit', type=int, default=MAX_CONVERSATIONS,
                         help='最多处理几个会话（默认 %d）' % MAX_CONVERSATIONS)
     parser.add_argument('--out', default=OUTPUT_ROOT, help='卡片输出目录')
@@ -448,7 +530,8 @@ def main():
         return 1
 
     collected, failure = collect(args.out, args.days, args.limit,
-                                 transcribe_voice=args.transcribe_voice)
+                                 transcribe_voice=args.transcribe_voice,
+                                 source=args.source)
     if collected is None:
         if args.json:
             print(json.dumps({'success': False, 'error': failure}))

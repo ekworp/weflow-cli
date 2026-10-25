@@ -327,6 +327,7 @@ weflow-cli config set assistantGroupRequireMention true
 | 本机判断层 | `weflow-cli decide --request <file> --dry-run` · `--yes` |
 | 导出聊天记录 | `weflow-cli export <联系人> <json\|txt\|html\|excel>` |
 | 同步检查点 | `weflow-cli sync run <联系人> --since <日期>` · `sync status` · `sync verify` · `sync cursor-probe`（离稳定增量游标还差什么，实测当前后端）|
+| QQ 聊天导入 | `weflow-cli import qchat <qchat导出>` · `import list` · `import show <会话>` （读 qchat-cli 的 JSON 导出；之后 `chat-notes --source qq` 产知识卡、`search-index --include-imports` 进搜索）|
 | 公众号日报与阅读器 | `weflow-cli daily` · `weflow-cli daily-server` · `weflow-cli review` |
 | 朋友圈缓存 | `weflow-cli sns timeline` · `weflow-cli sns users` · `weflow-cli sns stats` |
 | 微信收藏 | `weflow-cli fav list` · `weflow-cli fav export markdown` · `weflow-cli fav set-key` |
