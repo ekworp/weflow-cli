@@ -1008,8 +1008,10 @@ test('look_at_image：编号不是数字时给可读的说法，也不调脚本'
 })
 
 test('look_at_image：缺参数直接说不缺哪一半', async () => {
-  assert.equal(await run('look_at_image', { contact: '甲' }), '(缺少 contact 或 image 参数)')
-  assert.equal(await run('look_at_image', { image: '1' }), '(缺少 contact 或 image 参数)')
+  // D-128 之后 contact 不再是必填（#信N 那条路不需要它），所以缺的只可能是 image；
+  // 看聊天记录那条路单独要求 contact。
+  assert.equal(await run('look_at_image', { contact: '甲' }), '(缺少 image 参数)')
+  assert.equal(await run('look_at_image', { image: '1' }), '(缺少 contact 参数：看聊天记录里的图要说明在哪个会话)')
 })
 
 test('look_at_image：本机没有这张图的副本时说明白，不当成"看过了"', async () => {
@@ -1672,4 +1674,101 @@ test('draft_reply：判断没调通（降级）时，照样给候选但**必须�
     assert.doesNotMatch(out, /^[(（]/, '不以 `(` 开头——那是"工具没产出内容"的信号')
     assert.doesNotMatch(out, /对方undefined|风险 NaN/, '没有判断时不许去拼一段假的判断摘要')
   } finally { bridge.setScriptRunner(null) }
+})
+
+// ------------------ look_at_image 的来信图片分支（D-128） ------------------
+//
+// `#信N` 与 `#N` 是两个句柄空间：前者读本机已落盘的文件（不走 pythonBridge），后者跑
+// read_image.py。这里钉四件事：balanced 下从文件附图且 mime 从魔数来；strict 第一层
+// 拒绝（不碰文件）；越界句柄、非图片文件、超限大小都要**说清楚**而不是空回/假成功。
+
+test('look_at_image #信N（D-128）：balanced 从落盘文件附图，mime 由魔数判定', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'weflow-inbound-img-'))
+  try {
+    // 最小 PNG 头 + 几个字节；mime 判定只看文件头，不需要是真图
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
+    const pngPath = join(dir, 'in.png')
+    writeFileSync(pngPath, png)
+
+    const realGet = (configService as any).get
+    ;(configService as any).get = (k: string) =>
+      k === 'assistantPrivacy' ? 'balanced' : realGet(k)
+    try {
+      const c = { ...ctx(), inboundImages: [{ filePath: pngPath }] }
+      const out = await run('look_at_image', { image: '#信1' }, c)
+      assert.match(out, /已附上来信图片 #信1/)
+      assert.equal(c.pendingImages?.length, 1)
+      assert.equal(c.pendingImages![0].mime, 'image/png')
+      assert.equal(c.pendingImages![0].b64, png.toString('base64'))
+      // 没有 localId：审计里它与聊天记录图片天然可分（ids= 为空）
+      assert.equal(c.pendingImages![0].localId, undefined)
+    } finally {
+      ;(configService as any).get = realGet
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('look_at_image #信N：strict 第一层拒绝，文件都不去读', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'weflow-inbound-img-'))
+  try {
+    const pngPath = join(dir, 'in.png')
+    writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    const realGet = (configService as any).get
+    ;(configService as any).get = (k: string) =>
+      k === 'assistantPrivacy' ? 'strict' : realGet(k)
+    try {
+      const c = { ...ctx(), inboundImages: [{ filePath: pngPath }] }
+      const out = await run('look_at_image', { image: '信1' }, c)
+      assert.match(out, /strict/)
+      assert.equal(c.pendingImages, undefined, '拒绝就是拒绝，不许半途附图')
+    } finally {
+      ;(configService as any).get = realGet
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('look_at_image #信N：越界句柄 / 非图片文件 / 超限大小，都要说清楚', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'weflow-inbound-img-'))
+  try {
+    const pngPath = join(dir, 'in.png')
+    writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    const junkPath = join(dir, 'not-an-image.bin')
+    writeFileSync(junkPath, Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]))
+    const bigPath = join(dir, 'too-big.png')
+    writeFileSync(bigPath, Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(4 * 1024 * 1024 + 1, 7),   // 过上限一个字节
+    ]))
+    const missingPath = join(dir, 'gone.png')
+
+    const realGet = (configService as any).get
+    ;(configService as any).get = (k: string) =>
+      k === 'assistantPrivacy' ? 'balanced' : realGet(k)
+    try {
+      const files = [{ filePath: pngPath }, { filePath: junkPath }, { filePath: bigPath }, { filePath: missingPath }]
+      const outOfRange = await run('look_at_image', { image: '#信9' },
+        { ...ctx(), inboundImages: files })
+      assert.match(outOfRange, /没有 #信9/, '越界句柄要说清有几张')
+
+      const notImage = await run('look_at_image', { image: '#信2' },
+        { ...ctx(), inboundImages: files })
+      assert.match(notImage, /不是 png\/jpeg\/webp/)
+
+      const tooBig = await run('look_at_image', { image: '#信3' },
+        { ...ctx(), inboundImages: files })
+      assert.match(tooBig, /超过.*上限/, '超限要说明没附、为什么')
+
+      const gone = await run('look_at_image', { image: '#信4' },
+        { ...ctx(), inboundImages: files })
+      assert.match(gone, /读不到|已不在/)
+    } finally {
+      ;(configService as any).get = realGet
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -307,6 +307,12 @@ export interface ToolContext {
    */
   pendingImages?: AttachedImage[]
   /**
+   * 本轮**来信自带**的图片（Bot 通道按 `wechatMediaDownload` 落盘解密过的文件，D-128）。
+   * `look_at_image` 的 `#信N` 句柄指向这里：文件已在本机，不走 `read_image.py`。
+   * 与 `pendingImages` 的分工：那是"模型这一轮已经看过的"，这是"来信里还没看的"。
+   */
+  inboundImages?: Array<{ filePath: string }>
+  /**
    * 调用方是**外部机器**（MCP 那条路）时置 true。
    *
    * 与面板/微信那条路的区别不是审美：MCP 客户端是**别人家的进程**，它那边谁也看不到这一轮
@@ -327,6 +333,28 @@ export interface AttachedImage {
 
 /** 一轮对话里最多看几张图。每次调用一张，这是上限——图片按体积算钱，也按体积算隐私。 */
 const MAX_IMAGES_PER_TURN = 2
+
+/**
+ * 来信图片的大小上限（D-128）。超了就明说"太大"，**不缩放**：入站文件是证据形态，
+ * 缩了再给模型看，模型说的就不是那张图（导出路径缩放是因为那是给人看的页面）。
+ */
+const MAX_INBOUND_IMAGE_BYTES = 4 * 1024 * 1024
+
+/** 从文件头魔数判图片类型，不信任文件名——来信文件的名字来自服务端报文。 */
+function sniffImageMime(buf: Buffer): string | null {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return 'image/png'
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (buf.length >= 12
+    && buf.subarray(0, 4).toString('latin1') === 'RIFF'
+    && buf.subarray(8, 12).toString('latin1') === 'WEBP') {
+    return 'image/webp'
+  }
+  return null
+}
 
 function fmtTime(ts: number): string {
   const n = Number(ts)
@@ -738,16 +766,17 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'function',
     function: {
       name: 'look_at_image',
-      description: '看聊天里的一张图片（把图片本身交给模型看，不只是"这里有一张图"）。'
-        + '`image` 填 get_messages 输出里 `[图片 #1234]` 的编号。'
-        + '一轮最多看两张；隐私模式为 strict 时不可用（聊天图片不出发本机）。',
+      description: '看一张图片（把图片本身交给模型看，不只是"这里有一张图"）。'
+        + '看聊天记录里的图：`image` 填 get_messages 输出里 `[图片 #1234]` 的编号，`contact` 给会话。'
+        + '看**本轮来信自带**的图：`image` 填 `#信1`（只有来信带图时才会出现这个句柄），不用 contact。'
+        + '一轮最多看两张；隐私模式为 strict 时不可用（图片不出发本机）。',
       parameters: {
         type: 'object',
         properties: {
-          contact: { type: 'string', description: '这张图所在会话的联系人显示名' },
-          image: { type: 'string', description: 'get_messages 里 [图片 #N] 的编号 N' },
+          contact: { type: 'string', description: '聊天记录那条路：这张图所在会话的联系人显示名（#信N 不需要）' },
+          image: { type: 'string', description: '[图片 #N] 的编号 N，或来信图片的 #信N' },
         },
-        required: ['contact', 'image'],
+        required: ['image'],
       },
     },
   },
@@ -1471,20 +1500,54 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // 句柄在 get_messages 里长这样：`[图片 #1234]`。允许带不带 `#` 都接受——模型从
         // 上下文里抄一个编号过来，"抄得像不像"不该决定它能不能看图。
         const image = String(args.image ?? '').replace(/^#/, '').trim()
-        if (!contact || !image) return '(缺少 contact 或 image 参数)'
-        if (!/^\d+$/.test(image)) {
-          return `(image 要填 get_messages 里 [图片 #N] 的编号，收到的是「${image.slice(0, 20)}」)`
+        if (!image) return '(缺少 image 参数)'
+        // 来信自带的图（D-128）：句柄 `信N`，与聊天记录的 `#N` 是两个空间。静态校验
+        // 先于隐私门——参数错就是参数错，与档位无关。
+        const inbound = /^信(\d+)$/.exec(image)
+        if (!inbound) {
+          if (!contact) return '(缺少 contact 参数：看聊天记录里的图要说明在哪个会话)'
+          if (!/^\d+$/.test(image)) {
+            return `(image 要填 get_messages 里 [图片 #N] 的编号或来信的 #信N，收到的是「${image.slice(0, 20)}」)`
+          }
         }
         // 第一层门：strict 模式（第三方聊天正文不出境）下图片也不出去。第二层在
         // `toApiMessages` 里——"工具肯给"与"这道门肯放"是两件事。
         if (privacyGate.mode() === 'strict' && !privacyGate.isLocalInference()) {
-          return '(当前隐私模式是 strict：聊天图片不发出本机，用不了这个工具。'
+          return '(当前隐私模式是 strict：图片不发出本机，用不了这个工具。'
             + '要让我看图，得把 assistantPrivacy 改成 balanced)'
         }
         const budget = ctx.pendingImages ?? []
         if (budget.length >= MAX_IMAGES_PER_TURN) {
           return `(这一轮已经看过 ${MAX_IMAGES_PER_TURN} 张图了，先把已经看到的说完，别再取)`
         }
+
+        // ---- 来信自带的图：文件已在本机（wechatMediaDownload 落盘解密过），
+        // 不走 read_image.py。
+        if (inbound) {
+          const files = ctx.inboundImages ?? []
+          const n = Number(inbound[1])
+          const ref = files[n - 1]
+          if (!ref) {
+            return `(本轮来信没有 #信${n} 这张图${files.length ? `（只有 #信1 到 #信${files.length}）` : '：来信没带可看的图片文件'})`
+          }
+          let buf: Buffer
+          try {
+            buf = readFileSync(ref.filePath)
+          } catch {
+            return `(读不到 #信${n} 的图片文件：落盘文件已不在（可能被清理过）)`
+          }
+          if (buf.length > MAX_INBOUND_IMAGE_BYTES) {
+            // 不缩放（D-128）：入站文件是证据形态，缩了再给模型看，模型说的就不是那张图。
+            return `(这张来信图片 ${(buf.length / 1048576).toFixed(1)} MB，超过 ${MAX_INBOUND_IMAGE_BYTES / 1048576} MB 上限，没有附上)`
+          }
+          const mime = sniffImageMime(buf)
+          if (!mime) {
+            return `(#信${n} 的文件头不是 png/jpeg/webp，附上也没有意义)`
+          }
+          ;(ctx.pendingImages ??= []).push({ b64: buf.toString('base64'), mime })
+          return `(已附上来信图片 #信${n}（${buf.length} 字节）。你能看到它了，直接据此回答。)`
+        }
+
         const talker = await resolveTalker(contact)
         // 90 秒。建媒体索引是这条路唯一的成本，且随会话大小走：实测单聊 ~1 秒、
         // 一个 3 万条消息的大群 18.9 秒（而那个群本机只有缩略图）。取到的图会落在

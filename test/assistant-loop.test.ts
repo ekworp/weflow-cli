@@ -305,3 +305,58 @@ test('a healthy memory file says nothing at startup', async () => {
   assert.equal(s.logs.some(line => line.includes('⚠ 记忆')), false)
 })
 
+
+// ------------------ D-128：来信图片（已落盘）从"整条忽略"变成一轮 ------------------
+
+test('D-128：带已落盘图片的来信变成一轮（句柄可见、计配额），没落盘的照旧忽略', async () => {
+  const s = await boot({ assistantWhitelist: 'wxid_me', assistantPrivacy: 'balanced' })
+  const imgPath = join(HOME, 'incoming.png')
+  writeFileSync(imgPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]))
+
+  let seen = ''
+  s.svc.callLLM = async (messages: any[]) => {
+    llmCalls++
+    seen = messages.filter((m: any) => m.role === 'user').map((m: any) => m.content).join('|')
+    return { choices: [{ message: { content: '收到图了' } }] }
+  }
+
+  // 无文字、带一张已落盘的图：该走完整一轮
+  await s.deliver({
+    ...directMessage(''), messageKind: 'image',
+    components: [{ type: 'image', filePath: imgPath }],
+  })
+  assert.equal(sent.length, 1, '该回复')
+  assert.match(sent[0].text, /收到图了/)
+  assert.equal(s.svc.dailyCount, 1, '图片来信也计配额')
+  assert.equal(llmCalls, 1)
+  assert.match(String(seen), /#信1/, `句柄该进对话：${seen}`)
+  assert.match(String(seen), /（发来一张图片）/, `无文字时用占位：${seen}`)
+
+  // 没落盘（没开下载 / 下载失败）：行为与从前一致——忽略，不留半轮
+  const before = s.svc.dailyCount
+  await s.deliver({ ...directMessage('[图片]'), messageKind: 'image', components: [] })
+  assert.equal(s.svc.dailyCount, before, '没落盘的图片不计配额')
+  assert.ok(s.logs.some(l => /忽略非文本消息/.test(l)), '日志照旧说忽略')
+})
+
+test('D-128：strict（云端）下轮次照走，但句柄不摆——不摆一个工具必定拒绝的东西', async () => {
+  // 用独立的发送者（= 独立记忆桶）：上一条用例那句带 #信1 的话会留在共享记忆的工作
+  // 窗口里，混进来会把"本轮没摆句柄"误判成摆了。
+  const s = await boot({ assistantWhitelist: 'wxid_strict_user', assistantPrivacy: 'strict' })
+  const imgPath = join(HOME, 'incoming-strict.png')
+  writeFileSync(imgPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+
+  let seen = ''
+  s.svc.callLLM = async (messages: any[]) => {
+    llmCalls++
+    seen = messages.filter((m: any) => m.role === 'user').map((m: any) => m.content).join('|')
+    return { choices: [{ message: { content: '好' } }] }
+  }
+  await s.deliver({
+    ...directMessage('', 'wxid_strict_user', 'wxid_strict_user'), messageKind: 'image',
+    components: [{ type: 'image', filePath: imgPath }],
+  })
+  assert.equal(sent.length, 1)
+  assert.doesNotMatch(String(seen), /#信1/, `strict 下不该摆句柄：${seen}`)
+  assert.match(String(seen), /（发来一张图片）/, `占位照在：${seen}`)
+})

@@ -70,6 +70,20 @@ export interface TurnInput {
 }
 
 /**
+ * 来信里**已落盘**的图片文件（`wechatMediaDownload` 的下载侧产物，D-128）。
+ * 只收图片：语音/视频/文件的消费各自是新的出境决策，不搭车。没开下载或下载失败
+ * （`filePath` 为空）时这里为空——那种图片消息照旧整条忽略，行为不变。
+ */
+function inboundImageFiles(msg?: WechatInboundMessage): Array<{ filePath: string }> {
+  if (!msg?.components?.length) return []
+  const out: Array<{ filePath: string }> = []
+  for (const c of msg.components) {
+    if (c.type === 'image' && c.filePath) out.push({ filePath: c.filePath })
+  }
+  return out
+}
+
+/**
  * 一轮的结果。**"回什么"与"往哪回"分开**：这里只说回什么，往哪回由调用方的 `deliver` 决定。
  *
  * 这么分的直接原因是修一个真 bug：泵里原先是 `this.svc!.sendText(...)`，而 `svc` 在没有
@@ -392,6 +406,11 @@ export class AssistantService {
    * 消息是串行处理的（queue），所以实例字段在这里是安全的。
    */
   private turnCalls = new Set<string>()
+  /**
+   * 本轮**来信自带**的图片文件（D-128）。消息串行处理，实例字段安全（同 `turnCalls`）。
+   * `runToolCall` 建 ctx 时带上，`look_at_image` 的 `#信N` 句柄从这里取。
+   */
+  private turnInboundImages: Array<{ filePath: string }> = []
 
   /** 白名单为空时，把"该把谁加进去"连同**完整**的发送者 ID 打一行。
    *
@@ -485,6 +504,7 @@ export class AssistantService {
     }
     this.turnCalls.add(callKey)
     const ctx: ToolContext = { userId, memory: this.memory }
+    if (this.turnInboundImages.length) ctx.inboundImages = this.turnInboundImages
     const raw = await executeTool(name, args, ctx)
     trace.toolCalls += 1
     trace.steps.push({
@@ -576,22 +596,37 @@ export class AssistantService {
    * **外部只许经由 `enqueueTurn` 调用**（它保证串行）；直接调会被 `inFlight` 挡下——
    * 见那个字段的注释。
    */
-  async handleMessage(userId: string, text: string, kind: string): Promise<string> {
+  async handleMessage(userId: string, text: string, kind: string,
+                      inboundImages: Array<{ filePath: string }> = []): Promise<string> {
     if (this.inFlight) {
       throw new Error('handleMessage 重入：它依赖串行调用（记忆窗口、turnCalls 都是实例字段）')
     }
     this.inFlight = true
     try {
-      return await this.handleMessageInner(userId, text, kind)
+      return await this.handleMessageInner(userId, text, kind, inboundImages)
     } finally {
       this.inFlight = false
     }
   }
 
-  private async handleMessageInner(userId: string, text: string, kind: string): Promise<string> {
-    if (kind !== 'text') return '目前只支持文字消息哦'
+  private async handleMessageInner(userId: string, text: string, kind: string,
+                                   inboundImages: Array<{ filePath: string }> = []): Promise<string> {
+    // kind==='image' 只有在**带着已落盘图片**时才是 D-128 那条新路；裸的图片消息
+    // （runTurn 已经过滤掉的那种）走到这里仍按老规矩拒绝。
+    if (kind !== 'text' && !(kind === 'image' && inboundImages.length)) {
+      return '目前只支持文字消息哦'
+    }
 
-    const t = text.trim()
+    let t = text.trim()
+    // 每轮重置（空数组也覆盖）：上一轮的图片不能漏到这一轮的句柄空间里。
+    this.turnInboundImages = inboundImages
+    // 来信图片的句柄指路牌：**能看才摆**（strict 且非本地推理不摆——与 get_messages 的
+    // `#N` 同一规则，不摆出一个工具必定会拒绝的东西）。文件本身挂在工具 ctx 上，
+    // 这里只告诉模型"有图、看的话用哪个句柄"。
+    if (inboundImages.length && (privacyGate.mode() !== 'strict' || privacyGate.isLocalInference())) {
+      const handles = inboundImages.map((_f, i) => `#信${i + 1}`).join('、')
+      t += `（这张来信带 ${inboundImages.length} 张图片：${handles}。要看就用 look_at_image，不看也可以直接聊。）`
+    }
     const startedAt = Date.now()
     this.turnCalls.clear()
     // 一轮的轨迹：判断了什么、调了什么、几轮、为什么停。**内置指令也要记**——
@@ -786,7 +821,12 @@ export class AssistantService {
    */
   private async runTurn(input: TurnInput, onLog?: (line: string) => void): Promise<TurnOutcome> {
     if (!this.running) return { status: 'not-running' }
-    const { sessionId, text, kind, origin } = input
+    const { sessionId, kind, origin } = input
+    // D-128：带**已落盘**图片的来信从"整条忽略"变成一轮（文本占位）；没落盘的
+    // （没开下载 / 下载失败）照旧忽略——文件不在，句柄无从谈起。
+    const inboundImages = inboundImageFiles(input.message)
+    const imageAsTurn = kind === 'image' && inboundImages.length > 0
+    const text = imageAsTurn ? (input.text.trim() || '（发来一张图片）') : input.text
 
     if (origin === 'wechat') {
       const msg = input.message!
@@ -797,7 +837,7 @@ export class AssistantService {
         this.maybeAnnounceWhitelistBootstrap(access, msg, onLog)
         return { status: 'denied', reason: access.reason }
       }
-      if (kind !== 'text') {
+      if (kind !== 'text' && !imageAsTurn) {
         onLog?.(`  → 忽略非文本消息 (${kind})`)
         return { status: 'ignored', reason: 'non-text' }
       }
@@ -815,7 +855,7 @@ export class AssistantService {
     }
 
     try {
-      const reply = await this.handleMessage(sessionId, text, kind)
+      const reply = await this.handleMessage(sessionId, text, kind, inboundImages)
       this.dailyCount++
       // **这里不报"已回复"**：回没回得出去是投递方才知道的事（微信的 sendText 会失败）。
       // 两处都报的话，微信那条路会在日志里出现两遍"已回复"，看着像处理了两条消息。

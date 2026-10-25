@@ -35,6 +35,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   点边高亮并列出；没有共同来源的边如实说明"来自页面正文里的 [[链接]]"。每边最多带 2 个名字
   （页面体积有界），证据只进页面载荷——布局缓存键不变，旧坐标不作废。3D 不带。
 
+- **助手能看对方发来的图片了（D-128，决策先行）。** 开了 `wechatMediaDownload` 的来信图片
+  从"整条忽略"变成一轮：模型可用 `look_at_image` 的 `#信1` 直接看落盘文件。门与看聊天图片
+  同构（strict 双层拦截、每轮两张上限、审计照记）；超过 4 MB 不缩放直接说明（证据形态）；
+  语音/视频/文件不在本轮。未开下载或没落盘的图片消息行为不变。
+
 - **修了主分支上四处红的回归测试**（`npm test` 在 master 上本来就挂着 4 条，stash 验证过与
   新特性无关）：`today` / `promises` 曾把 `--talker` 放进子进程 argv（进程列表可见），改走
   `WEFLOW_TALKER` 环境变量（D-020，`test/privacy-paths` 转绿）；`dailyMailTo` 补齐默认值三处
