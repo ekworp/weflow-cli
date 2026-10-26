@@ -19,6 +19,9 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.19.0
 
+> 1.18.0（`ledger`）**没有单独发布**，它的改动包含在本版里。npm 上不存在 1.18.0 这个版本号，
+> 从 1.17.0 直接到 1.19.0 —— 看到这里少一个版本号不是发布失败。
+
 - **修复 issue #12：`local_type == 1` 的压缩正文导出为空，普通文本被截断到 200 字。**
   `message_content` 若是 zstd 压缩的 BLOB，旧代码只认 `str`，正文被置空后落进
   `non_text_display()`，最终输出 `[未识别的消息类型 1]`——**消息还在、正文没了**，
