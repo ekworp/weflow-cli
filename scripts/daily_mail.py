@@ -450,7 +450,12 @@ def main():
     print(f'正文含 GitHub 链接: {with_repo} 篇')
 
     text_body, html_body, total = render(args.date, groups, digests, bodies, clusters)
+    # **`--label` 支持 ASCII 代号**，中文在这里映射。原因：调用方 `daily_task.ps1` 是
+    # 无 BOM 的 UTF-8，Windows PowerShell 5.1 会按 GBK 解码它，直接传中文会变成
+    # `鎴嚦涓崍` 那种乱码进到邮件主题（2026-10-26 实际发生）。
+    LABELS = {'noon': '截至中午'}
     label = (args.label or '').strip()
+    label = LABELS.get(label, label)
     suffix = f'（{label}）' if label else ''
     subject = f'公众号日报 {args.date}{suffix}：{" / ".join(t for t in topics if groups.get(t))} {total} 篇'
     if label:

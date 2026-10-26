@@ -199,7 +199,10 @@ if ($proc.ExitCode -eq 0 -and $rest.Count -eq 0) {
     $mailErr = Join-Path $logDir ('daily-mail-{0}{1}.err.log' -f $stamp, $suffix)
     if (Test-Path $mailScript) {
         $mailArgs = @($mailScript, '--date', $targetDay)
-        if ($mode -eq 'noon') { $mailArgs += @('--label', '截至中午') }
+        # **只传 ASCII**：这个脚本是无 BOM 的 UTF-8，而 Windows PowerShell 5.1 会把
+        # 无 BOM 文件按 ANSI（本机 GBK）解码——直接写中文标签会变成 `鎴嚦涓崍`
+        # 这种乱码进到邮件主题里（2026-10-26 实测）。中文由 Python 侧映射。
+        if ($mode -eq 'noon') { $mailArgs += @('--label', 'noon') }
         $mailProc = Start-Process -FilePath $python -ArgumentList $mailArgs `
             -NoNewWindow -Wait -PassThru -RedirectStandardOutput $mailOut -RedirectStandardError $mailErr
         if ($mailProc.ExitCode -ne 0) {
