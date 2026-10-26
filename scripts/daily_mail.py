@@ -32,7 +32,10 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from _utils import get_api_key, load_config  # noqa: E402
 
 ROOT = SCRIPT_DIR.parent
-DEFAULT_TOPICS = ('AI', '学术', '新闻', '文学', '投资', '政治')
+#: **政治不进默认**：2026-10-26 实测，含政治题材的邮件被 QQ SMTP 直接拒收
+#: （`550 The mail may contain inappropriate words or content.`），去掉后同一封信
+#: 立刻发出。政治类仍然在本地阅读器里（`daily-server`），只是不走邮件。
+DEFAULT_TOPICS = ('AI', '学术', '新闻', '文学', '投资')
 #: 只有这两类生成 AI 综述 + 聚类。其余题材**照常发出**（标题 + 一句摘要），但不额外
 #: 花钱：六个主题全做综述和聚类是 12 次调用，而新闻/文学/投资/政治通常只需扫一眼标题。
 DIGEST_TOPICS = ('AI', '学术')
