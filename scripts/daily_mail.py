@@ -32,7 +32,13 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from _utils import get_api_key, load_config  # noqa: E402
 
 ROOT = SCRIPT_DIR.parent
-DEFAULT_TOPICS = ('AI', '学术')
+DEFAULT_TOPICS = ('AI', '学术', '新闻', '文学', '投资', '政治')
+#: 只有这两类生成 AI 综述 + 聚类。其余题材**照常发出**（标题 + 一句摘要），但不额外
+#: 花钱：六个主题全做综述和聚类是 12 次调用，而新闻/文学/投资/政治通常只需扫一眼标题。
+DIGEST_TOPICS = ('AI', '学术')
+#: 非重点主题最多列几条。六个主题全量渲染是 10 万字符（2026-10-26 实测 356 篇），
+#: 多数邮件客户端会截断；只留最前面这些，其余让读的人在本地阅读器里翻。
+OTHER_TOPIC_LIMIT = 12
 SMTP_CONFIG = pathlib.Path(os.path.expanduser('~/.weflow-issue-watch.json'))
 
 
@@ -232,7 +238,16 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
     total = sum(len(v) for v in groups.values())
     # 主题配色：AI 靛蓝、学术 青绿。用 table + inline style —— 邮件客户端会剥离
     # `<style>` 与 class，class 选择器在 QQ / Gmail / 企业微信里表现不一致。
-    accents = {'AI': ('#4f46e5', '#eef2ff'), '学术': ('#0d9488', '#ecfdf5')}
+    # 六个主题各一套配色。同一封信里出现六种强调色不算花——它们是**分区标记**，
+    # 换主题时颜色跟着换，扫读时不用先找回标题才知道换段了。
+    accents = {
+        'AI': ('#4f46e5', '#eef2ff'),
+        '学术': ('#0d9488', '#ecfdf5'),
+        '新闻': ('#2563eb', '#eff6ff'),
+        '文学': ('#db2777', '#fdf2f8'),
+        '投资': ('#ca8a04', '#fefce8'),
+        '政治': ('#dc2626', '#fef2f2'),
+    }
 
     text_lines = [f'公众号日报 {date}', f'共 {total} 篇', '']
     blocks: list[str] = []
@@ -298,7 +313,12 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
                 )
                 text_lines.append(f'-- {cname}（{len(citems)}）--')
 
-            for a in citems:
+            # **非重点主题走紧凑模式**：一行标题、不带摘要，且只列前 N 条。
+            # 六个主题全量渲染是 10 万字符（2026-10-26 实测 356 篇），多数邮件客户端
+            # 会截断，人也不会读完——而新闻/文学/投资/政治本来就是"扫一眼标题"的量。
+            compact = topic not in DIGEST_TOPICS
+            shown = citems[:OTHER_TOPIC_LIMIT] if compact else citems
+            for a in shown:
                 i = items.index(a) + 1
                 title = a.get('title') or ''
                 source = a.get('source') or ''
@@ -311,6 +331,18 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
                 title_html = (f'<a href="{html.escape(url)}" style="color:#111827;text-decoration:none;">'
                               f'{html.escape(title)}</a>' if url else html.escape(title))
 
+                if compact:
+                    # 紧凑模式下不按相关度分档：它们整体就是"浏览用"的流水。
+                    summary = ''
+                    text_lines.append(f'{num}. {title} — {meta}')
+                    blocks.append(
+                        '<tr><td style="padding:6px 28px 0;">'
+                        f'<span style="font-size:11px;color:#c0c7d0;">{num}</span> '
+                        f'<span style="font-size:13px;color:#374151;">{title_html}</span>'
+                        f'<span style="font-size:11px;color:#b3bac4;"> · {html.escape(source)}</span>'
+                        '</td></tr>'
+                    )
+                    continue
                 # **颜色必须自己说明自己。** 上一版把序号徽章染成主题色来表示"高相关"，
                 # 但没有任何图例——用户看到截图的第一反应是"这边为什么有的是绿的"（2026-10-20）。
                 # 现在徽章统一成灰色，相关度改成 meta 行里一个**写着"高"的小色块**：
@@ -440,8 +472,14 @@ def main():
     # `--no-digest` 只关"每主题一段综述"；聚类是版式结构，仍要做（两件事分开开关，
     # 否则想看新版式的人一加 `--no-digest` 就退回一根长肠子）。
     api_key = get_api_key(cfg)
-    digests = {} if args.no_digest else {t: topic_digest(t, items, api_key) for t, items in groups.items() if items}
-    clusters = {t: cluster_items(t, items, api_key, want=5) for t, items in groups.items() if len(items) >= 8}
+    digests = {} if args.no_digest else {
+        t: topic_digest(t, items, api_key)
+        for t, items in groups.items() if items and t in DIGEST_TOPICS}
+    # 聚类只给重点主题做。非重点主题分 4-6 组没有收益（新闻/文学本来就是几条标题的
+    # 流水），却要为每个主题多付一次调用。
+    clusters = {t: cluster_items(t, items, api_key, want=5)
+                for t, items in groups.items()
+                if len(items) >= 8 and t in DIGEST_TOPICS}
     for t, cs in clusters.items():
         print(f'  {t} 分了 {len(cs)} 组: ' + ' / '.join(f'{n}({len(v)})' for n, v in cs))
 
