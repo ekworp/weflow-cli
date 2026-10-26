@@ -1117,7 +1117,15 @@ def _message_dict(row, sender_id_map, name_map, own_wxid, is_group=False):
 
     # Parse message_content - TEXT column
     raw_content = row.get('message_content')
-    content = raw_content if isinstance(raw_content, str) else ""
+    # **普通文本也可能是 zstd 压缩的 BLOB**（issue #12）。这里原来只认 `str`，
+    # 于是 `local_type == 1` 的压缩正文被置空、再交给 `non_text_display()`，
+    # 最终输出 `[未识别的消息类型 1]` —— 消息还在，正文没了，下游按
+    # `parsedContent` 做的关键词 / @所有人 筛选就漏掉这些通知。
+    # `_decode_content()` 已经处理三种形态（str / zstd frame / 普通 bytes），复用它即可。
+    if local_type == 1:
+        content = _decode_content(raw_content)
+    else:
+        content = raw_content if isinstance(raw_content, str) else ""
 
     # `content`/`rawContent` stay exactly as stored; only `parsedContent` - the
     # field every consumer reads first - gets the display-ready form.
@@ -1140,7 +1148,9 @@ def _message_dict(row, sender_id_map, name_map, own_wxid, is_group=False):
         "senderDisplay": sender_display,
         "content": content,
         "rawContent": content,
-        "parsedContent": display[:200] if local_type == 1 else display[:200],
+        # 文本不截断：末尾的 `@所有人` 一类关键词正是下游筛选要用的，截掉等于静默漏消息
+        # （issue #12）。非文本仍保留 200 字的展示上限——它们是标签和标题，不是正文。
+        "parsedContent": display if local_type == 1 else display[:200],
     }
 
 

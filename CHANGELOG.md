@@ -19,6 +19,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.19.0
 
+- **修复 issue #12：`local_type == 1` 的压缩正文导出为空，普通文本被截断到 200 字。**
+  `message_content` 若是 zstd 压缩的 BLOB，旧代码只认 `str`，正文被置空后落进
+  `non_text_display()`，最终输出 `[未识别的消息类型 1]`——**消息还在、正文没了**，
+  下游按 `parsedContent` 做的关键词 / `@所有人` 筛选于是漏掉这些通知。
+  现在类型 1 一律走已有的 `_decode_content()`（str / zstd frame / 普通 bytes 三种都处理），
+  且 `parsedContent` 对文本**不再截断**：末尾关键词正是筛选要用的，截掉等于静默漏消息。
+  非文本仍保留 200 字展示上限——那是标签与标题，不是正文。
 - **`media` — md5 直接对到本地文件（读 `hardlink.db`，本地只读）。** 图片、文件、视频三张表各记
   `md5 → (dir1, dir2, file_name)`，`dir2id` 把 id 映射成目录名，路径是**确定的**，不用再扫整个
   `msg/` 目录去猜。每一行都标 `✓/✗`：`✗` 是"库里有记录但文件已被微信清理"，不是路径算错。
