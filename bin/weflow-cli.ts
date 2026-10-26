@@ -8018,6 +8018,47 @@ program
     }
   })
 
+// ==================== media（媒体精确匹配）====================
+program
+  .command('media')
+  .description('媒体精确匹配：用 hardlink.db 把 md5 直接对到本地文件（图片/文件/视频；本地只读）')
+  .option('--md5 <prefix>', '按 md5 前缀查')
+  .option('--type <kind>', 'image | file | video | all', 'all')
+  .option('--limit <n>', '最多列几条', '20')
+  .option('--missing-only', '只列文件已不在本地的（微信会清理）')
+  .option('--json', '输出 JSON 格式')
+  .action(async (opts) => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const script = join(resolvePackageRoot(), 'scripts', 'media_index.py')
+    const limit = parseCliInteger(opts.limit, 'limit', 1, 5000, opts.json)
+
+    try {
+      const args = [script, '--type', String(opts.type || 'all'), '--limit', String(limit)]
+      if (opts.md5) args.push('--md5', String(opts.md5))
+      if (opts.missingOnly) args.push('--missing-only')
+      if (opts.json) args.push('--json')
+      const { stdout } = await execFileAsync(getPythonCommand(), args, {
+        timeout: 300_000,
+        maxBuffer: 16 * 1024 * 1024,
+        env: pythonProcessEnv(),
+      })
+      console.log(stdout)
+    } catch (e: any) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'MEDIA_FAILED',
+          error: '媒体索引不可用，请运行 check --json 检查配置和依赖',
+        }))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n${safeSubprocessError(e, '查询失败')}`))
+      process.exit(1)
+    }
+  })
+
 // ==================== replay（关系时间重放）====================
 program
   .command('replay')

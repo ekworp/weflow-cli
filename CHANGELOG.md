@@ -17,6 +17,15 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.19.0
+
+- **`media` — md5 直接对到本地文件（读 `hardlink.db`，本地只读）。** 图片、文件、视频三张表各记
+  `md5 → (dir1, dir2, file_name)`，`dir2id` 把 id 映射成目录名，路径是**确定的**，不用再扫整个
+  `msg/` 目录去猜。每一行都标 `✓/✗`：`✗` 是"库里有记录但文件已被微信清理"，不是路径算错。
+  **图片的 dir1/dir2 顺序与另两张表相反**：实测 image 行是 `dir1=会话hash, dir2=月份`
+  （`attach/<会话>/<月份>/Img/`），file/video 行是 `dir1=月份`。按统一顺序拼，4647 条图片会全指到
+  一个空目录，而文件/视频那条仍然正确——只看某一类能打开就会漏掉这个错。
+
 ## 1.18.0
 
 - **`ledger` — 红包与转账流水（读 `general.db`，本地只读）。** 把两张表归一成一条按时间排的
