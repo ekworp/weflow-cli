@@ -56,9 +56,12 @@ class CompressedTextTests(unittest.TestCase):
     def test_empty_and_corrupt_blob_do_not_crash(self):
         self.assertEqual(build(None)['content'], '')
         self.assertEqual(build(b'')['content'], '')
-        # 声称是 zstd（有 magic 头）但内容是坏的：解不出就空串，不许抛
+        # 声称是 zstd（有 magic 头）但内容解不出：**回退按 UTF-8 解码**，不返回空串。
+        # 空串在 issue #12 里就是"消息还在、正文没了"的那种丢数据，宁可给一段乱码。
         broken = b'\x28\xb5\x2f\xfd' + b'not really zstd'
-        self.assertEqual(build(broken)['content'], '')
+        out = build(broken)['content']
+        self.assertTrue(out)
+        self.assertIn('not really zstd', out)
 
     def test_group_speaker_prefix_still_stripped(self):
         raw = 'wxid_someone:\n收到请回复！@所有人'

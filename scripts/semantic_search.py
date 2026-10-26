@@ -63,6 +63,7 @@ except:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import load_config, decrypt_lock, get_dashscope_key, get_api_key, LINE_LABELS  # noqa: E402
+from nt_common import decode_content  # noqa: E402
 from jev_client import create_client
 
 OUTPUT_ROOT = 'output'
@@ -248,7 +249,10 @@ def collect_chat_messages(conns, name_map, days=90, per_talker=500):
             except Exception:
                 continue
             for rid, ts, sender, content in rows:
-                if not content or not isinstance(content, str) or len(content) < 10:
+                # 正文可能是 zstd 压缩的 BLOB（issue #12）：先解码再判断长度，
+                # 否则这些消息会被整条跳过、索引里永远缺一段。
+                content = decode_content(content)
+                if len(content) < 10:
                     continue
                 item_id = f"chat:{talker}:{ts}:{rid}"
                 if item_id in seen:

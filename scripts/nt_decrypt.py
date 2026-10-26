@@ -989,19 +989,13 @@ QUOTE_CLIP = 120
 
 ZSTD_MAGIC = bytes([0x28, 0xB5, 0x2F, 0xFD])
 def _decode_content(raw):
-    """消息内容 → 文本。BLOB 先按 zstd 解压（公众号消息同一套机制）。解不出回空串。"""
-    if isinstance(raw, str):
-        return raw
-    if not raw:
-        return ''
-    data = bytes(raw)
-    if data[:4] == ZSTD_MAGIC:        # zstd frame header
-        try:
-            import zstandard
-            return zstandard.ZstdDecompressor().decompress(data).decode('utf-8', 'ignore')
-        except Exception:
-            return ''
-    return data.decode('utf-8', 'ignore')
+    """消息内容 → 文本。实现在 `nt_common.decode_content`（各脚本共用一份）。
+
+    保留这个名字是为了不动 `non_text_display` 等既有调用点；行为与公共函数一致：
+    str 原样、zstd frame 解压、其它 bytes 按 UTF-8 解码，解不出回空串。
+    """
+    from nt_common import decode_content
+    return decode_content(raw)
 
 
 def _xml_block(xml, tag):

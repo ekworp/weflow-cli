@@ -80,3 +80,35 @@ def table_columns(cursor, table):
     except Exception:
         return set()
     return {row[1] for row in rows}
+
+
+#: zstd frame magic。`message_content` 在 4.x 里**可能被压缩**（issue #12）。
+ZSTD_MAGIC = bytes([0x28, 0xB5, 0x2F, 0xFD])
+
+
+def decode_content(value):
+    """`message_content` → 文本。**所有读消息的脚本都该走这里。**
+
+    三种形态都要接：`str`（老格式，直接返回）、zstd frame（4.x 压缩后存的）、
+    以及普通 bytes。解不出就回空串——调用方拿到的永远是字符串，不需要自己判断类型。
+
+    为什么要一个公共函数：这条规则以前散在五个脚本里，其中四个写的是
+    `if not isinstance(content, str): continue`，于是**压缩正文被整条跳过**——
+    消息不进索引、不进待办、不进年度统计，而且不报错（issue #12 同源）。
+    """
+    if isinstance(value, str):
+        return value
+    if not value:
+        return ''
+    try:
+        data = bytes(value)
+    except Exception:
+        return ''
+    if data[:4] == ZSTD_MAGIC:
+        try:
+            import zstandard
+            return zstandard.ZstdDecompressor().decompress(data).decode('utf-8', 'ignore')
+        except Exception:
+            # 声称是 zstd 但内容坏了：回退成按字节解码，不抛也不丢整条消息。
+            return data.decode('utf-8', 'ignore')
+    return data.decode('utf-8', 'ignore')

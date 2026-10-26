@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import load_config, decrypt_lock, call_deepseek, get_api_key
+from nt_common import decode_content
 
 TODOS_FILE = os.path.join(os.path.expanduser('~'), '.weflow-cli', 'todos.json')
 TZ = timezone(timedelta(hours=8))
@@ -108,7 +109,8 @@ def collect_recent_messages(conn, start_ts, end_ts, name_map, limit_per_session=
             ''', (start_ts, end_ts, limit_per_session))
 
             for ts, sender_id, content in c.fetchall():
-                if not content or not isinstance(content, str) or len(content) < 5:
+                content = decode_content(content)   # 压缩正文别再整条丢掉（issue #12）
+                if len(content) < 5:
                     continue
                 # 关键词过滤
                 content_lower = content.lower()

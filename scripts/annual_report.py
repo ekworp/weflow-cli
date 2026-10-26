@@ -22,6 +22,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import load_config, decrypt_lock, parse_frontmatter, call_deepseek, get_api_key
+from nt_common import decode_content
 
 TZ = timezone(timedelta(hours=8))
 OUTPUT_ROOT = 'output'
@@ -89,7 +90,8 @@ def collect_chat_stats(conn, year, name_map):
             ))
 
             for ts, sender_id, content in c.fetchall():
-                if not isinstance(content, str) or len(content) < 1:
+                content = decode_content(content)   # 压缩正文（issue #12）
+                if not content:
                     continue
                 dt = datetime.fromtimestamp(ts, tz=TZ)
                 if dt.year != year:

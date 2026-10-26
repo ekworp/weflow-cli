@@ -24,6 +24,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import load_config, decrypt_lock, parse_frontmatter
+from nt_common import decode_content
 
 OUTPUT_ROOT = 'output'
 TZ = timezone(timedelta(hours=8))
@@ -196,7 +197,8 @@ def cmd_search_messages(args):
             ''', (start_ts, end_ts))
 
             for ts, sender, content in c.fetchall():
-                if not content or not isinstance(content, str):
+                content = decode_content(content)   # 压缩正文（issue #12）
+                if not content:
                     continue
                 if keyword and keyword.lower() not in content.lower():
                     continue
