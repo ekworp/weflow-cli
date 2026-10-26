@@ -207,6 +207,10 @@ class SemanticImportTests(unittest.TestCase):
             ss.INDEX_DIR = root
             ss.VECTORS_FILE = root / 'vectors.npy'
             ss.META_FILE = root / 'meta.json'
+            # `OUTPUT_ROOT` 也必须指到空目录：`build_index(full=True)` 会扫它下面的
+            # 日报文章，不隔离就会读到真实 `output/biz-daily`（本机 10,981 篇），
+            # 于是 `new` 断言 5 变成 10981（2026-10-26 的红）。
+            ss.OUTPUT_ROOT = root
 
             def onehot(i):
                 import numpy as np

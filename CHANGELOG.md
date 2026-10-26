@@ -17,6 +17,20 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.18.0
+
+- **`ledger` — 红包与转账流水（读 `general.db`，本地只读）。** 把两张表归一成一条按时间排的
+  流水：`kind`（红包/转账）、方向（我付/我收/我发/对方发/未知）、对方、`messageServerId`。
+  方向判定用前缀容忍的自己 id 比对，双方都是自己时如实给「未知」而不是猜一个。
+  **两处已知的"不猜"**：红包表**没有时间列也没有金额列**——真实时间与金额在消息正文的
+  `wcpayinfo` 里，这一步没做，所以红包按 `messageServerId` 排先后并标注"无时间列"；
+  `hb_status`/`receive_status`/`pay_sub_type` 的枚举语义**未逐值验证**，原样输出（本机观测
+  `hb_status ∈ {1,4}`、`receive_status ∈ {0,1,2}`），不给"已领取/已过期"这类翻译。
+- **测试隔离了两处会读真实数据的路径。** `qchat_import_test` 的 `build_index` 用例只把
+  `INDEX_DIR` 指到临时目录，`OUTPUT_ROOT` 仍是真实值，于是它扫到本机 10,981 篇日报文章，
+  `new` 断言 5 变成 10981；`wechat_ledger_test` 的红包 fixture 按 9 列建表却只给 7 个值，
+  `hb_status` 整体左移两格落进 `send_id`。两处都改成显式隔离/对齐，不是调期望值。
+
 ## 1.17.0
 
 - **`sync cursor-probe`：稳定游标从"一句 false"变成一条看得见的路径（D-027）。**
