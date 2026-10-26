@@ -63,3 +63,7 @@ weflow-xor-*/
 weflow-voice-*/
 !docs/REPLAY.md
 qq-idx-*/
+
+# 测试在 %TEMP% 不可写时把临时文件丢到仓库根（名字随机，只能按前缀挡）
+/tmp[0-9a-z_]*
+/tmp[0-9a-z_]*/
