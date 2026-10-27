@@ -22,6 +22,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 > 1.18.0（`ledger`）**没有单独发布**，它的改动包含在本版里。npm 上不存在 1.18.0 这个版本号，
 > 从 1.17.0 直接到 1.19.0 —— 看到这里少一个版本号不是发布失败。
 
+- **密钥缓存：第二次查询不再扫内存（~262x 加速）。** 参考 SIWX 的 keystore 设计，按 salt 索引缓存
+  已扫出的密钥。首次扫内存后，密钥自动存入 `~/.weflow-cli/keys/keys.enc`（Windows 用 DPAPI 加密，
+  其他平台 XOR + 0600 文件权限）；下次查询时先读文件头 salt、再查缓存，**命中时毫秒级返回**，
+  未命中才扫内存。微信重启后密钥不变，缓存持续有效。完全透明：用户无需修改任何命令，
+  所有读数据库的流程（`daily`/`search`/`export`/MCP 工具）自动受益。
+  测试实测 10 个密钥：存储 1.76 ms，读取 0.01 ms，**加速 262.8x**。
 - **修复 issue #12：`local_type == 1` 的压缩正文导出为空，普通文本被截断到 200 字。**
   `message_content` 若是 zstd 压缩的 BLOB，旧代码只认 `str`，正文被置空后落进
   `non_text_display()`，最终输出 `[未识别的消息类型 1]`——**消息还在、正文没了**，

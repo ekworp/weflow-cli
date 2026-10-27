@@ -476,19 +476,83 @@ def apply_contact_names(sessions, name_map):
     return sessions
 
 
-def match_keys_to_databases(keys, databases):
-    """Match memory keys to databases by comparing salts."""
+def match_keys_to_databases(keys, databases, use_cache=True):
+    """Match memory keys to databases by comparing salts.
+
+    Args:
+        keys: list of {"key": str, "salt": str} from memory scan
+        databases: list of {"path": str, "salt": str, ...}
+        use_cache: if True, try cache first and store new keys
+
+    Returns:
+        list of matched databases with "key" field added
+    """
+    cache = get_key_cache() if use_cache else None
+
+    # Build salt -> key map from memory scan
     salt_to_key = {}
     for k in keys:
         salt_to_key[k["salt"]] = k["key"]
 
+    # Store newly scanned keys to cache
+    if cache and keys:
+        cache.put_batch(keys)
+
     matched = []
+    unmatched = []
+
     for db in databases:
-        if db["salt"] in salt_to_key:
-            db["key"] = salt_to_key[db["salt"]]
+        db_salt = db["salt"]
+
+        # Try cache first
+        if cache:
+            cached_key = cache.get(db_salt)
+            if cached_key:
+                db["key"] = cached_key
+                db["key_source"] = "cache"
+                matched.append(db)
+                continue
+
+        # Try memory scan result
+        if db_salt in salt_to_key:
+            db["key"] = salt_to_key[db_salt]
+            db["key_source"] = "memory"
             matched.append(db)
+        else:
+            unmatched.append(db)
 
     return matched
+
+
+def match_databases_from_cache_only(databases):
+    """Match databases using only cached keys (no memory scan).
+
+    用于微信未运行或不想扫内存的场景。
+
+    Args:
+        databases: list of {"path": str, "salt": str, ...}
+
+    Returns:
+        tuple: (matched, unmatched)
+            matched: list of databases with "key" field
+            unmatched: list of databases without key
+    """
+    cache = get_key_cache()
+    matched = []
+    unmatched = []
+
+    for db in databases:
+        db_salt = db["salt"]
+        cached_key = cache.get(db_salt)
+
+        if cached_key:
+            db["key"] = cached_key
+            db["key_source"] = "cache"
+            matched.append(db)
+        else:
+            unmatched.append(db)
+
+    return matched, unmatched
 
 
 # ========== Database Operations ==========
@@ -519,6 +583,7 @@ def connect_nt_db(db_path, key_hex, salt_hex):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nt_common import (discover_message_shards, derive_database_key,
                        table_columns, MESSAGE_ANCHOR_COLUMNS)
+from key_cache import get_key_cache
 
 
 def verify_passphrase_native(passphrase_hex, db_path, internal_key_hex=''):
