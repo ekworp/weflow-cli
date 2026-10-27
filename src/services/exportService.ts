@@ -24,6 +24,13 @@ export interface ExportResult {
    * 这里只做透传（`--json` 调用的结果里带上它），不在 TS 里重算一遍——两份实现必然漂移。
    */
   media?: unknown
+  /**
+   * `--save-originals` 的计数（`saved`/`reused`/`failed`），由 Python 侧给出。
+   *
+   * 只有开了那个开关才有；不带路径，调用方可以直接把它写进日志。导出物从此多一个
+   * `<前缀>_assets/originals/` 目录，这个字段是"到底写了没写"的机器可读答案。
+   */
+  originals?: unknown
 }
 
 const execFileAsync = promisify(execFile)
@@ -153,11 +160,19 @@ export class ExportService {
     }
   }
 
-  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; format?: 'html' | 'md'; assetsOnly?: boolean } = {}): Promise<ExportResult> {
+  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; format?: 'html' | 'md'; assetsOnly?: boolean; saveOriginals?: boolean } = {}): Promise<ExportResult> {
     const format = options.format ?? 'html'
     if (format === 'md' && (from !== undefined || to !== undefined)) {
       // 不静默降级成「导出全部」：范围是调用方明确要的，做不到就说出来。
       return { success: false, error: 'markdown 导出暂不支持 --from/--to：请用 --date，或整段导出' }
+    }
+    if (options.saveOriginals && format !== 'html') {
+      // 不静默忽略：调用方明确要了原图，这个格式给不了。
+      return { success: false, error: '--save-originals 只用于 HTML 导出（markdown 的图片本来就会落盘）' }
+    }
+    if (options.saveOriginals && (from !== undefined || to !== undefined)) {
+      // 这条分支走的是不含图片的简版渲染器，硬编码一个「原图」目录会得到空文件夹。
+      return { success: false, error: '--save-originals 暂不支持 --from/--to：请用 --date，或整段导出' }
     }
     try {
       if (from !== undefined || to !== undefined) {
@@ -249,6 +264,10 @@ export class ExportService {
           // Off by default: originals are 5-24MB each and downscaling a few
           // hundred of them costs minutes in PIL.
           WEFLOW_FULL_IMAGES: options.fullImages ? '1' : undefined,
+          // 原图落盘（`--save-originals`）：页面里仍是缩略图，点击时打开同目录的
+          // `<前缀>_assets/originals/`。与 `--full-images` 不同 —— 那个决定预览用哪档字节，
+          // 这个决定原图要不要留在磁盘上。默认关：导出物从「一个 HTML」变成「HTML + 目录」。
+          WEFLOW_SAVE_ORIGINALS: options.saveOriginals ? '1' : undefined,
           WEFLOW_EXPORT_DATE: date || undefined,
           // Without this the Python path exported the entire history: `--limit`
           // only ever reached the fallback renderer, so a capped export of a
@@ -277,7 +296,7 @@ export class ExportService {
           const result = JSON.parse(lines[i])
           if (result.success && result.files?.length > 0) {
             const total = Number(result.total)
-            return { success: true, path: result.files[0], count: Number.isFinite(total) ? total : undefined, media: result.media }
+            return { success: true, path: result.files[0], count: Number.isFinite(total) ? total : undefined, media: result.media, originals: result.originals }
           }
         } catch {}
       }

@@ -148,6 +148,202 @@ CONTACT_NAMES = {}
 # resumable pass (`scripts/wechat_voice.py`) rather than part of an export.
 VOICE_STATE = {'map': {}, 'cache': None}
 
+# ---- originals on disk (`--save-originals`) ---------------------------------
+# The page always embeds a downscaled preview. Showing the *original* on click
+# means the original has to exist as a file: base64-ing a 5-24MB photo into the
+# HTML produces a page nobody can open. So originals are written next to the
+# page and the bubble only carries a link.
+#
+# Not to be confused with `--full-images`: that one picks which bytes feed the
+# preview (cache thumbnail vs. account-index original); this one decides whether
+# the original is also saved for the click-through.
+SAVE_ORIGINALS = os.environ.get('WEFLOW_SAVE_ORIGINALS', '') == '1'
+ORIGINAL_MAX_BYTES = 64 * 1024 * 1024
+ORIGINAL_STATE = {
+    # media key -> {'path': file on disk, 'source': 'account'|'cache-image'|'thumb'}
+    'paths': {},
+    # sha256(base64) -> the same record, so `unique:<local_id>` can point back
+    # at the file that produced the single distinct image for that id.
+    'by_digest': {},
+    'v2_key': None,
+    'dir': '',
+    'saved': 0, 'reused': 0, 'failed': 0,
+}
+# Account index beats the conversation cache, which beats a 120-210px thumbnail:
+# a later, better source for the same key replaces an earlier one.
+ORIGINAL_SOURCE_RANK = {'thumb': 0, 'cache-image': 1, 'account': 2}
+
+
+def remember_original(key, path, source):
+    """Record where the original for one media key lives on disk."""
+    if not key or not path:
+        return
+    current = ORIGINAL_STATE['paths'].get(key)
+    if (current is None
+            or ORIGINAL_SOURCE_RANK.get(source, 0) > ORIGINAL_SOURCE_RANK.get(current.get('source'), -1)):
+        ORIGINAL_STATE['paths'][key] = {'path': path, 'source': source}
+
+
+def remember_original_digest(image, path, source):
+    """Key the same record by the embedded bytes, for `unique:<local_id>`.
+
+    The unique key is derived from the bytes at the end of `scan_nt_cache`, at
+    which point the key that produced them is no longer known. Hashing the
+    tuple the map actually stores keeps the two views in step - including when
+    `--full-images` downscaled the bytes before they were stored.
+    """
+    if not image or not path:
+        return
+    digest = hashlib.sha256(str(image[0]).encode('ascii')).hexdigest()
+    current = ORIGINAL_STATE['by_digest'].get(digest)
+    if (current is None
+            or ORIGINAL_SOURCE_RANK.get(source, 0) > ORIGINAL_SOURCE_RANK.get(current.get('source'), -1)):
+        ORIGINAL_STATE['by_digest'][digest] = {'path': path, 'source': source}
+
+
+def original_for(item):
+    """Best local original for one formatted message, or None.
+
+    The media key the page actually matched on comes first. Resource MD5s come
+    next because the conversation cache often has only a thumbnail while the
+    account index still holds the original - that case never resolves through
+    the media key, but it does resolve through the message's own md5.
+    """
+    keys = []
+    media = item.get('media') or {}
+    if media.get('mediaKey'):
+        keys.append(media['mediaKey'])
+    local_id = item.get('local_id')
+    create_time = item.get('create_time')
+    if local_id is not None and create_time:
+        keys.append('pair:%s:%s' % (local_id, create_time))
+    for media_md5 in item.get('media_md5s') or []:
+        keys.append('md5:%s' % media_md5)
+    blob = item.get('image_b64')
+    if blob:
+        # Only hits while the embedded bytes were not downscaled; ranked last
+        # so it never shadows a key that was matched deliberately.
+        try:
+            keys.append('md5:%s' % hashlib.md5(base64.b64decode(blob)).hexdigest())
+        except Exception:
+            pass
+        if local_id is not None:
+            keys.append('unique:%s' % local_id)
+    for key in keys:
+        info = ORIGINAL_STATE['paths'].get(key)
+        if info:
+            return info
+    return None
+
+
+def load_original(info):
+    """Read one original: plain images verbatim, V2/XOR payloads decoded.
+
+    `decode_wechat_media` is the same decoder the index build uses; its size cap
+    is raised here because originals routinely exceed the embed cap (5-24MB).
+    """
+    path = (info or {}).get('path')
+    if not path:
+        return None
+    try:
+        if os.path.getsize(path) > ORIGINAL_MAX_BYTES:
+            return None
+        with open(path, 'rb') as handle:
+            header = handle.read(64)
+    except OSError:
+        return None
+    mime = detect_mime_from_bytes(header[:16])
+    if mime:
+        try:
+            with open(path, 'rb') as handle:
+                data = handle.read()
+        except OSError:
+            return None
+        return (data, mime) if data else None
+    return decode_wechat_media(header, path, ORIGINAL_STATE.get('v2_key'),
+                               limit=ORIGINAL_MAX_BYTES)
+
+
+def save_originals(items, out_dir, file_prefix):
+    """Write each message's original under `<out>/<prefix>_assets/originals/`.
+
+    Names are content-addressed, so a forwarded picture shared by several
+    messages - or the same export run twice - lands on one file. A missing,
+    unreadable or thumbnail-only source is recorded on the item rather than
+    silently dropped; the media report carries that word out.
+    """
+    assets = os.path.join(out_dir, '%s_assets' % file_prefix, 'originals')
+    ORIGINAL_STATE['dir'] = assets
+    seen = {}
+    for item in items:
+        if not item.get('image_b64'):
+            continue
+        info = original_for(item)
+        if info is None:
+            item['original_status'] = 'not-in-local-cache'
+            continue
+        if info.get('source') == 'thumb':
+            # 120-210px is what the bubble already shows; saving it under the
+            # name "original" would be a lie.
+            item['original_status'] = 'thumbnail-only'
+            continue
+        rel = seen.get(info['path'])
+        if rel:
+            # Same picture, another message (forwarded, or the same file cached
+            # under two timestamps). Counts as reused, not as a second save.
+            item['original_rel'] = rel
+            item['original_status'] = 'reused'
+            ORIGINAL_STATE['reused'] += 1
+            continue
+        loaded = load_original(info)
+        if not loaded:
+            item['original_status'] = 'unreadable'
+            ORIGINAL_STATE['failed'] += 1
+            continue
+        data, mime = loaded
+        extension = _IMAGE_EXT_BY_MIME.get(mime, '.jpg')
+        name = 'img_%s%s' % (hashlib.md5(data).hexdigest()[:12], extension)
+        target = os.path.join(assets, name)
+        rel = os.path.relpath(target, out_dir).replace('\\', '/')
+        existed = os.path.isfile(target)
+        partial = target + '.part'
+        if not existed:
+            try:
+                os.makedirs(assets, exist_ok=True)
+                with open(partial, 'wb') as handle:
+                    handle.write(data)
+                # Rename only after a complete write: an interrupted run must
+                # not leave a half image that a later run then treats as done.
+                os.replace(partial, target)
+                ORIGINAL_STATE['saved'] += 1
+            except OSError:
+                # Keeping the bubble working matters more than the original:
+                # no link is attached, and the report says why. Remove the
+                # partial write so no half image outlives the run.
+                try:
+                    os.remove(partial)
+                except OSError:
+                    pass
+                item['original_status'] = 'write-failed'
+                ORIGINAL_STATE['failed'] += 1
+                continue
+        else:
+            ORIGINAL_STATE['reused'] += 1
+        seen[info['path']] = rel
+        item['original_rel'] = rel
+        item['original_status'] = 'saved' if not existed else 'reused'
+    return assets
+
+
+def original_summary():
+    """Counts for the CLI JSON summary (no paths: callers may log it)."""
+    return {
+        'saved': ORIGINAL_STATE['saved'],
+        'reused': ORIGINAL_STATE['reused'],
+        'failed': ORIGINAL_STATE['failed'],
+    }
+
+
 # Remote media is discovered one message at a time, but a conversation needs
 # it from hundreds of messages at once - and a single message rarely needs
 # more than one URL, so nothing is ever fetched in parallel. main() therefore
@@ -358,6 +554,15 @@ def scan_nt_cache(nt_cache_dir, talker, account_dir='', own_wxid=''):
                                 if cache_time:
                                     image_map[f'pair:{local_id}:{cache_time}'] = image_map[local_id]
                                     image_map[f'time:{cache_time}'] = image_map[local_id]
+                                if SAVE_ORIGINALS:
+                                    # `fpath` is the file the preview came from;
+                                    # `load_original()` re-reads it at full size
+                                    # later (no shrink happened on disk).
+                                    remember_original_digest(image_map[local_id], fpath, 'cache-image')
+                                    remember_original(local_id, fpath, 'cache-image')
+                                    if cache_time:
+                                        remember_original(f'pair:{local_id}:{cache_time}', fpath, 'cache-image')
+                                        remember_original(f'time:{cache_time}', fpath, 'cache-image')
                         except:
                             pass
 
@@ -385,6 +590,16 @@ def scan_nt_cache(nt_cache_dir, talker, account_dir='', own_wxid=''):
                                     if cache_time:
                                         image_map[f'pair:{local_id}:{cache_time}'] = image_map[local_id]
                                         image_map[f'time:{cache_time}'] = image_map[local_id]
+                                    if SAVE_ORIGINALS:
+                                        # Ranked below ImageTemp on purpose: a
+                                        # 120-210px thumb is the last resort, and
+                                        # `save_originals()` refuses to write one
+                                        # under the name "original".
+                                        remember_original_digest(image_map[local_id], fpath, 'thumb')
+                                        remember_original(local_id, fpath, 'thumb')
+                                        if cache_time:
+                                            remember_original(f'pair:{local_id}:{cache_time}', fpath, 'thumb')
+                                            remember_original(f'time:{cache_time}', fpath, 'thumb')
                             except:
                                 pass
 
@@ -425,11 +640,23 @@ def scan_nt_cache(nt_cache_dir, talker, account_dir='', own_wxid=''):
                             image_map[f'time:{cache_time}'] = image
                         if file_md5:
                             image_map[f'md5:{file_md5}'] = image
+                        if SAVE_ORIGINALS:
+                            remember_original_digest(image, fpath, 'cache-image')
+                            remember_original(local_id, fpath, 'cache-image')
+                            if local_id is not None and cache_time:
+                                remember_original(f'pair:{local_id}:{cache_time}', fpath, 'cache-image')
+                            if cache_time:
+                                remember_original(f'time:{cache_time}', fpath, 'cache-image')
+                            if file_md5:
+                                remember_original(f'md5:{file_md5}', fpath, 'cache-image')
                 except OSError:
                     continue
 
     # The account media index is where full-resolution originals live; without
-    # it an export uses only this conversation's own cache thumbnails.
+    # it an export uses only this conversation's own cache thumbnails. main()
+    # also merges the whole index unconditionally (that is how a conversation
+    # picks up images its own cache never had); this branch is the opt-in that
+    # upgrades the embedded preview to the original.
     if FULL_IMAGES and account_dir and os.path.isdir(account_dir):
         for key, image in scan_account_media(account_dir, own_wxid, talker).items():
             if key.startswith('md5:'):
@@ -456,7 +683,15 @@ def scan_nt_cache(nt_cache_dir, talker, account_dir='', own_wxid=''):
         local_candidates.setdefault(local_id, {})[digest] = image
     for local_id, candidates in local_candidates.items():
         if len(candidates) == 1:
-            image_map[f'unique:{local_id}'] = next(iter(candidates.values()))
+            digest, image = next(iter(candidates.items()))
+            image_map[f'unique:{local_id}'] = image
+            if SAVE_ORIGINALS:
+                # Which file produced these bytes is only known through the
+                # digest, because the `pair:` key that carried it is gone by
+                # this point.
+                info = ORIGINAL_STATE['by_digest'].get(digest)
+                if info:
+                    remember_original(f'unique:{local_id}', info['path'], info['source'])
 
     return image_map
 
@@ -470,6 +705,10 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
     """
     image_map = {}
     v2_key = resolve_v2_media_key(account_dir, own_wxid)
+    if SAVE_ORIGINALS and v2_key:
+        # `save_originals()` runs after this and reads files lazily; without the
+        # key it would report every V2 payload as unreadable.
+        ORIGINAL_STATE['v2_key'] = v2_key
     if talker:
         talker_md5 = hashlib.md5(talker.encode()).hexdigest()
         roots = [os.path.join(account_dir, 'msg', 'attach', talker_md5)]
@@ -488,6 +727,10 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
             os.path.join(account_dir, 'temp'),
         ]
     seen = set()
+    # The embed cap exists so a conversation export does not base64-encode
+    # 20MB photos into the page. An original saved next to the page has no such
+    # ceiling, so the walk is allowed to reach those files when it is asked for.
+    limit = ORIGINAL_MAX_BYTES if SAVE_ORIGINALS else MAX_EMBED_SIZE
     for root in roots:
         if not os.path.isdir(root):
             continue
@@ -496,7 +739,7 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
                 path = os.path.join(current_root, fname)
                 try:
                     stat = os.stat(path)
-                    if stat.st_size <= 16 or stat.st_size > MAX_EMBED_SIZE:
+                    if stat.st_size <= 16 or stat.st_size > limit:
                         continue
                     real_path = os.path.realpath(path)
                     if real_path in seen:
@@ -505,6 +748,16 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
                     with open(path, 'rb') as fh:
                         header = fh.read(64)
                     mime = detect_mime_from_bytes(header[:16])
+                    if stat.st_size > MAX_EMBED_SIZE:
+                        # Not embeddable, but it can still be the click-through
+                        # original. Only record it when the header really is an
+                        # image (plain or WeChat-encrypted): a filename match
+                        # alone would hand a video to a photo message.
+                        if SAVE_ORIGINALS and (mime or header.startswith(V2_MAGIC)
+                                               or decode_wechat_media(header)):
+                            for media_md5 in extract_media_md5s(fname):
+                                remember_original(f'md5:{media_md5}', path, 'account')
+                        continue
                     if not mime:
                         decoded = decode_wechat_media(header, path, v2_key)
                         if decoded:
@@ -519,6 +772,13 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
                         image_map.setdefault(f'md5:{media_md5}', image)
                     content_md5 = hashlib.md5(data).hexdigest()
                     image_map.setdefault(f'md5:{content_md5}', image)
+                    if SAVE_ORIGINALS:
+                        # The message's own `<md5>` is the content digest for a
+                        # re-encoded copy too, which is how a cache thumbnail
+                        # still finds the account original.
+                        for media_md5 in extract_media_md5s(fname):
+                            remember_original(f'md5:{media_md5}', path, 'account')
+                        remember_original(f'md5:{content_md5}', path, 'account')
                 except (OSError, ValueError):
                     continue
     return image_map
@@ -665,13 +925,13 @@ def resolve_v2_media_key(account_dir, own_wxid='', kvcomm_dir=''):
     return None
 
 
-def decode_wechat_v2(filepath, xor_key, aes_key):
+def decode_wechat_v2(filepath, xor_key, aes_key, limit=MAX_EMBED_SIZE):
     try:
         from Crypto.Cipher import AES
         from Crypto.Util import Padding
         with open(filepath, 'rb') as stream:
-            data = stream.read(MAX_EMBED_SIZE + 1)
-        if len(data) > MAX_EMBED_SIZE or not data.startswith(V2_MAGIC):
+            data = stream.read(limit + 1)
+        if len(data) > limit or not data.startswith(V2_MAGIC):
             return None
         signature, aes_size, xor_size = struct.unpack('<6sLLx', data[:V2_CIPHERTEXT_START])
         if signature != V2_MAGIC:
@@ -694,8 +954,13 @@ def decode_wechat_v2(filepath, xor_key, aes_key):
         return None
 
 
-def decode_wechat_media(data, filepath=None, v2_key=None):
-    """Decode common XOR-obfuscated WeChat image cache payloads."""
+def decode_wechat_media(data, filepath=None, v2_key=None, limit=MAX_EMBED_SIZE):
+    """Decode common XOR-obfuscated WeChat image cache payloads.
+
+    `limit` bounds how much of a file is read. The index build uses the embed
+    cap; the originals writer passes a larger one, because the files it saves
+    are the 5-24MB ones the embed cap deliberately skips.
+    """
     if not data or len(data) < 16:
         return None
     if data.startswith(V2_MAGIC) and filepath and v2_key:
@@ -703,7 +968,7 @@ def decode_wechat_media(data, filepath=None, v2_key=None):
         # account media index (tens of thousands of files), so doing image work
         # at this layer makes the index build take minutes. Shrinking happens
         # in get_cached_image(), which only runs for images actually embedded.
-        return decode_wechat_v2(filepath, *v2_key)
+        return decode_wechat_v2(filepath, *v2_key, limit=limit)
     for key in range(1, 256):
         decoded = bytes(value ^ key for value in data[: min(len(data), 64)])
         mime = detect_mime_from_bytes(decoded)
@@ -711,8 +976,8 @@ def decode_wechat_media(data, filepath=None, v2_key=None):
             if filepath:
                 try:
                     with open(filepath, 'rb') as fh:
-                        raw = fh.read(MAX_EMBED_SIZE + 1)
-                    if len(raw) > MAX_EMBED_SIZE:
+                        raw = fh.read(limit + 1)
+                    if len(raw) > limit:
                         return None
                 except OSError:
                     return None
@@ -2075,6 +2340,11 @@ def format_message(row, talker, wx_dir, image_map=None, sender_map=None, display
         'local_type': local_type,
         'display': display,
         'image_b64': image_b64,
+        # Identity digests carried by the row itself, in the same order
+        # `resolve_media` tries them. `--save-originals` uses them to find the
+        # account-index original when the cache only had a thumbnail.
+        'media_md5s': list(dict.fromkeys(
+            list(resource_md5s) + extract_media_md5s(metadata_content))),
         # 文档本体的落点（`path` 为 None = 本地没有那份文件）。写 assets 时才拷。
         'file': ({'title': file_info['title'], 'ext': file_info['ext'],
                   'bytes': file_info['bytes'], 'md5': file_info['md5'],
@@ -2129,6 +2399,10 @@ def build_media_report(items, scope, talker, per_page):
                 'bytes': item['bytes'],
                 'sha256': item['sha256'],
                 'reason': item['reason'],
+                # `--save-originals` only: what happened to the click-through
+                # copy (`saved`/`reused`/`thumbnail-only`/...). A status word,
+                # never the file name - the report stays path-free.
+                'original': item.get('original'),
                 'locator': {
                     'part': (item['index'] // per_page + 1) if per_page else 1,
                     'createTime': None,
@@ -2255,6 +2529,14 @@ def build_html_page(talker, messages_part, part_num, total_parts, display_name, 
         bg = '#95ec69' if is_self else '#ffffff'
         sender_display = escape_html(sender)
 
+        original_rel = m.get('original_rel')
+        if original_rel and '<img ' in content_html:
+            # The bubble keeps the small preview; the click-through target is a
+            # file beside the page. A `data:` URL of a 5-24MB photo inside the
+            # HTML is what this flag exists to avoid.
+            content_html = content_html.replace(
+                '<img ', '<img data-full="%s" ' % escape_html(original_rel), 1)
+
         rows.append(f'''<div class="msg-row" style="text-align:{align};">
   <div class="msg-bubble" style="background:{bg};">
     <div class="msg-sender">{sender_display} · {time_str}</div>
@@ -2269,6 +2551,15 @@ def build_html_page(talker, messages_part, part_num, total_parts, display_name, 
     # Emit artwork only for the faces this page uses; shipping the whole
     # set in every part would add ~1MB to each.
     face_rules = wechat_emoji.face_css(''.join(rows)) if _WECHAT_EMOJI else ''
+
+    # Only claim there are originals when this page actually links one: the
+    # flag being on does not mean every conversation had them on disk.
+    originals_hint = ''
+    if SAVE_ORIGINALS and any(m.get('original_rel') for m in messages_part):
+        originals_hint = (
+            '\n  <p class="hint">🖼 点击图片可查看大图。原图保存在同目录的 '
+            '<code>%s_assets/originals/</code> 下，拷贝这份 HTML 时请连同该目录一起带走。</p>'
+            % escape_html(talker_safe))
 
     return f'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2331,7 +2622,35 @@ body {{
 }}
 .msg-sender {{ font-size: 11px; color: #999; margin-bottom: 3px; }}
 .msg-content {{ font-size: 15px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }}
-.msg-content img {{ max-width: 240px; max-height: 240px; border-radius: 4px; margin-top: 6px; display: block; }}
+.msg-content img {{ max-width: 240px; max-height: 240px; border-radius: 4px; margin-top: 6px; display: block; cursor: zoom-in; }}
+.lightbox {{
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0,0,0,0.86);
+  z-index: 1000;
+  cursor: zoom-out;
+}}
+.lightbox.open {{ display: flex; }}
+.lightbox img {{
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 4px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.55);
+  cursor: zoom-out;
+}}
+.lightbox .lb-hint {{
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  text-align: center;
+  color: rgba(255,255,255,0.6);
+  font-size: 12px;
+}}
 .wxface {{
   display: inline-block; width: 22px; height: 22px; vertical-align: -5px;
   background-size: 22px 22px; background-repeat: no-repeat; margin: 0 1px;
@@ -2416,10 +2735,16 @@ body {{
 </div>
 <div class="footer">
   <p>Exported by WeFlow CLI · {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
-  <p class="hint">💡 图片与表情来自本机微信数据（会话缓存 + 账号媒体索引）。本机从未下载过的图片、以及未缓存封面的视频，无法显示。</p>
+  <p class="hint">💡 图片与表情来自本机微信数据（会话缓存 + 账号媒体索引）。本机从未下载过的图片、以及未缓存封面的视频，无法显示。</p>{originals_hint}
   <p class="hint">⚠️ 语音下方文字为<b>本机机器转写</b>，未经校对。粤语/方言的识别准确率有限，可能出现通顺但并非原话的内容——<b>不可作为原话引用</b>；需要确证时请以录音为准。</p>
 </div>
+<div class="lightbox" id="lightbox"><img alt=""><div class="lb-hint">点击任意处或按 Esc 关闭</div></div>
 <script>
+function closeLightbox() {{
+  const box = document.getElementById('lightbox');
+  box.classList.remove('open');
+  box.querySelector('img').removeAttribute('src');
+}}
 function searchMessages(query) {{
   const rows = document.querySelectorAll('.msg-row');
   const info = document.getElementById('search-info');
@@ -2446,6 +2771,23 @@ function searchMessages(query) {{
     info.style.display = 'none';
   }}
 }}
+// Click any bubble image to zoom it. `data-full` (written by
+// `--save-originals`) points at the original file next to the page; without it
+// the embedded preview is blown up instead of the click doing nothing.
+document.addEventListener('click', function (event) {{
+  const target = event.target;
+  if (target.tagName === 'IMG' && target.closest('.msg-content')) {{
+    const box = document.getElementById('lightbox');
+    box.querySelector('img').src = target.dataset.full || target.src;
+    box.classList.add('open');
+    event.preventDefault();
+  }} else if (target.closest('#lightbox')) {{
+    closeLightbox();
+  }}
+}});
+document.addEventListener('keydown', function (event) {{
+  if (event.key === 'Escape') closeLightbox();
+}});
 </script>
 </body>
 </html>'''
@@ -2743,6 +3085,10 @@ def main():
                         help='只抽取媒体到 assets/ 并写清单，不写 markdown（给 json/txt/excel 的 --media 用）')
     parser.add_argument('--assets-dir', default='',
                         help='md 模式下图片落到哪个目录（默认 <out>/<前缀>_assets；同时写 manifest.json）')
+    parser.add_argument('--save-originals', action='store_true',
+                        default=os.environ.get('WEFLOW_SAVE_ORIGINALS', '') == '1',
+                        help='HTML 模式：把原图存到 <out>/<前缀>_assets/originals/，'
+                             '聊天里仍显示缩略图，点击后打开原图（该目录必须随 HTML 一起拷贝）')
     parser.add_argument('--parts', type=int, default=5, help='Number of parts to split into')
     parser.add_argument('--wx-dir', default='', help='Traditional WeChat data dir (FileStorage fallback)')
     parser.add_argument('--cache-dir', default=os.environ.get('WEFLOW_EXPORT_CACHE_DIR', ''), help='NT cache directory for image thumbnails')
@@ -2761,6 +3107,15 @@ def main():
     parser.add_argument('--contact-key', default=os.environ.get('WEFLOW_CONTACT_KEY', ''), help='Contact database key hex')
     parser.add_argument('--contact-salt', default=os.environ.get('WEFLOW_CONTACT_SALT', ''), help='Contact database salt hex')
     args = parser.parse_args()
+
+    # `--save-originals` only exists on the HTML path: the md exporter already
+    # copies hits into `assets/`, and `--assets-only` is the extraction step for
+    # json/txt/excel. Saying so beats silently ignoring the flag.
+    global SAVE_ORIGINALS
+    if args.save_originals and args.format != 'html':
+        print('--save-originals 只用于 HTML 导出；本格式已忽略（md 的图片本就会落盘）', file=sys.stderr)
+    SAVE_ORIGINALS = ((args.save_originals or SAVE_ORIGINALS)
+                      and args.format == 'html' and not args.assets_only)
 
     os.makedirs(args.out, exist_ok=True)
 
@@ -3002,6 +3357,21 @@ def main():
         conn.close()
         return
 
+    # Originals on disk (`--save-originals`). Runs before the report, so each
+    # media item can record what happened to its click-through copy, and before
+    # the pages, so `data-full` points at a file that exists.
+    originals = None
+    if SAVE_ORIGINALS and formatted:
+        assets_dir = save_originals(formatted, args.out, file_prefix)
+        for record in media_items:
+            status = formatted[record['index']].get('original_status')
+            if status:
+                record['original'] = status
+        originals = original_summary()
+        print(f"Originals: {originals['saved']} saved, {originals['reused']} reused, "
+              f"{originals['failed']} unreadable -> "
+              f"{os.path.basename(os.path.dirname(assets_dir))}/originals/")
+
     # Media coverage report. Written beside the HTML parts, under the same
     # prefix, so it is always found next to what it describes.
     media_report = None
@@ -3054,6 +3424,7 @@ def main():
         "parts": len(html_files),
         "files": html_files,
         "media": media_json_summary(media_items, media_report_path),
+        **({"originals": originals} if originals else {}),
     }))
 
 

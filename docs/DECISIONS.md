@@ -4170,3 +4170,34 @@ CHANGELOG 不记、机器读不到。用户升级微信后读不出数据时，�
   在没测之前不写"等价"这种没有证据的话。装一份下来验的那一步也**故意留 npm**：它模拟的是用户端。
 - 用户侧安装命令仍是 `npm install -g weflow-cli`（`pnpm add -g weflow-cli` 同样可用）——
   这条与仓库的开发工具链无关，README 不因此改写。
+
+## D-132: `--save-originals` 把原图写到磁盘，导出物从此是「HTML + 目录」
+
+**Status:** Active
+
+**Decision.** 新增**默认关闭**的 `--save-originals`（仅 HTML）：页面里仍是内嵌的缩放预览，另外把解密后的
+原图写到 `<输出>/<前缀>_assets/originals/`，气泡里的 `<img>` 带上 `data-full="<相对路径>"`，点击由内置
+lightbox 打开原图。源优先级 **账号媒体索引 `msg/attach/…` > 会话缓存 `ImageTemp` > `Thumb`**；只有缩略图时
+不落盘、在媒体报告里记 `thumbnail-only`。文件名用内容哈希（`img_<md5前12位><扩展名>`），先写 `.part` 再
+`os.replace`。默认导出**保持**单文件自包含（不加开关时行为不变）。
+
+**Reason.** 内嵌预览有硬上限（长边 720px，CSS 再压到 240×240）【实测：`shrink_embedded` + 页面 CSS 两处一致】，
+长截图/扫描件点开放大必然糊；而把 5–24MB 的原图 base64 塞进页面会让 HTML 大到打不开【实测：OPERATIONS.md
+记录的 5–24MB/张】——"要原图"和"单文件"这两个要求本身互斥，只能让用户选。
+做成开关而不是改默认，是因为 README/OPERATIONS 里"单文件可分享"是已经写下的承诺，改默认会让那句话变假，
+而且现有导出物的消费方（分享、归档）会突然多出一个必须一起拷贝的目录。
+
+**Consequences.**
+- **导出契约分叉要写清楚**：`--save-originals` 的产物是两个东西，拷贝 HTML 必须连 `_assets/originals/`
+  一起带走；文档、CLI 帮助、页面 footer 都明说。不加开关时产物仍是一个文件。
+- **明文原图落盘是隐私面变大**：originals 是解密后的图片，与 HTML 同级，按普通敏感数据处理（SECURITY.md）；
+  不需要时删目录即可，重导会重建。不写进媒体报告的文件名/路径（报告仍是 path-free，只加状态词 `original`）。
+- **只承认能证明的来源**：`Thumb` 那档（约 120–210px）【推断：按微信缩略图命名与既有观测】不写进 originals
+  ——把它命名成"原图"是撒谎；
+  `--full-images`（决定预览用哪档字节）与 `--save-originals`（决定原图要不要落盘）是两个独立开关，
+  可以只开后者。
+- **不支持组合直接报错，不静默降级**：`--from/--to` 走的是不含图片的简版渲染器，硬跑只会得到空目录；
+  md/json/txt/excel 各有自己的落盘路径（md 本来就写 assets），CLI 给出提示。Python 侧另有
+  `WEFLOW_SAVE_ORIGINALS=1`，供 TS 透传与测试直接调用。
+- **ID 不唯一的老问题不在这里重犯**：原图按键（`mediaKey` / `pair:` / `md5:` / `unique:`）匹配，和页面用
+  同一套 `resolve_media` 词汇；裸 `local_id` 仍然不参与匹配（D-014）。

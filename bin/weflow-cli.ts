@@ -2313,6 +2313,7 @@ program
   .option('--json', '输出机器可读的导出结果，不改变导出文件格式')
   .option('--non-interactive', '禁止交互选择；匹配不唯一时返回错误')
   .option('--full-images', '使用原图而非微信缓存缩略图（更清晰，但导出慢数倍）')
+  .option('--save-originals', 'html 导出时把原图存到 <输出>/<前缀>_assets/originals/，聊天里仍是缩略图，点击后打开原图（该目录要随 HTML 一起拷贝）')
   .option('--media', 'json/txt/excel 导出时一并抽出图片与文档（落盘到 <输出>/<会话>_assets，并在导出物里给出相对路径）')
   .action(async (talkerInput: string, format: string, opts) => {
     const validFormats = ['json', 'txt', 'html', 'md', 'excel']
@@ -2385,6 +2386,12 @@ program
         console.error(chalk.gray('        要连文档一起导出请用 md，或 json|txt|excel --media。'))
       }
     }
+    // `--save-originals` 只有 HTML 那条路会消费。md 本来就把图片写到 assets/，
+    // json/txt/excel 要图片得用 --media —— 静默忽略会让人以为原图已经存下来了。
+    if (opts.saveOriginals && format !== 'html' && !opts.json) {
+      console.error(chalk.gray(`  提示：--save-originals 只用于 html 导出，对 ${format} 不生效；`))
+      console.error(chalk.gray('        md 的图片本来就会落盘，json|txt|excel 请用 --media。'))
+    }
     switch (format) {
       case 'json':
         result = await exportService.exportJson(talker, opts.output, limit, from, to, opts.contract)
@@ -2393,7 +2400,10 @@ program
         result = await exportService.exportTxt(talker, opts.output, limit, from, to)
         break
       case 'html':
-        result = await exportService.exportHtml(talker, opts.output, limit, opts.date || '', from, to, !!opts.json, { fullImages: opts.fullImages === true })
+        result = await exportService.exportHtml(talker, opts.output, limit, opts.date || '', from, to, !!opts.json, {
+          fullImages: opts.fullImages === true,
+          saveOriginals: opts.saveOriginals === true,
+        })
         break
       case 'md':
         // markdown + 图片落盘（`<输出>/<talker>_assets/`）；json/txt/excel 之后会自动带上那些图。
@@ -2414,6 +2424,8 @@ program
         // 媒体摘要：html/md 那条由导出自己产出（Python 的 media_json_summary），
         // json/txt/excel 的 `--media` 则由上面那次抽取产出 —— 两条都是同一份词汇。
         media: result.media ?? extracted?.media ?? null,
+        // 只有 `--save-originals` 的 HTML 导出会带这一项（`saved`/`reused`/`failed`）。
+        originals: result.originals ?? null,
       }, null, 2))
       else console.log(chalk.green(`✓ 导出成功: ${result.path}`))
     } else {
