@@ -18,6 +18,38 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.21.2
+
+- **`emoticonSeed` 这个配置键以前是死的，现在通了。** 它在 `configurableKeys` 里、
+  `config set emoticonSeed <值>` 能写进去，但 **`wechat_emoticon.py` 从来不读它** ——
+  设了等于没设，程序照样每次扫微信进程内存（和已删的 `cacheDbEnabled` 同一类问题）。
+  现在 `resolve_seed()` 把它当 seed 候选的**第一位**，但**仍然要解密一个真实样本、
+  看能不能解出图片 magic 才算数**：配置里的值可能是过期的或别人的，直接采信会让整条
+  路静默解不开，而用户以为自己配好了。
+  - 命中时输出 `来源: 配置 emoticonSeed（本次没有扫内存）`；
+  - 配置值无效时**不装没事**，明确报 `配置里的 emoticonSeed 解不开样本`（并给出清掉它的命令）；
+  - 扫内存才找到时，顺手打印 `config set emoticonSeed <seed>` 的提示，省掉以后每次扫内存。
+  - `emoticonSeed` 不在 `ENCRYPTED_KEYS` 里，磁盘上是明文；`--find-seed` 会打印 seed
+    （那是它的用途），**别的命令不该打印**，`seed` 属于账号派生密钥。
+- **修一个文件句柄泄漏**：`wechat_emoticon.find_seed()` 原来写 `open(sample,'rb').read(64)`，
+  句柄不关。它对**每个候选 seed** 调一次，扫描一轮能泄漏几十上百个句柄。改成 `with`。
+- `wechat_emoticon.load_sticker()` 现在先 `sniff(raw)`：文件本来就是一整张图（或本来就是
+  `wxgf` 容器）就直接用，不解密；认不出才走解密。**这是防御性的一步，本机实测不改变任何
+  结果**——`sticker_cache_dirs()` 那 5 个目录里 202 个文件全是解不开的 `<other>`，
+  没有一个是明文。留着它的理由是：本函数的 `decode_cache_dir` 那一支已经把"磁盘上直接
+  sniff 出图"当成合法状态，源文件这一支跟它保持一致。
+- **纠正上一版文档里的一句话。** 1.21.1 的 `docs/NT_DATABASES.md` 写过
+  「表情缓存里有一部分本来就是明文图（抽 2000 个：JPEG 502/PNG 141/…）」，**那是错的**：
+  当时我递归走了整个 `cache/`，把 `cache/<月>/` 的消息媒体和 `WeAppIcon` 的小程序图标
+  一起数进去了。真实分布：表情缓存目录内 **202 个、0 个明文**；明文图 1,974 张
+  （JPEG 1220 / PNG 727 / HEIC 15 / GIF 11 / WebP 1）全在表情缓存**之外**。
+  这条纠正同时写进了代码注释与测试的 docstring，防止下次有人把那段注释读成"这里曾经
+  读不到明文表情"。**递归一个父目录时先想清楚里面还有什么，是这次的实际教训。**
+
+测试：新增 `test/wechat_emoticon_test.py` 17 条（明文/加密两条路的对照、错 key 必须失败、
+`derive_key` 的形状、`account_wxid` 的后缀剥离、`seed_from_config` 读不到配置不崩、
+`resolve_seed` 不轻信配置值）。Python 全量 1292 条通过。
+
 ## 1.21.1
 
 - **`extras biz-subscribe` 解出小程序资料卡**（`wacontact.contact_pack_data` 是 protobuf）。

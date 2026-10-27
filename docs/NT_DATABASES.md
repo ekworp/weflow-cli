@@ -66,7 +66,7 @@
 | solitaire 表名里的 md5 = `md5(contact.username)` | 2 个表 md5 **2/2** 命中；contact 侧有 4228 个 md5 桶（碰撞不构成解释） |
 | `SearchRecent` 与 `websearch_record` **不是**重复 | 35 条 query ∩ 83 条 keyword = **0**；合成一张会丢一半 |
 | `kStoreEmoticonFilesTable` 是**单文件归档** | 每包 12–24 个文件，`emoticon_offset_` 从 0 起连续到 2–6 MB |
-| 表情缓存里**有一部分本来就是明文图** | 抽 2000 个缓存文件看前 8 字节：JPEG 502 / PNG 141 / GIF 9 / wxgf 9 / 其他 1339（文件层结论，不是库层） |
+| 表情缓存目录里**没有**明文图 | `sticker_cache_dirs()` 那 5 个目录 202 个文件**全是**解不开的 `<other>`。~~"有一部分本来就是明文图"~~ 那句是错的：1,974 张明文图（JPEG 1220 / PNG 727 / HEIC 15 / GIF 11 / WebP 1）都在表情缓存**之外**——`cache/<月>/` 的消息媒体、`WeAppIcon` 的小程序图标。**递归走 `cache/` 就会把它们混进来**，我一度就是这么数错的 |
 | **`gh_` 前缀不专属于公众号** | `wacontact` 的 470 个**小程序** id 全是 `gh_`（470/470）。判据不是前缀而是内容：解出的简介写的是「下单免排队 外卖送上门」「快递查询、发货打单」「通过蓝牙技术连接蓝牙水控器」「官方点餐、买单小程序」，配合 `wx_app_opt` 列与表名 `wacontact` |
 | 上面那条**不影响**现有 `LIKE 'gh_%'` 过滤 | 那 470 个小程序与 `contact.db`（4228 个号）、`session.db.Name2Id`、消息库 `Name2Id` 的交集**都是 0** —— 它们只住在 `general.db` 的 `wacontact` 里，所以 9 处 `gh_%` 公众号过滤没有被污染 |
 | `pay_load_` 里哪些字段**真的在变** | 84 行实测：`scene` 6 档（88×69/134×8/236×4/33/139/218）、`parentType` 6 档（7×66/0×8/53×7/135/18/缺 1）→ 保留；`hotword` 与 `keyword` **84/84 相同**、`optype` **84/84 恒为 1**、`businesstype` 83/84 为 0、`timestamp` 与 `create_time` 只差 0～−2 秒 → **无新信息，丢掉**；`searchId` 78/84 是空串 |
@@ -106,7 +106,33 @@
   说明这个 0 不是"测试根本解不了任何东西"造成的假否定。
 
 所以 `extras emoticons` **只给元数据**（md5 / caption / CDN 地址 / 所属表情包 /
-包内文件偏移）。自定义表情的**解码**那条路仍未通，靠内存扫 seed 的老办法还在。
+包内文件偏移）。自定义表情的**解码**那条路仍未通。
+
+### 真正的加密链路（2026-10-27 读代码确认，未改动）
+
+`scripts/wechat_emoticon.py` 走的是**每账号**的 key，不是表里那个每表情的 `aes_key`：
+
+```
+key = md5(seed + wxid + "EMOTICON")[:16]      # derive_key()
+AES-128-CBC，key 同时当 IV                      # decrypt()
+```
+
+`seed` 是**5–20 位的十进制数字**，`find_seed_candidates()` 从微信进程内存里刮。
+`find_seed()` 本身是可靠的：它拿候选去解一个样本文件、看能不能解出图片 magic ——
+**假阳性几乎不可能**，所以这条路唯一的成本是"每次都要扫内存"。
+
+两个改进里，**第 1 条已经在 1.21.2 接上了**：
+
+1. **`emoticonSeed` 以前是死键**：它在 `configurableKeys` 里、`config set` 能写进去，
+   但**没有任何读取方**——设了等于没设，程序照样每次扫内存（和已删的 `cacheDbEnabled`
+   同一类问题）。现在 `resolve_seed()` 先把它当候选、**仍然要解密样本来证明**，
+   证明不了就退回扫内存，并明确报 `config-invalid`（不静默）。命中时输出
+   `来源: 配置 emoticonSeed（本次没有扫内存）`。
+2. 磁盘上仍未发现能替代内存扫描的 seed 来源（`emoticon.db` 的
+   `kExpressRecentUseEemoticonTable` 只有 1 行 KV，未验证是否含 seed）——**没做**。
+
+> 关于打印：`--find-seed` **会**把 seed 打到 stdout，因为它存在的意义就是让你拿到这个值
+> 去 `config set`；别的命令不该打印它。`seed` 是账号派生密钥，别贴进 issue/日志。
 
 ## 六、`WeAppBizAttrSyncBufferTableV02.version` 存了非法 UTF-8
 

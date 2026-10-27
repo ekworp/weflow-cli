@@ -163,11 +163,22 @@ def find_seed(wxid, sample_file, candidates=None):
 
     Proven per candidate by decrypting the sample and looking for a known
     image magic - so a false positive is essentially impossible.
+
+    `candidates` 给了就只试这些；**空列表等同于没给**（会退回扫内存）——
+    `resolve_seed` 依赖这个语义：它传进来的永远是至少一个元素。
     """
-    raw = open(sample_file, 'rb').read(64) if sample_file else b''
+    raw = b''
+    if sample_file:
+        # 以前写成 `open(...).read(64)`：句柄不关。`find_seed` 每个候选调一次，
+        # 于是每轮泄漏一个。改成 with。
+        try:
+            with open(sample_file, 'rb') as fh:
+                raw = fh.read(64)
+        except OSError:
+            return None
     if not raw:
         return None
-    for seed in (candidates or find_seed_candidates()):
+    for seed in (candidates if candidates else find_seed_candidates()):
         if sniff(decrypt(raw, derive_key(seed, wxid)))[0]:
             return seed
     return None
@@ -314,8 +325,18 @@ def load_sticker(cache_dirs, md5_hex, key, decode_cache_dir=''):
 
     Decoding wxgf needs ffmpeg and is slow, so results are cached under
     `decode_cache_dir` keyed by md5.
+
+    **`sniff(raw)` 先跑，认得出就不解密。** 这是**防御性**的一步，本机实测它不改变
+    任何结果——2026-10-27 数过：`sticker_cache_dirs()` 那 5 个目录里 202 个文件
+    **没有一个是明文**（全是解不开的 `<other>`）；1,974 张明文图（JPEG 1220 / PNG 727 /
+    HEIC 15 / GIF 11 / WebP 1）都在表情缓存**之外**（`cache/<月>/` 的消息媒体、
+    `WeAppIcon` 的小程序图标）。
+    留着它的理由不是"修好了什么"，而是：本函数的 `decode_cache_dir` 那一支已经
+    把"磁盘上直接 sniff 出图"当成合法状态，源文件这一支跟它保持一致；而且别的
+    版本/账号把明文放在这儿时不必先有 seed。
+    **别把这段注释读成"这里曾经读不到明文表情"——那句话是错的，我一度写错过。**
     """
-    if not md5_hex or not key:
+    if not md5_hex:
         return b'', ''
     if decode_cache_dir:
         cached = os.path.join(decode_cache_dir, md5_hex)
@@ -343,14 +364,26 @@ def load_sticker(cache_dirs, md5_hex, key, decode_cache_dir=''):
             raw = fh.read()
     except OSError:
         return b'', ''
-    data = decrypt(raw, key)
-    mime, _ = sniff(data)
+
+    # ① 原文就是图（或本来就是 wxgf 容器）→ 不解密
+    mime, _ = sniff(raw)
     if mime == 'image/hevc':
-        # Re-sniff rather than assuming PNG: an animated stream decodes to a
-        # GIF, and labelling that `image/png` sent it down the JPEG path
-        # downstream, flattening the animation this was meant to preserve.
-        data = decode_wxgf(data)
+        data = decode_wxgf(raw)
         mime = sniff(data)[0] or ''
+    elif mime:
+        data = raw
+    else:
+        # ② 认不出才解密（需要 key）
+        if not key:
+            return b'', ''
+        data = decrypt(raw, key)
+        mime, _ = sniff(data)
+        if mime == 'image/hevc':
+            # Re-sniff rather than assuming PNG: an animated stream decodes to a
+            # GIF, and labelling that `image/png` sent it down the JPEG path
+            # downstream, flattening the animation this was meant to preserve.
+            data = decode_wxgf(data)
+            mime = sniff(data)[0] or ''
     if not mime:
         return b'', ''
 
@@ -401,6 +434,44 @@ def any_sticker_file(dirs):
     return ''
 
 
+def seed_from_config():
+    """`config set emoticonSeed <值>` 存下来的 seed；没配返回 `''`。
+
+    这个配置键**一直在 `configurableKeys` 里、可以设置**，但以前**没有任何读取方**——
+    用户设了它，程序照样每次扫内存，等于静默无效（和已删掉的 `cacheDbEnabled`
+    是同一类问题）。这里把它接回候选链的第一位。
+
+    **读出来不等于信它**：调用方必须仍用 `find_seed` 去证明（解密样本看 magic），
+    因为配置里可能是个过期的/别人的值。`emoticonSeed` 不在 `ENCRYPTED_KEYS` 里，
+    所以磁盘上是明文。
+    """
+    try:
+        from _utils import load_config
+        cfg = load_config() or {}
+        return str(cfg.get('emoticonSeed') or '').strip()
+    except Exception:
+        # 读不到配置不该让整条路崩；返回空串 = 退回扫内存
+        return ''
+
+
+def resolve_seed(wxid, sample_file, configured=None):
+    """先试配置里的 seed（并证明），不行再扫内存。返回 `(seed, source)`。
+
+    `source` 是 `'config'` / `'memory'` / `None`。把来源说出来是为了让调用方能提示
+    "这次没扫内存"或"配置里那个值不管用"——两者对用户的下一步完全不同。
+    """
+    candidate = configured if configured is not None else seed_from_config()
+    if candidate:
+        found = find_seed(wxid, sample_file, candidates=[candidate])
+        if found:
+            return found, 'config'
+        # 配置里的值没通过验证：继续扫内存，但**不要**把这件事咽掉
+        fallback = find_seed(wxid, sample_file)
+        return (fallback, 'memory') if fallback else (None, 'config-invalid')
+    found = find_seed(wxid, sample_file)
+    return (found, 'memory') if found else (None, None)
+
+
 def _main():
     import argparse
     ap = argparse.ArgumentParser(description='WeChat sticker cache helper')
@@ -421,18 +492,30 @@ def _main():
         print('未找到可用的表情缓存文件，请先在微信里查看几个表情包')
         return
 
-    seed = find_seed(wxid, sample)
+    seed, source = resolve_seed(wxid, sample)
     if not seed:
-        print('未找到 seed。请确认微信正在运行，且曾在微信中查看过表情包。')
+        if source == 'config-invalid':
+            print('配置里的 emoticonSeed 解不开样本，且内存里也没扫到。'
+                  '请确认微信正在运行、并曾在微信里查看过表情包；'
+                  '或清掉它：weflow-cli config set emoticonSeed ""')
+        else:
+            print('未找到 seed。请确认微信正在运行，且曾在微信中查看过表情包。')
         return
 
     import json as _json
     if args.json:
-        print(_json.dumps({'success': True, 'seed': seed, 'wxid': wxid, 'sample': sample}))
+        print(_json.dumps({'success': True, 'seed': seed, 'wxid': wxid,
+                           'sample': sample, 'seedSource': source}))
     else:
         print(f'✓ seed = {seed}')
         print(f'  账号: {wxid}')
         print(f'  样本: {sample}')
+        # 说出 seed 是哪来的：配置命中就别再关心内存扫描，扫出来的就顺手告诉怎么省掉它
+        if source == 'config':
+            print('  来源: 配置 emoticonSeed（本次**没有**扫内存）')
+        else:
+            print('  来源: 内存扫描')
+            print(f'  想省掉以后每次的内存扫描：weflow-cli config set emoticonSeed {seed}')
 
 
 if __name__ == '__main__':
