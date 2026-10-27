@@ -1,3 +1,21 @@
+# 更新日志
+
+## [1.20.0] - 2026-10-27
+
+### 新增
+
+- **数据库缓存系统**（默认关闭，需显式开启）
+  - 新增 cache 命令：nable/disable/status/clear/list/prune
+  - 用 hash(path, mtime, size, key) 索引缓存，源文件变化自动失效
+  - 导出策略：sqlcipher_export → VACUUM INTO → backup API 三级回退
+  - 首次查询需导出明文（约 20 s），后续查询无解密开销（<0.1 s）
+  - ⚠️ 开启后会在本地存储明文聊天记录，详见 docs/CACHE.md
+
+### 修复
+
+- 修复测试环境变量污染（database_cache_test.py）
+
+---
 # Changelog
 
 The npm package is published separately from GitHub. It may lag behind the `master` branch until a release is published.
