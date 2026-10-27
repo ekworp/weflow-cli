@@ -40,6 +40,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -73,13 +74,14 @@ OCR_WINDOW = 10
 PDF_PROMPT = """你是知识库的**编译者，不是作者**。下面是一份 PDF 文档的正文。
 
 请只依据它，返回一个 JSON 对象（不要解释、不要代码块围栏）：
-{{"topic": "从这些里选一个：{topics}",
+{{"topic": "从这些里选一个，都不合适就写 其他：{topics}、其他",
   "summary": "这份文档在说什么（2-3 句，只写文档里有的）",
   "concepts": [{{"name": "概念名（2-12 字，不要带书名号引号方括号）", "desc": "这份文档关于它说了什么（一句话，具体）"}}]}}
 
 要求：
 1. **只写文档里有的**。没讲到的不许补；拿不准的宁可不写。
-2. `topic` 只能取上面列出的那几个词之一，**不要自创**；实在判断不了就用"学术"。
+2. `topic` 只能取上面列出的那几个词之一，**不要自创**；都不合适（发票、行程单、证明这类）
+   就写 `其他`——**不要硬塞进一个不相干的主题**（实测一张滴滴电子发票被塞成"投资"）。
 3. `concepts` 2-6 条、按重要度排序；**概念要具体**（"MCP 协议"可以，"技术"不行），
    也不是分类词（"AI"、"新闻"这种主题标签不算概念）。
 4. 每条 desc 是"这份文档关于它的说法"，不是百科定义。
@@ -235,8 +237,17 @@ def _render_pages(pdf: Path, idx: list, dpi: int) -> list:
     return out
 
 
-def _cloud_ocr_page(b64: str, key: str, model: str, timeout: int = 120) -> str:
-    """一页 → 文字。失败抛异常，由上层计数（**不静默当空页**）。"""
+def _cloud_ocr_page(b64: str, key: str, model: str, timeout: int = 120,
+                    attempts: int = 3) -> str:
+    """一页 → 文字。失败抛异常，由上层计数（**不静默当空页**）。
+
+    **带重试**：实测跑 29 页那份会议报告时，有 2 页失败（`cloud-ocr-partial:2页失败`）——
+    3 并发撞上账号级限流（429）或偶发超时。这类失败**重试一次就好**，而重试的代价
+    （几秒）远小于"这一页永远缺字"（读的人不会知道少了什么）。
+    只对**可重试**的错误重试：HTTP 429/5xx、超时、连接错误；4xx（除 429）直接抛，
+    因为那是参数或 key 的问题，重试只会把同一个错误重复三遍。
+    """
+    import urllib.error
     import urllib.request
     payload = {
         'model': model, 'max_tokens': 4000,
@@ -247,12 +258,25 @@ def _cloud_ocr_page(b64: str, key: str, model: str, timeout: int = 120) -> str:
                      '不要解释、不要加标题或代码块。'}
         ]}],
     }
-    req = urllib.request.Request(
-        CLOUD_ENDPOINT, data=json.dumps(payload).encode('utf-8'),
-        headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode('utf-8'))
-    return (data['choices'][0]['message']['content'] or '').strip()
+    body = json.dumps(payload).encode('utf-8')
+    last = None
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(
+            CLOUD_ENDPOINT, data=body,
+            headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            return (data['choices'][0]['message']['content'] or '').strip()
+        except urllib.error.HTTPError as error:
+            last = error
+            if error.code != 429 and error.code < 500:
+                raise
+        except Exception as error:      # 超时、连接重置
+            last = error
+        if attempt < attempts:
+            time.sleep(1.5 * attempt)   # 1.5s / 3s，给限流一点退避
+    raise last
 
 
 def run_cloud_ocr(pdf: Path, pages: str, dpi: int, model: str, reuse: bool = True):
