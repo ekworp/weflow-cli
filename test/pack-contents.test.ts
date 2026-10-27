@@ -11,8 +11,13 @@
  * 两边都不报错。根因是白名单只匹配 `scripts/` 下的 `.py`（一条 `**` 通配的 glob）——
  * `scripts/data/` 整个不在里面。
  *
- * 判据取自**真实产物**：`npm pack --dry-run --json`（干跑，不落 .tgz）。
- * 不去复刻 npm 的 glob 语义 —— 那种复刻一旦和 npm 不一致，测试就变成自说自话。
+ * 判据取自**真实产物**：`pnpm pack --dry-run --json`（干跑，不落 .tgz）。
+ * 不去复刻 pnpm 的 glob 语义 —— 那种复刻一旦和 pnpm 不一致，测试就变成自说自话。
+ *
+ * **2026-10-27 从 npm 换到 pnpm**：仓库的默认包管理器是 pnpm（见 D-131）。
+ * 判据跟着换，否则"验的是 npm 的 tarball、发的是 pnpm 的 tarball"。
+ * 两家的 `--json` 形状不同：npm 给数组（`[{ files: [...] }]`），pnpm 给对象（`{ files: [...] }`），
+ * 下面两种都收，并用"至少 50 个文件"挡住空解析这种假绿。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -23,11 +28,11 @@ import { spawnSync } from 'node:child_process'
 const ROOT = process.cwd()
 
 function run(command: string, args: string[]): string {
-  // Windows 上的 `npm` 是 `.cmd` 包装：Node 20 起不经解释器起不来。`shell: true` 能跑，
+  // Windows 上的 `npm` / `pnpm` 都是 `.cmd` 包装：Node 20 起不经解释器起不来。`shell: true` 能跑，
   // 但每条子进程都会带一条 DEP0190 警告（参数只拼接、不转义）。这里显式走 `cmd /c`：
   // 参数仍是数组，由 CreateProcess 负责转义，安全边界与 `shell: true` 相同，但没有那条噪声。
   // `git` 是 `.exe`，不需要绕。
-  const [file, argv] = process.platform === 'win32' && command === 'npm'
+  const [file, argv] = process.platform === 'win32' && (command === 'npm' || command === 'pnpm')
     ? ['cmd', ['/c', command, ...args]]
     : [command, args]
   const result = spawnSync(file, argv, { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
@@ -40,8 +45,13 @@ let cached: Set<string> | null = null
 /** 干跑出来的包内路径。只跑一次（约 2 秒），两条测试共用。 */
 function packedPaths(): Set<string> {
   if (!cached) {
-    const parsed = JSON.parse(run('npm', ['pack', '--dry-run', '--json'])) as Array<{ files: Array<{ path: string }> }>
-    cached = new Set(parsed[0].files.map(file => file.path))
+    const parsed = JSON.parse(run('pnpm', ['pack', '--dry-run', '--json'])) as
+      | Array<{ files: Array<{ path: string }> }>
+      | { files: Array<{ path: string }> }
+    const files = (Array.isArray(parsed) ? parsed[0].files : parsed.files)
+    cached = new Set(files.map(file => file.path))
+    // 反空扫：形状变了、或 pnpm 在 JSON 前多打了一行，都会得到空集合 —— 那时"没有缺的"是假绿。
+    assert.ok(cached.size > 50, `pnpm pack 只列出 ${cached.size} 个文件，判据本身坏了`)
   }
   return cached
 }
@@ -53,9 +63,9 @@ test('scripts/ 下每个跟踪文件都进包（.ts/.mjs 开发入口除外）',
   // 先挡住"扫到 0 个文件"这种**假绿**：路径写错、或 git 换了输出形状时，
   // 下面那条 deepEqual 会因为"没有缺的"而通过 —— 绿色，但什么都没看。
   assert.ok(tracked.length > 20, `只列出 ${tracked.length} 个 scripts/ 文件，扫描范围不对`)
-  // `.ts` 不进包是结构性的：它们由 `tsx` 跑（`npm run eval:assistant` 等），而 tsx 是
+  // `.ts` 不进包是结构性的：它们由 `tsx` 跑（`pnpm run eval:assistant` 等），而 tsx 是
   // devDependency —— 装好的包里根本没有让它们跑起来的前提，所以它们不需要进包。
-  // `.ts` 不进包是结构性的：它们由 `tsx` 跑（`npm run eval:assistant` 等），而 tsx 是 devDependency
+  // `.ts` 不进包是结构性的：它们由 `tsx` 跑（`pnpm run eval:assistant` 等），而 tsx 是 devDependency
   // ⇒ 装好的包里没有让它们跑起来的前提。
   // `.mjs` 是另一类：`scripts/graph3d_check.mjs` 是**验证工具**（要一个装好 GPU 浏览器、且已经
   // 生成过页面的环境才用得上），不是用户会用到的东西 —— 不进包是有意的，不是漏了。
@@ -77,8 +87,8 @@ test('dist/ 里不许有源码已经不存在的陈旧编译产物', () => {
     })
   const files = walk(distDir, '')
   const js = files.filter(file => file.endsWith('.js'))
-  // 反空扫：没构建时"没有陈旧产物"是句空话（这份清单本来就是 `npm run build` 之后才有意义）
-  assert.ok(js.length > 30, `dist/ 里只有 ${js.length} 个 .js —— 先跑 \`npm run build\``)
+  // 反空扫：没构建时"没有陈旧产物"是句空话（这份清单本来就是 `pnpm run build` 之后才有意义）
+  assert.ok(js.length > 30, `dist/ 里只有 ${js.length} 个 .js —— 先跑 \`pnpm run build\``)
   const stale = files.filter(file => {
     const base = file.replace(/\.d\.ts\.map$|\.js\.map$|\.d\.ts$|\.js$/, '')
     if (base === file) return false

@@ -31,7 +31,7 @@ function getElectronPath() {
 const cliEntry = join(projectRoot, 'dist', 'bin', 'weflow-cli.js');
 
 if (!existsSync(cliEntry)) {
-  console.error('Error: CLI entry point not found. Run "npm run build" first.');
+  console.error('Error: CLI entry point not found. Run "pnpm run build" first.');
   process.exit(1);
 }
 

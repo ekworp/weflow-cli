@@ -51,7 +51,7 @@
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
     "dev": "npx tsx bin/weflow-cli.ts",
     "start": "node cli.cjs",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "pnpm run build",
     "eval:assistant": "node --import tsx scripts/assistant_eval.ts"
   },
   "dependencies": {

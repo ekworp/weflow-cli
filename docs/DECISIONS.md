@@ -4135,3 +4135,38 @@ CHANGELOG 不记、机器读不到。用户升级微信后读不出数据时，�
   人类输出与 report 的措辞共用 `describeCompatVerdict` / 渲染器里的一份，不各写一套。
 - 判定是**对"本机此刻"的陈述**，不是兼容性承诺：说"verified"只是"这个组合验证过"，
   "older"一般兼容但没有保证——措辞已按此收敛。
+
+## D-131: 默认包管理器是 pnpm，版本有意不钉；发布与 registry 查询仍走 npm
+
+**Status:** Active
+
+**Decision.** 本仓库的开发链路一律用 **pnpm**：安装、构建、测试、本地打包、CI
+（`pnpm install --frozen-lockfile` / `pnpm run build` / `pnpm test` / `pnpm pack`）。
+`pnpm-lock.yaml` 是唯一的锁文件，`package-lock.json` 于 2026-10-27 删除；
+`package.json` 的 `prepublishOnly` 也改成 `pnpm run build`。
+**pnpm 版本不钉**（不写 `packageManager` 字段，CI 用 `npm install -g pnpm` 装当前最新）。
+**发布与 registry 查询仍用 npm**（`npm publish` / `npm view`），理由见 Consequences。
+
+**Reason.** 两套锁文件同时在仓库里（`package-lock.json` 被跟踪、`pnpm-lock.yaml` 是本地未跟踪文件）
+时，"CI 用哪一份"只取决于 CI 怎么写，本地与 CI 可以各自"装成功"而依赖树不同；文档里
+`npm install` / `npm run ...` 也让贡献者默认回落到 npm，两个锁文件只会继续分叉。
+选择 pnpm 是因为它已经在实际使用（`pnpm-lock.yaml`、`pnpm-workspace.yaml` 的构建批准表先于本决策存在）。
+
+**Consequences.**
+- **锁文件校验换判据**：`pnpm-lock.yaml` 不记录包自己的 `version`，所以 npm 时代那条
+  "改 `package.json` 版本必须同时改锁文件"（`release-consistency` 的版本比对）没有对应物，
+  已换成 `pnpm install --frozen-lockfile` —— 它验的是真正的不变量（锁文件与 `package.json` 对得上），
+  对不上直接失败。2026-10-13 那次"包发了、CI 才红"的缝隙因此消失。
+- **不钉版本的代价**：CI 装当前最新 pnpm；若哪天 pnpm 大版本改了锁文件格式，`--frozen-lockfile`
+  会在安装那一步红。那时应补版本约束，**不是**删掉 `frozen`。本地 pnpm 与 CI 大版本不一致时
+  也可能遇到同一个红。
+- **包内容判据从 `npm notice` 改成 JSON**：CI 与 `test/pack-contents.test.ts` 都改用
+  `pnpm pack --dry-run --json`。两家的 `--json` 形状不同（npm 给数组、pnpm 给对象），测试两种都收；
+  两处都加了"清单至少 N 个文件"的正对照 —— 否则"扫到 0 行"与"检查通过"在输出上完全一样
+  （2026-10-11 的教训）。
+- **发布链路不动**：`docs/RELEASING.md` / `docs/NPM-PUBLISH.md` 里的体积口径（十进制 MB vs 字节）、
+  `npm view` 的客户端缓存、`npm notice` 的过滤写法、2FA 的 `npm publish --otp` 都是 npm 实测的；
+  换成 `pnpm publish` 需要重新测一遍（它默认还会因为工作区不干净而拒绝发布），
+  在没测之前不写"等价"这种没有证据的话。装一份下来验的那一步也**故意留 npm**：它模拟的是用户端。
+- 用户侧安装命令仍是 `npm install -g weflow-cli`（`pnpm add -g weflow-cli` 同样可用）——
+  这条与仓库的开发工具链无关，README 不因此改写。

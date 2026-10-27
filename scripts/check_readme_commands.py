@@ -27,7 +27,7 @@
 
 跑法：
 
-    npm run build                      # cli.cjs 依赖 dist/
+    pnpm run build                     # cli.cjs 依赖 dist/
     python scripts/check_readme_commands.py
     python scripts/check_readme_commands.py --self-test    # 正对照：证明判据是活的
 """
@@ -175,7 +175,7 @@ def cli_help(path, cli=None):
     """问真实 CLI。取不到就返回 None —— 由调用方报错，不许当成"没问题"。"""
     cli = cli or os.path.join(ROOT, 'cli.cjs')
     if not os.path.exists(cli):
-        raise SystemExit('找不到 %s —— 先跑 `npm run build`（cli.cjs 依赖 dist/）' % cli)
+        raise SystemExit('找不到 %s —— 先跑 `pnpm run build`（cli.cjs 依赖 dist/）' % cli)
     proc = subprocess.run(['node', cli, *path, '--help'], capture_output=True, cwd=ROOT)
     return (proc.stdout + proc.stderr).decode('utf-8', 'replace')
 
@@ -253,7 +253,7 @@ def capability_commands(cli=None):
     """
     cli = cli or os.path.join(ROOT, 'cli.cjs')
     if not os.path.exists(cli):
-        raise SystemExit('找不到 %s —— 先跑 `npm run build`' % cli)
+        raise SystemExit('找不到 %s —— 先跑 `pnpm run build`' % cli)
     proc = subprocess.run(['node', cli, 'capabilities', '--json'], capture_output=True, cwd=ROOT)
     text = (proc.stdout or b'').decode('utf-8', 'replace')
     try:

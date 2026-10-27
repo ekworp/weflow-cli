@@ -5,7 +5,7 @@
  * 全是纯函数，可以钉住。其中最重要的一条是**凭据不许进 argv**——Windows 上同机任何进程都能从
  * `wmic process get commandline` 读到命令行，把 token 放进去就是一次看不出破绽的泄漏。
  *
- * 检测函数一律**注入 `existsFn`**：CI 上 `npm ci` 会真的装 devDependencies，
+ * 检测函数一律**注入 `existsFn`**：CI 上 `pnpm install` 会真的装 devDependencies，
  * `node_modules/electron/dist/electron.exe` 可能真存在——碰真实文件系统就等于测不了"找不到"。
  */
 import test from 'node:test'

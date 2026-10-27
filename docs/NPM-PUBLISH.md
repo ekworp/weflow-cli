@@ -3,6 +3,10 @@
 只讲 npm 这一侧。**流程清单**在 [RELEASING.md](RELEASING.md)，这里只解决
 「命令跑完了，现在到底算成功没有」。
 
+> **本文的命令都是 npm**，这是有意的：仓库的开发链路（install/build/test/pack）是 pnpm（D-131），
+> 但发布对象、registry 查询和下面这些 `npm notice` 输出格式属于 npm。本地想先看清单用
+> `pnpm pack --dry-run`（每行一个路径，**没有**体积前缀）。
+
 单个环节按需查，不必通读。
 
 ## 0. 省上下文（先看这条）
@@ -15,11 +19,11 @@ npm publish --registry=https://registry.npmjs.org 2>&1 \
   | grep -vE "^npm notice [0-9.]+[kMB]+ |^npm notice [0-9.]+B " | tail -25
 ```
 
-`npm pack --dry-run` 同理。要看文件清单时**输出到文件再 grep**，不要直接打印：
+`pnpm pack --dry-run` 同理，而且它的清单一律是"每行一个路径"（没有体积前缀）。要看文件清单时**输出到文件再 grep**，不要直接打印：
 
 ```bash
-npm pack --dry-run 2>&1 | grep "npm notice [0-9]" > /tmp/packlist.txt
-grep -c " dist/" /tmp/packlist.txt     # 注意: 行首是体积, 不是路径
+pnpm pack --dry-run > /tmp/packlist.txt
+grep -c " dist/" /tmp/packlist.txt     # 注意: 路径在行首
 ```
 
 ## 1. 唯一可靠的判据
@@ -106,12 +110,15 @@ node -e "console.log(require('./node_modules/weflow-cli/package.json').version)"
 
 ## 6. 打包安全检查（发布前，不能跳）
 
+本地打包走 pnpm（D-131）：`pnpm pack --dry-run` 的一级清单是**每行一个路径**，没有体积前缀。
+
 ```bash
-npm pack --dry-run 2>&1 | grep "npm notice [0-9]" > /tmp/packlist.txt
+pnpm pack --dry-run > /tmp/packlist.txt
+grep -c "^dist/" /tmp/packlist.txt        # 正对照：必须 > 0，否则下面的"没有输出"是假绿
 grep -E "output/|models/|node_modules|\.env|\.db$|\.dat$|_env\.json|secret|credential|\.key$|\.pem$" /tmp/packlist.txt
 ```
 
-**这条必须没有输出。** 有输出就停下查。
+**第二条必须没有输出。** 有输出就停下查。
 
 再确认新增文件确实**在**包里（`files` 白名单按目录配，容易漏）：
 

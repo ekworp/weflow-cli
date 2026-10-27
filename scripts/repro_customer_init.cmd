@@ -20,7 +20,7 @@ rem ============================================================================
 
 cd /d "%~dp0.."
 if not exist "dist\bin\weflow-cli.js" (
-  echo [ERROR] dist\bin\weflow-cli.js not found. Run "npm run build" in this repo first.
+  echo [ERROR] dist\bin\weflow-cli.js not found. Run "pnpm run build" in this repo first.
   pause
   exit /b 1
 )

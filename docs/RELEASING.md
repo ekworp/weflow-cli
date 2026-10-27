@@ -1,5 +1,10 @@
 # 发布清单
 
+> **包管理器分工（2026-10-27，D-131）**：仓库的开发链路一律用 pnpm
+> （`pnpm install` / `pnpm run build` / `pnpm test` / `pnpm pack`），`package-lock.json` 已删除。
+> **发布与 registry 查询仍用 npm**（`npm publish` / `npm view`）：本文下面那些体积、缓存与输出格式
+> 都是 npm 实测的数字，换成 `pnpm publish` 需要重新测一遍，不能直接套用。
+>
 > npm 侧的**症状对照与省上下文技巧**在 [NPM-PUBLISH.md](NPM-PUBLISH.md)：
 > 404 / 409 / ETARGET 到底是失败还是在传播，查那一份，不用通读本文。
 
@@ -21,18 +26,16 @@ npm 包与 GitHub 分开发布，中间隔多久都不奇怪——`1.5.0` 与主
 已备好但**从未发布**的版本号可以并进下一个：`1.5.1` 准备过却没发，
 它的修复就直接并进了 `1.6.0`。
 
-**改 `package.json` 的版本号时必须同时改 `package-lock.json`**（lockfileVersion 3 里有两个地方：
-顶层的 `version` 与 `packages[""].version`）。**2026-10-13 发 1.11.0 时就是这么红了一次**：包已经发出去、
-tag 也打了，`release-consistency` 才报「版本号与锁文件必须一致」—— 我本地只跑了 build/test/文档命令检查，
-而这三样都不看锁文件。发布物本身没问题（`files` 白名单里没有锁文件），但 master 的 CI 红了。
+**改版本号时不再需要手动改锁文件**（2026-10-27 起，D-131）：`pnpm-lock.yaml` 里**不记录包自己的 version**，
+npm 的 lockfileVersion 3 才在顶层与 `packages[""]` 各记一处。2026-10-13 发 1.11.0 时正是漏了那两处，
+包已经发出去、tag 也打了，`release-consistency` 才红。现在这条缝隙由 CI 换成了更硬的判据：
 
 ```powershell
-node -p "require('./package.json').version"     # 两个必须相等
-node -p "require('./package-lock.json').version"
+pnpm install --frozen-lockfile     # 锁文件与 package.json 对不上就失败，不会静默重写
+node -p "require('./package.json').version"
 ```
 
-顺手验一下锁文件没跑偏（只写锁、不动 `node_modules`）：
-`npm install --package-lock-only --dry-run` —— 报 `up to date` 即可，那也正是 `npm ci` 会不会炸的判据。
+（随手确认锁文件没跑偏也是这条；`--frozen-lockfile` 通过就等于"CI 不会在这一步炸"。）
 
 ## 2. 整理 CHANGELOG
 
@@ -47,8 +50,8 @@ node -p "require('./package-lock.json').version"
 ## 3. 构建与测试
 
 ```powershell
-npm run build
-npm test
+pnpm run build
+pnpm test
 py scripts/check_readme_commands.py          # 文档/脚本调用/capabilities 里写的命令必须真的存在
 ```
 
@@ -71,7 +74,7 @@ Python 脚本的既定纪律就是不 import 也不运行），以及 `capabilit
 ## 4. 打包检查（**不能跳过**）
 
 ```powershell
-npm pack --dry-run
+pnpm pack --dry-run
 ```
 
 本地常有 `output/`（几 GB 产出）、`models/`（几 GB 模型）、`_env.json`（含密钥）
@@ -79,11 +82,13 @@ npm pack --dry-run
 所以逐项确认：
 
 ```powershell
-npm pack --dry-run 2>&1 | grep -E "npm notice [0-9]" > /tmp/list.txt
+pnpm pack --dry-run > /tmp/list.txt     # 一级清单：每行一个路径（没有体积前缀）
+grep -c "^dist/" /tmp/list.txt          # 正对照：必须 > 0，否则下面的"没有输出"是假绿
 grep -E "^output/|^models/|node_modules|\.env|\.db$|\.dat$|secret|credential" /tmp/list.txt
 ```
 
-**这条命令必须没有输出。** 有输出就停下来查。
+**第二条 grep 必须没有输出。** 有输出就停下来查。第一条不是装饰：清单为空时第二条同样"没有输出"。
+（2026-10-11 的教训是判据失灵表现为全绿，不是表现为红。）
 
 同时确认新增文件确实**在**包里（白名单是按目录配的，容易漏）：
 
@@ -92,22 +97,25 @@ grep -E "新文件名" /tmp/list.txt
 ```
 
 这后半句（"**该有的在不在**"）现在有自动判据：`test/pack-contents.test.ts` 跑一次
-`npm pack --dry-run --json`，断言 `scripts/` 下每个跟踪文件（`.ts` 开发入口除外）与两份 README 引用的
+`pnpm pack --dry-run --json`，断言 `scripts/` 下每个跟踪文件（`.ts` 开发入口除外）与两份 README 引用的
 本地图片都在包里。它防的故障 2026-10-11 在**真实发布物**上量到过：registry 上 `weflow-cli@1.9.0`
 的 501 个文件里同时缺 `scripts/data/wechat_emoji.json` 与 `logo.png` —— 前者让 npm 用户导出的
-聊天记录里一批表情码原样显示成 `[名字]`，后者让包页面挂着一张裂图。这条测试跟着 `npm test` 跑，
+聊天记录里一批表情码原样显示成 `[名字]`，后者让包页面挂着一张裂图。这条测试跟着 `pnpm test` 跑，
 CI 的 `node` job 也在跑；上面那条人工命令留着，用来核对本次**新加**的文件名。
 
 想验到"**装出来真的能跑**"（最强的一道，代价是多装一次依赖）：把包打进临时目录、再装进一个空
 prefix，然后从**装好的那一份**里问版本。它盯的是白名单之外的另一半 —— 清单对、运行时不成立的情况。
 
 ```powershell
-npm pack --pack-destination $env:TEMP
+pnpm pack --pack-destination $env:TEMP
 mkdir $env:TEMP\wf-smoke ; cd $env:TEMP\wf-smoke     # 空目录
 npm install --no-save --no-audit --no-fund "$env:TEMP\weflow-cli-<版本>.tgz"
 node node_modules\weflow-cli\cli.cjs --version
 node node_modules\weflow-cli\cli.cjs --help
 ```
+
+这一步里 `npm install` **是故意的**：它模拟的是用户端，而 registry 上的包本来就是用 npm 装的；
+本仓库自己的开发链路（install/build/test/pack）才是 pnpm。
 
 2026-10-11 拿 1.10.0 跑过一遍：`ALL_NAMES = 222`（不是只有原图的 118 —— 那正是上一版缺
 `scripts/data/wechat_emoji.json` 时的值）、`[乒乓]`/`[冷汗]`/`[开红包]` 都渲染成对应表情、

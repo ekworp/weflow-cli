@@ -28,8 +28,13 @@ jobs:
       # dependency it does not control.
       - run: python -m pip install --quiet sqlcipher3-binary
         continue-on-error: true
-      - run: npm ci
-      - run: npm run build
+      # 仓库默认包管理器是 pnpm（D-131）。版本**有意不钉**："不限定 pnpm 版本"是项目决定，
+      # 所以这里装当前最新。代价写在 D-131 里：哪天 pnpm 大版本改了锁文件格式，
+      # `--frozen-lockfile` 会在这一步红 —— 那时该回来补版本约束，而不是删掉 frozen。
+      - name: Install pnpm
+        run: npm install -g pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
       # README 的命令面是**用户先发现漂移**的地方（1.5.0：照 README 敲 `init --path` 得到
       # `unknown option`）。这条要 cli.cjs + dist/，所以放在 build 之后；先跑判据自己的正对照，
       # 再扫真实的 README —— 判据失灵时必须报红，而不是安静地"全绿"。
@@ -37,15 +42,15 @@ jobs:
         run: |
           python scripts/check_readme_commands.py --self-test
           python scripts/check_readme_commands.py
-      - name: npm test
+      - name: pnpm test
         # 失败时把挂了哪几条**发成 annotation**：日志本体存在 blob 存储上，本机那条路径
         # 时通时断（2026-10-11 实测：`gh run view --log-failed` 连试 12 次全超时，
         # 而 `gh run view --json` 一直能通）—— 结果就是"CI 红了 60 次、看不到红在哪"。
         # annotation 走的是 API，本机能读（`gh run view` 会把它们打出来）。
         run: |
           set -o pipefail
-          npm test 2>&1 | tee /tmp/weflow-test.log || {
-            echo "::error::npm test 失败——下面把失败的用例名发成 annotation（完整输出仍在本步日志里）"
+          pnpm test 2>&1 | tee /tmp/weflow-test.log || {
+            echo "::error::pnpm test 失败——下面把失败的用例名发成 annotation（完整输出仍在本步日志里）"
             grep -E '^not ok [0-9]+ - |^# fail |^ℹ fail ' /tmp/weflow-test.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -90,7 +95,7 @@ jobs:
             echo "::warning::有测试没跑（跳过）：$line"
           done || true
 
-  # 发布前的一致性校验: 版本号、锁文件、npm 包内容
+  # 发布前的一致性校验: 锁文件、npm 包内容
   release-consistency:
     runs-on: ubuntu-latest
     steps:
@@ -98,17 +103,34 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22.13'
-      - name: 版本号与锁文件必须一致
-        run: |
-          pkg=$(node -p "require('./package.json').version")
-          lock=$(node -p "require('./package-lock.json').version")
-          echo "package.json=$pkg package-lock.json=$lock"
-          test "$pkg" = "$lock" || { echo "::error::package-lock.json 版本与 package.json 不一致，请运行 npm install 重新生成"; exit 1; }
+      - name: Install pnpm
+        run: npm install -g pnpm
+      # **判据换了**：`pnpm-lock.yaml` 不记录包自己的 version（npm 的 lockfileVersion 3 记两处），
+      # 所以"改 package.json 版本必须同时改锁文件"这条在 pnpm 下没有对应物。
+      # 真正的不变量是"锁文件与 package.json 对得上" —— 那就是 `--frozen-lockfile`：
+      # 对不上直接失败。2026-10-13 那次"包已经发了、CI 才红"正是从这条缝隙漏过去的。
+      - name: 锁文件必须与 package.json 同步
+        run: pnpm install --frozen-lockfile
       - name: npm 包不得包含输出、模型、数据库或密钥
+        # 用 `pnpm pack --dry-run --json` 而不是 grep `npm notice`：JSON 里路径是独立字段，
+        # 不会因为输出格式换行而漏判。**先断言清单非空** —— 2026-10-11 的教训是
+        # "匹配到 0 行"和"检查通过"在 grep 下长得一模一样。
         run: |
-          npm ci
-          npm pack --dry-run 2>&1 | grep 'npm notice' > /tmp/pack.txt
-          if grep -E 'output/|models/|node_modules|\.env|\.db$|\.dat$|_env\.json|secret|credential|\.key$|\.pem$' /tmp/pack.txt; then
-            echo "::error::npm 包中包含敏感或体积过大的文件"; exit 1
-          fi
-          echo "包内容检查通过"
+          pnpm pack --dry-run --json > /tmp/pack.json
+          node -e '
+          const fs = require("fs");
+          const raw = fs.readFileSync("/tmp/pack.json", "utf8");
+          const parsed = JSON.parse(raw.slice(raw.indexOf("{")));
+          const files = (Array.isArray(parsed) ? parsed[0].files : parsed.files).map(f => f.path);
+          if (files.length < 50) {
+            console.error("::error::包清单只有 " + files.length + " 个文件，判定范围不对（检查 pnpm pack 输出格式）");
+            process.exit(1);
+          }
+          const bad = /output\/|models\/|node_modules|\.env|\.db$|\.dat$|_env\.json|secret|credential|\.key$|\.pem$/;
+          const hits = files.filter(f => bad.test(f));
+          if (hits.length) {
+            console.error("::error::npm 包中包含敏感或体积过大的文件: " + hits.join(", "));
+            process.exit(1);
+          }
+          console.log("包内容检查通过（" + files.length + " 个文件）");
+          '

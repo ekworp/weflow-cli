@@ -160,7 +160,7 @@ offered on it (the same rule `unavailableToolReason` applies elsewhere). The cha
 
 | Symptom | Check |
 | --- | --- |
-| Server fails to start | Run `npm install` in the configured `cwd`, then run `npx tsx mcp-server/index.ts`. |
+| Server fails to start | Run `pnpm install` in the configured `cwd`, then run `npx tsx mcp-server/index.ts`. |
 | HTTP mode refuses to start | The message says why: no token (`--token=` / `WEFLOW_MCP_TOKEN`), a token under 24 characters, or a bind address that is not loopback. |
 | HTTP client gets 401 | The `Authorization: Bearer <token>` header is missing or wrong - it must be the token the server was started with. |
 | HTTP client cannot connect from another machine | Working as intended: the bind is loopback. Tunnel to it (`ssh -L 8790:127.0.0.1:8790 <host>`) rather than opening the port. |

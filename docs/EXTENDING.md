@@ -128,7 +128,7 @@ prints JSON). Three rules that this project has been bitten by:
   temporary directory instead of overwriting the real one (the first version of the test did exactly that, on top of a
   background run).
 
-Tests for Python live in `test/*_test.py` and run on the same filesystem as everything else (`npm test` covers
+Tests for Python live in `test/*_test.py` and run on the same filesystem as everything else (`pnpm test` covers
 TypeScript; `python -m unittest discover -s test -p '*_test.py'` covers these).
 
 ## Recipe F - a new knowledge source

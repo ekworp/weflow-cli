@@ -13,17 +13,17 @@
 ## 常用开发命令
 
 ```powershell
-npm install
-npm run build
-npm test
-npm run dev -- <command>
+pnpm install
+pnpm run build
+pnpm test
+pnpm run dev -- <command>
 ```
 
 日报无 AI 运行：
 
 ```powershell
-npm run dev -- daily --no-ai
-npm run dev -- daily-server --date YYYY-MM-DD --open
+pnpm run dev -- daily --no-ai
+pnpm run dev -- daily-server --date YYYY-MM-DD --open
 ```
 
 ## 维护原则

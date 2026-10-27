@@ -20,9 +20,9 @@ weflow-cli check
 源码开发使用：
 
 ```powershell
-npm install
-npm run build
-npm run dev -- check
+pnpm install
+pnpm run build
+pnpm run dev -- check
 ```
 
 ## 2. 初始化与已有配置
@@ -1157,7 +1157,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\install_tas
   75 篇/分钟，最后 8 篇慢的拖了 4 分钟），**整天 `biz_daily` 15 分 49 秒**（22:26:21 起，22:42:10
   落 `.articles.json`）—— 同样这些篇数走串行 + 节流要一个多小时。
 - **任务跑的是 `scripts/pipeline.py`，不是 `weflow-cli`**：npm 全局那个包是**发布版**，
-  滞后于仓库；而且它一旦是构建产物，改完代码不 `npm run build` 就看不到改动（见
+  滞后于仓库；而且它一旦是构建产物，改完代码不 `pnpm run build` 就看不到改动（见
   「改完没反应」那类问题）。python 层没有构建步骤，是同一份源码。人在终端里跑还是用
   `weflow-cli daily --yesterday --prefetch-bodies --yes`，两者等价。
 - **`--yes` 不能省**（走 CLI 时）：机器模式下没有它就会停在确认门上（这是有意的——日报会调 AI、会写文件）。
@@ -1387,7 +1387,7 @@ weflow-cli config set aiEngine ollama             # 或换本地引擎（内容�
 1. **消息通道要已登录**（`weflow-cli login-wechat`）。没登录时子进程会退出，启动命令会把
    退出码和日志尾部原样报出来：`子进程启动后立即退出 (code 1)；日志尾部: Error: 未登录消息通道…`。
    这句话出现在终端里就说明机制是对的，**问题在通道，不在守护进程**。
-2. **改了源码要先 `npm run build`**。守护进程优先运行 `dist/bin/weflow-cli.js`，只要这个文件
+2. **改了源码要先 `pnpm run build`**。守护进程优先运行 `dist/bin/weflow-cli.js`，只要这个文件
    存在就不会用 `bin/weflow-cli.ts`；不重建，守护进程跑的还是旧的编译产物。
 
 助手还有一个**默认关闭**的单轮快路径（D-035）：先用本机判断层问一次"这条要不要查本机数据、
@@ -1487,9 +1487,9 @@ weflow-cli assistant trace --json      # 结构化的，给脚本用
 这 16 个工具会怎么用"），唯一的其它办法是去微信里聊两句、靠运气发现问题。
 
 ```powershell
-npm run eval:assistant                 # 18 条用例，跑真实模型（含一条多轮）
-npm run eval:assistant -- --only=no-tool   # 只跑一条
-npm run eval:assistant -- --json           # 附机器可读报告
+pnpm run eval:assistant                 # 18 条用例，跑真实模型（含一条多轮）
+pnpm run eval:assistant -- --only=no-tool   # 只跑一条
+pnpm run eval:assistant -- --json           # 附机器可读报告
 ```
 
 它断言的是**底线有没有被越过**，不是"答得多好"：
@@ -1642,8 +1642,8 @@ weflow-cli check --report
 ## 9. 维护验证
 
 ```powershell
-npm run build
-npm test
+pnpm run build
+pnpm test
 python -m unittest discover -s test -p '*_test.py' -v
 git diff --check
 ```

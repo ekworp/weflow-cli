@@ -23,7 +23,7 @@ Read this file and [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) before changin
 
 ## Verification
 
-Run the narrowest relevant check first. TypeScript changes require `npm run build`; run `npm test` for the regression suite. For Python changes, compile or run the affected script's focused check. Before handoff, run `git diff --check` and inspect the staged diff for sensitive information.
+Run the narrowest relevant check first. TypeScript changes require `pnpm run build`; run `pnpm test` for the regression suite. For Python changes, compile or run the affected script's focused check. Before handoff, run `git diff --check` and inspect the staged diff for sensitive information.
 
 Two rules for *claims*, learned from mistakes that shipped:
 

@@ -13,8 +13,8 @@
 ```powershell
 git clone https://github.com/zhuobichen/weflow-cli.git
 cd weflow-cli
-npm install
-npm run build
+pnpm install
+pnpm run build
 python -m pip install -r requirements.txt
 weflow-cli check
 ```
@@ -22,11 +22,11 @@ weflow-cli check
 开发时使用源码入口：
 
 ```powershell
-npm run dev -- check
-npm run dev -- sessions
+pnpm run dev -- check
+pnpm run dev -- sessions
 ```
 
-`npm install -g weflow-cli` 使用 npm 发布包；发布包和 GitHub `master` 的发布时间可能不同。需要确认功能版本时，查看 `package.json`、Git 提交和 `npm view weflow-cli version`，不要假定两者相同。
+本仓库以 **pnpm** 为默认包管理器（`pnpm-lock.yaml` 是唯一的锁文件，`package-lock.json` 已移除）。`npm install -g weflow-cli`（或 `pnpm add -g weflow-cli`）使用 npm 发布包；发布包和 GitHub `master` 的发布时间可能不同。需要确认功能版本时，查看 `package.json`、Git 提交和 `npm view weflow-cli version`，不要假定两者相同。
 
 ## 初始化
 

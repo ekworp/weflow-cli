@@ -354,10 +354,10 @@ weflow-cli daily --help
 ```powershell
 git clone https://github.com/zhuobichen/weflow-cli.git
 cd weflow-cli
-npm install
-npm run build
-npm run dev -- check
-npm run dev -- init
+pnpm install
+pnpm run build
+pnpm run dev -- check
+pnpm run dev -- init
 ```
 
 主要 Python 工作流：

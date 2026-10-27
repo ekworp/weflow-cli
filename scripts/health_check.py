@@ -411,7 +411,7 @@ def check_wechat_client(report):
     client = data.get('wechatClient')
     if not isinstance(client, dict):
         report.add('微信客户端', False, 'check 没报这一项',
-                   'CLI 可能没重新构建（npm run build），或 dist 是旧的')
+                   'CLI 可能没重新构建（pnpm run build），或 dist 是旧的')
         return
     version = client.get('version')
     loaded = client.get('loadedDirs') or []

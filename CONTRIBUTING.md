@@ -13,12 +13,12 @@ For security-sensitive reports, use the process in [SECURITY.md](./SECURITY.md) 
 ```powershell
 git clone https://github.com/zhuobichen/weflow-cli.git
 cd weflow-cli
-npm install
+pnpm install
 python -m pip install -r requirements.txt
-npm run build
+pnpm run build
 ```
 
-Use `npm run dev -- <command>` while developing. Run `npm run build` before opening a pull request.
+Use `pnpm run dev -- <command>` while developing. Run `pnpm run build` before opening a pull request.
 
 ## Pull request guidelines
 
@@ -42,4 +42,4 @@ Keep documentation responsibilities separate:
 - `ARCHITECTURE.md`: current module boundaries and data flows.
 - `OPERATIONS.md`: operational procedures and troubleshooting.
 
-Before opening a PR, verify command examples against `weflow-cli <command> --help`, update the relevant documentation in the same change, and run `npm run build`, `npm test`, and `git diff --check`. Do not use the changelog as an engineering diary.
+Before opening a PR, verify command examples against `weflow-cli <command> --help`, update the relevant documentation in the same change, and run `pnpm run build`, `pnpm test`, and `git diff --check`. Do not use the changelog as an engineering diary.
