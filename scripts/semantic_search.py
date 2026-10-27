@@ -169,22 +169,33 @@ def get_embeddings(texts: list[str], api_key: str, on_batch=None) -> list[list[f
 
 # ====== Data Collection ======
 
-def open_db(db_path, key_hex, salt_hex):
-    sqlcipher = require_sqlcipher()
+def open_db(db_path, key_hex, salt_hex, use_cache=False):
+    """打开加密数据库，可选启用明文缓存
+    
+    Args:
+        use_cache: 是否使用明文缓存（需要 WEFLOW_CACHE_ENABLED=1）
+    """
     raw_key = f"x'{key_hex}{salt_hex}'"
-    conn = sqlcipher.connect(db_path)
-    c = conn.cursor()
-    c.execute(f'PRAGMA key = "{raw_key}";')
-    c.execute("SELECT count(*) FROM sqlite_master")
+    
+    if use_cache:
+        from database_cache import open_database_with_cache
+        conn, _ = open_database_with_cache(db_path, raw_key, use_cache=True)
+    else:
+        sqlcipher = require_sqlcipher()
+        conn = sqlcipher.connect(db_path)
+        c = conn.cursor()
+        c.execute(f'PRAGMA key = "{raw_key}";')
+        c.execute("SELECT count(*) FROM sqlite_master")
+    
     return conn
 
 
-def get_name_map(contact_db, contact_key, contact_salt):
+def get_name_map(contact_db, contact_key, contact_salt, use_cache=False):
     name_map = {}
     if not contact_db or not contact_key or not os.path.exists(contact_db):
         return name_map
     try:
-        conn = open_db(contact_db, contact_key, contact_salt)
+        conn = open_db(contact_db, contact_key, contact_salt, use_cache=use_cache)
         c = conn.cursor()
         c.execute("SELECT username, COALESCE(NULLIF(remark,''), NULLIF(nick_name,''), username) FROM contact")
         for r in c.fetchall():
@@ -430,7 +441,7 @@ def _save_index(base_vectors, base_meta, pairs):
     os.replace(tmp_m, META_FILE)
     return len(meta)
 
-def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30, include_imports: bool = False):
+def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30, include_imports: bool = False, use_cache: bool = False):
     """Build or update the semantic index.
 
     `days` / `article_days` 决定这个索引**记多久**：它们原先写死在两处调用里
@@ -472,7 +483,7 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
     contact_key_enc = config.get('contactKey', '')
     contact_salt = config.get('contactSalt', '')
     contact_key = decrypt_lock(contact_key_enc) if contact_key_enc else ''
-    name_map = get_name_map(contact_db, contact_key, contact_salt)
+    name_map = get_name_map(contact_db, contact_key, contact_salt, use_cache=use_cache)
 
     # Collect items
     items = []
@@ -1648,15 +1659,20 @@ def main():
     # 无条件读会让"建本地短语索引"直接崩在一个**与它无关**的参数上。
     api_key = (getattr(args, 'api_key', '') or os.environ.get('DASHSCOPE_API_KEY', '')
                or get_dashscope_key(config))
+    
+    # 从环境变量读取缓存开关
+    use_cache = os.environ.get('WEFLOW_CACHE_ENABLED') == '1'
 
     if args.command == 'build':
         result = build_index(api_key, full=args.full, days=args.days,
                              article_days=args.article_days,
-                             include_imports=getattr(args, 'include_imports', False))
+                             include_imports=getattr(args, 'include_imports', False),
+                             use_cache=use_cache)
     elif args.command == 'update':
         result = build_index(api_key, full=False, days=args.days,
                              article_days=args.article_days,
-                             include_imports=getattr(args, 'include_imports', False))
+                             include_imports=getattr(args, 'include_imports', False),
+                             use_cache=use_cache)
     elif args.command == 'phrase-build':
         result = build_phrase_index(line=args.line)
         result['success'] = 'error' not in result
