@@ -586,6 +586,25 @@ def build_card(title: str, note: dict, source_name: str, pages: int, body_len: i
     return frontmatter, '\n'.join(parts)
 
 
+def write_text_sidecar(pdf: Path, body: str, via: str, updated: str) -> Path:
+    """把 OCR 出来的正文写到 `output/pdf-text/`（`type: pdf-text`），返回路径。
+
+    **出卡时也写一份**，不只在 `--ocr-only` 时写。理由：`search-index` 收的是
+    `output/pdf-text`，而卡片模式原先不落这个文件——于是"让 PDF 可被检索"这件事
+    只在 `--ocr-only` 之后成立；实测跑完 177 张卡去搜，一条 PDF 都搜不到。
+    文字本来就在内存里（OCR 缓存也有），多写一个文件是零成本。
+    """
+    frontmatter = {
+        'title': pdf.stem, 'type': 'pdf-text', 'source': pdf.name,
+        'pages': pdf_page_count(pdf), 'text_via': via,
+        'bodyChars': len(body), 'saved': updated, 'updated': updated,
+    }
+    target = note_path(TEXT_ROOT, pdf.stem)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    write_with_frontmatter(str(target), frontmatter, body)
+    return target
+
+
 def already_carded(pdf: Path, out_dir: str) -> bool:
     """这个 PDF 已经有卡了吗（按文件名落卡）。"""
     return note_path(out_dir, pdf.stem).exists()
@@ -719,16 +738,9 @@ def main():
             if not body:
                 failed.append({'title': pdf.stem[:30], 'reason': via or 'no-text'})
                 continue
-            frontmatter = {
-                'title': pdf.stem, 'type': 'pdf-text', 'source': pdf.name,
-                'pages': pdf_page_count(pdf), 'text_via': via,
-                'bodyChars': len(body), 'saved': updated, 'updated': updated,
-            }
-            target = note_path(TEXT_ROOT, pdf.stem)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            write_with_frontmatter(str(target), frontmatter, body)
-            written.append({'title': pdf.stem[:30], 'file': str(target), 'textVia': via,
-                            'chars': len(body)})
+            write_text_sidecar(pdf, body, via, updated)
+            written.append({'title': pdf.stem[:30], 'file': str(note_path(TEXT_ROOT, pdf.stem)),
+                            'textVia': via, 'chars': len(body)})
         result = {'success': True, 'action': 'pdf-notes.ocr-only', 'model': None,
                   'ocrSource': source, 'ocrEngine': args.ocr_root if source == 'local' else None,
                   'written': written, 'failed': failed, 'pdfs': len(runnable),
@@ -782,6 +794,9 @@ def main():
         target = note_path(args.out, pdf.stem)
         target.parent.mkdir(parents=True, exist_ok=True)
         write_with_frontmatter(str(target), frontmatter, card_body)
+        # 顺手落一份纯文字：`search-index` 只收 `output/pdf-text`，卡片模式不落的话
+        # "PDF 可被检索"就只在 `--ocr-only` 之后成立（实测踩过：177 张卡搜不到一条 PDF）
+        write_text_sidecar(pdf, body, via, updated)
         written.append({'title': title[:30], 'file': str(target),
                         'concepts': len(note['concepts']), 'textVia': via})
 
