@@ -408,7 +408,8 @@ def list_chat_pdfs(limit: int = 0) -> tuple:
     except Exception as error:
         return [], '读 hardlink.db 失败（%s: %s）' % (type(error).__name__, error)
 
-    found, cleaned = [], 0
+    found, cleaned, duplicates = [], 0, 0
+    seen_md5 = set()
     for row in rows:
         if not str(row.get('file', '')).lower().endswith('.pdf'):
             continue
@@ -416,6 +417,15 @@ def list_chat_pdfs(limit: int = 0) -> tuple:
         if not path.exists():
             cleaned += 1
             continue
+        # **按 md5 去重**：微信给同一份文件存了多个副本（转发/重复保存），文件名带 (1)(2)。
+        # 实测本机 199 个本地 PDF 里 **23 个是重复副本**（22 组）。不去重的后果是
+        # 白花 23 次 OCR + 生成 23 张内容一样的卡，概念页里同一个来源出现两遍。
+        md5 = str(row.get('md5') or '').lower()
+        if md5:
+            if md5 in seen_md5:
+                duplicates += 1
+                continue
+            seen_md5.add(md5)
         try:
             found.append((path.stat().st_mtime, path))
         except OSError:
@@ -424,18 +434,43 @@ def list_chat_pdfs(limit: int = 0) -> tuple:
     files = [p for _mt, p in found]
     if limit:
         files = files[:limit]
-    note = ''
+    notes = []
+    if cleaned:
+        notes.append('另有 %d 个 PDF 已被微信清理，跳过' % cleaned)
+    if duplicates:
+        notes.append('跳过 %d 个重复副本（同一个 md5）' % duplicates)
+    note = '；'.join(notes)
     if not files:
-        note = ('聊天记录里没有可读的 PDF（%d 个已被微信清理）' % cleaned) if cleaned else \
-               '聊天记录里没有 PDF 文件'
-    elif cleaned:
-        note = '另有 %d 个 PDF 已被微信清理，跳过' % cleaned
+        note = note or '聊天记录里没有 PDF 文件'
     return files, note
 
 
+def sample_body(body: str, limit: int = MAX_PDF_CHARS) -> str:
+    """长文档的采样：**头部 + 尾部**，中间标出省略了多少字。
+
+    为什么不硬截前 `limit` 字：实测一份 **96 页**的论文，摘要只看了前 3 页——
+    摘要、方法都在开头，但结论、讨论、审稿回复在最后，硬截等于把它们全丢了。
+    尾部的"结论"恰恰是判断这篇在讲什么最值钱的部分。
+
+    比例 6:4（头多尾少）：开头有摘要与问题定义，结尾有结论与展望。
+    短文档（≤ limit）原样返回，不插标记。
+    """
+    body = (body or '').strip()
+    if len(body) <= limit:
+        return body
+    head_n = int(limit * 0.6)
+    tail_n = limit - head_n
+    omitted = len(body) - head_n - tail_n
+    return '%s\n\n……（中间省略 %d 字）……\n\n%s' % (
+        body[:head_n], omitted, body[-tail_n:])
+
+
 def build_prompt(title: str, body: str) -> str:
-    """PDF 正文 → 提示词。抽出来是为了让测试能断言"喂给模型的串"是什么。"""
-    return PDF_PROMPT.format(title=title, body=body[:MAX_PDF_CHARS],
+    """PDF 正文 → 提示词。抽出来是为了让测试能断言"喂给模型的串"是什么。
+
+    长文档走 `sample_body`（头尾采样），不硬截前 N 字——见那个函数的注释。
+    """
+    return PDF_PROMPT.format(title=title, body=sample_body(body),
                              topics='、'.join(TOPICS))
 
 

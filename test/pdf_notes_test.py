@@ -289,6 +289,58 @@ class ChatPdfTests(unittest.TestCase):
         if not files:
             self.assertTrue(note, '取不到文件却什么也没说')
 
+    def test_按_md5_去重(self):
+        """微信给同一份文件存多个副本（文件名带 (1)(2)），必须按 md5 去重。
+
+        实测本机：199 个本地 PDF 里 **23 个是重复副本**（22 组）。不去重就白花 23 次 OCR，
+        还会生成 23 张内容一样的卡，概念页里同一来源出现两遍。
+        """
+        import collections
+        src = (SCRIPTS / 'pdf_notes.py').read_text(encoding='utf-8')
+        body = src[src.index('def list_chat_pdfs'):]
+        body = body[:body.index('\ndef ')]
+        self.assertIn('seen_md5', body, '没有按 md5 去重的痕迹')
+        self.assertIn('duplicates', body, '去掉了却说不出跳过了多少')
+        # 反空扫：md5 字段确实从 hardlink 行里取（字段名写错就永远不去重）
+        self.assertIn("row.get('md5')", body)
+
+
+class SampleBodyTests(unittest.TestCase):
+    """长文档采样：**头 + 尾**，不硬截前 N 字。
+
+    动机是实测的：一份 96 页论文，硬截 3000 字只覆盖前 3 页——摘要与方法在开头还行，
+    但**结论、讨论、审稿回复全在最后**，被整段丢掉。
+    """
+
+    def test_短文档原样返回(self):
+        body = '短文档' * 50
+        self.assertEqual(pn.sample_body(body), body)
+
+    def test_长文档头尾都在(self):
+        body = 'HEAD' * 300 + 'MIDDLE' * 900 + 'TAIL' * 300
+        out = pn.sample_body(body, limit=1000)
+        self.assertIn('HEAD', out, '开头丢了')
+        self.assertIn('TAIL', out, '结尾丢了 —— 结论就在结尾')
+        self.assertNotIn('MIDDLE' * 50, out, '中间没被省略')
+
+    def test_省略处写明多少字(self):
+        body = 'x' * 5000
+        out = pn.sample_body(body, limit=1000)
+        self.assertIn('省略', out)
+        self.assertRegex(out, r'省略 \d+ 字')
+
+    def test_不超出上限太多(self):
+        body = 'y' * 8000
+        out = pn.sample_body(body, limit=1000)
+        self.assertLessEqual(len(out), 1000 + 40, '采样后比上限长太多')
+
+    def test_提示词用的是采样后的正文(self):
+        body = 'HEAD' * 300 + 'X' * 9000 + 'TAIL' * 300
+        prompt = pn.build_prompt('标题', body)
+        self.assertIn('HEAD', prompt)
+        self.assertIn('TAIL', prompt)
+        self.assertLess(len(prompt), pn.MAX_PDF_CHARS + 2000)
+
 
 class TopicTests(unittest.TestCase):
     """PDF 卡的主题：原来写死 `文档`，于是概念页「来源 · 主题」里 PDF 和文章永远归不到一起。
