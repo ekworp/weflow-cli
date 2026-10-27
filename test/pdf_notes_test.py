@@ -10,6 +10,8 @@
 """
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -139,6 +141,84 @@ class OcrContractTests(unittest.TestCase):
             (base / '.venv' / 'Scripts' / 'python.exe').write_text('', encoding='utf-8')
             (base / 'ocr2_pdf.py').write_text('', encoding='utf-8')
             self.assertFalse(pn.ocr_available(tmp), '缺权重却报可用')
+
+
+class OcrCacheTests(unittest.TestCase):
+    """OCR 缓存：**OCR 比模型调用贵几百倍**（一页约 1.5 秒，300 页的书七八分钟），
+    所以重出卡（换提示词、某篇调用失败重跑）不该把识别重做一遍。
+
+    这里钉住三件事：路径**跨进程稳定**（内置 `hash()` 对 str 每进程不同——那个 bug 让缓存
+    永远命中不了、还每次留一个新目录）、参数变了算另一份、PDF 改了就重做。
+    """
+
+    def _engine(self, tmp) -> str:
+        """造一个"目录结构齐全"的假引擎；脚本是空的，所以真跑必失败——正好用来区分有无命中。"""
+        root = Path(tmp) / 'ocr2'
+        (root / '.venv' / 'Scripts').mkdir(parents=True)
+        (root / '.venv' / 'Scripts' / 'python.exe').write_text('', encoding='utf-8')
+        (root / 'ocr2_pdf.py').write_text('', encoding='utf-8')
+        return str(root)
+
+    def _pdf(self, tmp, mtime=1000, name='doc.pdf') -> Path:
+        path = Path(tmp) / name
+        path.write_bytes(b'%PDF-1.4')
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def test_路径跨进程稳定(self):
+        import subprocess
+        code = ('import sys; sys.path.insert(0, %r); import pdf_notes as p, pathlib; '
+                'print(p.ocr_cache_path(pathlib.Path(%r), %r, 200, 10, ""))'
+                % (str(SCRIPTS), 'D:/x/doc.pdf', 'D:/root'))
+        runs = [subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                               env={**os.environ, 'PYTHONHASHSEED': seed})
+                for seed in ('1', '2')]
+        self.assertTrue(runs[0].stdout.strip(), runs[0].stderr[-400:])
+        self.assertEqual(runs[0].stdout.strip(), runs[1].stdout.strip(),
+                         '两个进程算出的缓存路径不同 —— 又用了内置 hash()？')
+
+    def test_参数不同算两份(self):
+        pdf = Path('D:/x/doc.pdf')
+        a = pn.ocr_cache_path(pdf, 'D:/root', dpi=200, window=10, pages='')
+        b = pn.ocr_cache_path(pdf, 'D:/root', dpi=300, window=10, pages='')
+        c = pn.ocr_cache_path(pdf, 'D:/root', dpi=200, window=5, pages='1-20')
+        self.assertNotEqual(a, b, 'dpi 变了却复用同一份缓存')
+        self.assertNotEqual(a, c, '窗口/页范围变了却复用同一份缓存')
+
+    def test_缓存命中时不再跑_OCR(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._engine(tmp)
+            pdf = self._pdf(tmp, mtime=1000)
+            cached = pn.ocr_cache_path(pdf, root, 200, 10, '')
+            cached.parent.mkdir(parents=True)
+            cached.write_text('缓存里的正文', encoding='utf-8')
+            os.utime(cached, (2000, 2000))
+            body, via = pn.run_ocr(pdf, root, '', 200, 10, reuse=True)
+            self.assertEqual(body, '缓存里的正文')
+            self.assertEqual(via, 'local-ocr-cached')
+
+    def test_PDF_改过就要重做(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._engine(tmp)
+            pdf = self._pdf(tmp, mtime=3000)
+            cached = pn.ocr_cache_path(pdf, root, 200, 10, '')
+            cached.parent.mkdir(parents=True)
+            cached.write_text('旧正文', encoding='utf-8')
+            os.utime(cached, (1000, 1000))
+            body, via = pn.run_ocr(pdf, root, '', 200, 10, reuse=True)
+            self.assertNotEqual(body, '旧正文', 'PDF 更新了却还在用旧缓存')
+            self.assertNotEqual(via, 'local-ocr-cached')
+
+    def test_关掉复用就一定重跑(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._engine(tmp)
+            pdf = self._pdf(tmp, mtime=1000)
+            cached = pn.ocr_cache_path(pdf, root, 200, 10, '')
+            cached.parent.mkdir(parents=True)
+            cached.write_text('缓存里的正文', encoding='utf-8')
+            os.utime(cached, (2000, 2000))
+            _, via = pn.run_ocr(pdf, root, '', 200, 10, reuse=False)
+            self.assertNotEqual(via, 'local-ocr-cached', '--no-reuse-ocr 没生效')
 
 
 class ListTests(unittest.TestCase):

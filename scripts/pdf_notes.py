@@ -33,6 +33,7 @@ PDF **不出网**：OCR 在本机跑；只有 OCR 之后的**文字**（截断�
 与其它三条线同一边界。`--dry-run` 会把这个代价报出来。
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -100,21 +101,43 @@ def pdf_page_count(pdf: Path) -> int:
         return 0
 
 
-def run_ocr(pdf: Path, root: str, pages: str, dpi: int, window: int) -> tuple:
+def ocr_cache_path(pdf: Path, root: str, dpi: int, window: int, pages: str) -> Path:
+    """OCR 结果的缓存路径——**参数变了就是另一份**（同一条 PDF、不同 dpi 不能混用）。
+
+    目录名用 `hashlib` 而不是内置 `hash()`：后者对 `str` **每个进程都不同**
+    （`PYTHONHASHSEED` 随机），于是每次运行都新建一个目录——既留垃圾，也永远命中不了缓存。
+    实测这个 bug：连跑两次同一份 PDF，`ocr2/` 下多了两个 `ocr-out-*` 目录。
+    """
+    key = '%s|%d|%d|%s' % (pdf.resolve(), dpi, window, pages)
+    digest = hashlib.md5(key.encode('utf-8')).hexdigest()[:10]
+    stem = ''.join(ch for ch in pdf.stem if ch.isalnum() or ch in '-_')[:40] or 'doc'
+    return Path(root) / ('ocr-out-%s-%s' % (stem, digest)) / (pdf.stem + '.md')
+
+
+def run_ocr(pdf: Path, root: str, pages: str, dpi: int, window: int,
+            reuse: bool = True) -> tuple:
     """调本机 OCR 把 PDF 转 Markdown。返回 (markdown, 来源说明)。
 
     **只跑本机**：调的是 `ocr2/.venv` 里的 python，脚本与权重都在本地目录，不联网。
-    输出目录用**每次独立的临时目录**——OCR 脚本按 PDF 名写文件，共用一个目录会撞车。
     失败不吞：返回错误字符串，让上层如实报出来。
+
+    `reuse=True` 时先看缓存：**OCR 比模型调用贵得多**（一页约 1.5 秒，一本 300 页的书
+    要七八分钟），而换提示词重出卡、或某一篇调用失败后重跑，都不该把 OCR 重做一遍
+    （实测动机：重跑一次 60 页的 PDF，OCR 12 分钟、模型调用 2 秒）。
+    缓存的判据是 **mtime 不早于 PDF** —— PDF 被改过（重新导出）就重做。
     """
     py = Path(root) / '.venv' / 'Scripts' / 'python.exe'
     script = Path(root) / 'ocr2_pdf.py'
     if not py.exists() or not script.exists():
         return '', 'ocr-engine-missing'
-    # OCR 脚本按 PDF 名写文件，共用一个输出目录会撞车——每次用独立目录。
-    # 目录名用 PDF 文件名 + 短哈希（hash 要固定种子，否则同名文件每次都是新目录）。
-    stem = ''.join(ch for ch in pdf.stem if ch.isalnum() or ch in '-_')[:40] or 'doc'
-    out_name = 'ocr-out-%s-%08x' % (stem, abs(hash(str(pdf.resolve()))) % 0xFFFFFFFF)
+    out = ocr_cache_path(pdf, root, dpi, window, pages)
+    if reuse and out.exists():
+        try:
+            if out.stat().st_mtime >= pdf.stat().st_mtime:
+                return out.read_text(encoding='utf-8'), 'local-ocr-cached'
+        except OSError:
+            pass
+    out_name = out.parent.name
     cmd = [str(py), str(script), str(pdf.resolve()), '--dpi', str(dpi),
            '--window', str(window), '--out', out_name]
     if pages:
@@ -128,7 +151,6 @@ def run_ocr(pdf: Path, root: str, pages: str, dpi: int, window: int) -> tuple:
         return '', 'ocr-timeout'
     except Exception as error:
         return '', 'ocr-failed: %s' % type(error).__name__
-    out = Path(root) / out_name / (pdf.stem + '.md')
     if proc.returncode != 0 or not out.exists():
         tail = (proc.stderr or proc.stdout or '').strip().splitlines()
         return '', 'ocr-exit-%d: %s' % (proc.returncode, tail[-1] if tail else 'no output')
@@ -253,6 +275,8 @@ def main():
                         help='最多处理几个 PDF（默认 %d）' % DEFAULT_LIMIT)
     parser.add_argument('--dry-run', action='store_true', help='只报要做什么，不调用')
     parser.add_argument('--refresh', action='store_true', help='已有卡的也重做')
+    parser.add_argument('--no-reuse-ocr', action='store_true',
+                        help='不复用缓存的 OCR 文字，强制重新识别（默认复用：PDF 没改过就不重做）')
     parser.add_argument('--yes', action='store_true', help='确认调用云端模型')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
@@ -323,7 +347,8 @@ def main():
     for pdf in runnable:
         title = pdf.stem
         if use_ocr:
-            body, via = run_ocr(pdf, args.ocr_root, args.pages, args.dpi, args.window)
+            body, via = run_ocr(pdf, args.ocr_root, args.pages, args.dpi, args.window,
+                                reuse=not args.no_reuse_ocr)
         else:
             body, via = extract_text_pdf(pdf)
         if not body:

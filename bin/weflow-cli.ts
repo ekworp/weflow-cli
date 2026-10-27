@@ -6847,6 +6847,7 @@ program
     .option('--limit <n>', '最多处理几个 PDF', '5')
     .option('--dry-run', '仅预览：几个 PDF、会不会调用本机 OCR（只读本地，零出境）')
     .option('--refresh', '已有卡的也重做（默认增量：只做还没卡的）')
+    .option('--no-reuse-ocr', '不复用缓存的 OCR 文字（默认复用：PDF 没改过就不重做识别，实测 30.9s → 2.3s）')
     .option('--yes', '确认把 PDF 文字发给生成模型')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (opts) => {
@@ -6892,6 +6893,7 @@ program
                     '--window', String(opts.window),
                     '--limit', String(limit),
                     ...(opts.refresh ? ['--refresh'] : []),
+                    ...(opts.reuseOcr === false ? ['--no-reuse-ocr'] : []),
                     ...(confirmed ? ['--yes'] : []),
                     ...(opts.json ? ['--json'] : []),
                     ...(opts.dryRun ? ['--dry-run'] : [])]

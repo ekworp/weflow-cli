@@ -492,7 +492,7 @@ weflow-cli search-index --days 3650 --article-days 365 --yes   # 要"整段历�
 | `weflow-cli chat-notes --days N --yes` | 对话发给 DeepSeek（每会话一次） | 卡是滚动快照，重跑即覆盖 |
 | `weflow-cli fav-notes --limit N --yes` | 收藏的正文发给 DeepSeek（每条一次） | 正文优先用收藏自带的；文章类走日报那条线的抓取（**带缓存**，日报抓过就零网络）；`--dry-run` 只报"几条要抓"，自己不联网 |
 | `weflow-cli user-notes --limit N --yes` | **你自己写的**笔记发给 DeepSeek（每篇一次） | 你的笔记**只读、绝不修改**；卡上标 `summary_by: model`（那是模型的理解，不是你的原话）；**你笔记里的 `[[链接]]` 优先** |
-| `weflow-cli pdf-notes --pdf X.pdf --yes` | **PDF 文字**发给 DeepSeek（每篇一次） | **PDF 本身不出境**：先在本机 OCR（Unlimited-OCR-2）转成文字，只有截断到 3000 字的文字出境。OCR 引擎不在时用 `--ocr none` 走 PDF 内嵌文本（要 PDF 本身是文字版）；`--ocr-root` 指向引擎目录 |
+| `weflow-cli pdf-notes --pdf X.pdf --yes` | **PDF 文字**发给 DeepSeek（每篇一次） | **PDF 本身不出境**：先在本机 OCR（Unlimited-OCR-2）转成文字，只有截断到 3000 字的文字出境。OCR 引擎不在时用 `--ocr none` 走 PDF 内嵌文本（要 PDF 本身是文字版）；`--ocr-root` 指向引擎目录。**OCR 结果默认缓存**：PDF 没改过就复用（实测 30.9s → 2.3s，书越大差越多）；`--no-reuse-ocr` 强制重识别 |
 | `weflow-cli wiki compile --source … --min-refs 2 --yes` | 概念发给 DeepSeek（每个概念一次） | `--min-refs 2` 滤掉只被一篇提到的一次性实体 |
 | `weflow-cli wiki compile --refresh-sources --yes` | **不出境** | 只把**已有页**的「来源」段补齐成当前全部来源（本地重写）。**拉完新文章要跑这一条**，否则新文章提到老概念时，那一页不会多出这条边 |
 | `weflow-cli wiki compile --qualify-links --dry-run` | **不出境** | 两条线同名（本机 36 个）时，把指向它们的链接改成带路径的 `[[Chat/Concepts/DeepSeek|DeepSeek]]` —— 否则 Obsidian 里那条裸链接会**命中另一条线**的那张。只改同名的、不碰「来源」段；幂等，重跑不改第二遍。本机实测 539 条 / 477 张页 |
