@@ -224,6 +224,9 @@ class IndexWindowTests(unittest.TestCase):
             ss.META_FILE = Path(tmp) / 'meta.json'
             ss.VECTORS_FILE = Path(tmp) / 'vectors.npy'
             try:
+                # PDF 那一路也打桩：不打就会去读**真实的** `output/pdf-text`，
+                # 这台机器上只要有一份 PDF 文字，items 就非空、流程会走到向量那一层，
+                # 这条只关心"窗口传没传到"的测试就红了（2026-10-27 实测如此）。
                 with patch.object(ss, 'require_numpy', return_value=object()), \
                      patch.object(ss, 'load_config',
                                   return_value={'ntDbPath': 'synthetic/message_0.db',
@@ -232,7 +235,8 @@ class IndexWindowTests(unittest.TestCase):
                      patch.object(ss, 'get_name_map', return_value={}), \
                      patch.object(ss, 'open_db', return_value=object()), \
                      patch.object(ss, 'collect_chat_messages', side_effect=fake_chat), \
-                     patch.object(ss, 'collect_articles', side_effect=fake_articles):
+                     patch.object(ss, 'collect_articles', side_effect=fake_articles), \
+                     patch.object(ss, 'collect_pdf_text', return_value=[]):
                     result = ss.build_index('fake-key', full=True, days=365, article_days=7)
             finally:
                 ss.INDEX_DIR, ss.META_FILE, ss.VECTORS_FILE = real

@@ -62,7 +62,8 @@ except:
     pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _utils import load_config, decrypt_lock, get_dashscope_key, get_api_key, LINE_LABELS  # noqa: E402
+from _utils import (load_config, decrypt_lock, get_dashscope_key, get_api_key,  # noqa: E402
+                    parse_frontmatter, LINE_LABELS)
 from nt_common import decode_content  # noqa: E402
 from jev_client import create_client
 
@@ -83,7 +84,10 @@ TZ = timezone(timedelta(hours=8))
 #
 # 对外（`--line`、图谱、体检）一律说 `wiki` / `chat`，索引内部叫 `article` / `chat`，
 # **翻译只在这里做一次**。散着写的话改词只会改到一半，而两条线的名字漂了不会报错。
-LINE_TYPES = {'wiki': ('article',), 'chat': ('chat',)}
+# `pdf` 归**文章线**：它和公众号文章是同一类东西（"读过/要读的材料"，用户按内容找它），
+# 而聊天线是"谁说过什么"。不加进来的后果是实测过的：PDF 明明进了索引，`search` 却一条都不返回——
+# 白名单把它过滤掉了，而且不报错。
+LINE_TYPES = {'wiki': ('article', 'pdf'), 'chat': ('chat',)}
 LINE_CHOICES = ('all', 'wiki', 'chat')
 
 
@@ -410,6 +414,99 @@ def collect_articles(article_days=30):
     return items
 
 
+def collect_pdf_text(pdf_chunks=0, chunk_chars=1200):
+    """收 `output/pdf-text/` 里的 PDF 文字（`pdf-notes --ocr-only` 的产物）。
+
+    为什么要单独一路：这条线之前只覆盖公众号文章与聊天，**用户手上的 PDF 完全搜不到**——
+    而 PDF 恰恰是最"存了就再也找不着"的那类材料（合同、财报、白皮书、扫描件）。
+
+    与文章那边三点不同：
+    · **按页切块**。文章几百字一篇，直接截 500 字进向量；一本书十几万字，截了就只剩开头。
+      这里按 `### 第 N 页` 切、再按 `chunk_chars` 合并，每块单独成一条记录（各自一个 id），
+      于是"第 137 页那段话"能被单独命中，而不是被整本平均掉。
+    · **不读日报那层**（PDF 没有 biz-daily 副本），`text` 就是用来匹配的那段，
+      返回时直接用（见 `load_record_text` 里的 `pdf:` 分支）。
+    · `pdf_chunks>0` 时每个文件最多取这么多块（默认 0=不限），给"书太大、只想先试"留个闸门。
+
+    切不出块的（没有页码标记）就整篇一块，不丢。
+    """
+    items = []
+    root = Path(OUTPUT_ROOT) / 'pdf-text'
+    if not root.exists():
+        return items
+    for f in sorted(root.glob('*.md')):
+        try:
+            content = f.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        frontmatter, body = parse_frontmatter(content)
+        title = str(frontmatter.get('title') or f.stem).strip()
+        saved = str(frontmatter.get('saved') or '')[:10]
+        via = str(frontmatter.get('text_via') or '')
+        pages = split_pdf_pages(body)
+        chunks = merge_page_chunks(pages, chunk_chars)
+        if pdf_chunks and pdf_chunks > 0:
+            chunks = chunks[:pdf_chunks]
+        for idx, (page_label, text) in enumerate(chunks):
+            text = text.strip()
+            if len(text) < 20:          # 空页/只有标题的页，不值得一条向量
+                continue
+            items.append({
+                'id': f'pdf:{f.stem}#{idx}',
+                'type': 'pdf',
+                'title': f'{title}（{page_label}）' if page_label else title,
+                'date': saved,
+                'topic': 'PDF',
+                'text': f'{title}\n{text}',
+                'textVia': via,
+            })
+    return items
+
+
+def split_pdf_pages(body):
+    """把 `pdf-text` 的正文按 `### 第 N 页` 切成 [(页码标签, 该页文字)]。
+
+    没有页码标记时整篇当一页返回（`pdf-notes` 之外的工具产出的 md 也就能吃）。
+    """
+    parts = re.split(r'^###\s*第\s*(\d+)\s*页\s*$', body, flags=re.M)
+    if len(parts) < 3:
+        return [('', body)]
+    pages = []
+    # parts = [前言, '1', 第1页, '2', 第2页, …]
+    for i in range(1, len(parts) - 1, 2):
+        pages.append((f'第 {parts[i]} 页', parts[i + 1]))
+    return pages
+
+
+def merge_page_chunks(pages, chunk_chars=1200):
+    """把逐页文字合并成约 `chunk_chars` 大小的块，**页标记留在正文里**。
+
+    为什么要合并：一页通常只有几百字，一页一条向量会让一本 300 页的书产生 300 次
+    embedding 调用（每次只 10 条一批，就是 30 批）。按 ~1200 字合并后约 1/3 的量。
+
+    为什么**不把页标记删掉**：命中之后要能说清"在第几页"。所以块正文里保留
+    `### 第 N 页` 这类小标题，块标题取首页。一页本身超过上限时不拆（宁可超一点，
+    拆了页码就对不上了）。
+    """
+    chunks = []
+    buf, buf_label, size = [], '', 0
+    for label, text in pages:
+        text = text.strip()
+        if not text:
+            continue
+        piece = f'### {label}\n{text}' if label else text
+        if size and size + len(piece) > chunk_chars:
+            chunks.append((buf_label, '\n'.join(buf)))
+            buf, buf_label, size = [], '', 0
+        if not buf_label:
+            buf_label = label
+        buf.append(piece)
+        size += len(piece)
+    if buf:
+        chunks.append((buf_label, '\n'.join(buf)))
+    return chunks
+
+
 # ====== Index Operations ======
 
 def _save_index(base_vectors, base_meta, pairs):
@@ -441,7 +538,8 @@ def _save_index(base_vectors, base_meta, pairs):
     os.replace(tmp_m, META_FILE)
     return len(meta)
 
-def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30, include_imports: bool = False, use_cache: bool = False):
+def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30,
+                include_imports: bool = False, use_cache: bool = False, pdf_chunks: int = 0):
     """Build or update the semantic index.
 
     `days` / `article_days` 决定这个索引**记多久**：它们原先写死在两处调用里
@@ -494,6 +592,7 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
         if include_imports:
             items.extend(collect_imported_chat_items(days=days))
         items.extend(collect_articles(article_days=article_days))
+        items.extend(collect_pdf_text(pdf_chunks=pdf_chunks))
         new_items = [item for item in items if item['id'] not in existing_ids]
         print(f"总数据: {len(items)} 条, 新数据: {len(new_items)} 条", file=sys.stderr)
         return _build_embed_and_write(api_key, items, new_items, existing_ids,
@@ -526,6 +625,10 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
 
     article_items = collect_articles(article_days=article_days)
     items.extend(article_items)
+    pdf_items = collect_pdf_text(pdf_chunks=pdf_chunks)
+    items.extend(pdf_items)
+    if pdf_items:
+        print(f"PDF 文字: {len(pdf_items)} 块（来自 output/pdf-text）", file=sys.stderr)
 
     new_items = [item for item in items if item['id'] not in existing_ids]
     print(f"总数据: {len(items)} 条, 新数据: {len(new_items)} 条", file=sys.stderr)
@@ -1174,6 +1277,12 @@ def load_record_text(item, limit=FULL_TEXT_LIMIT):
     返回 `(text, source_file, url)`；读不到时 text 为 None（**不许**静默当成"这篇没有正文"）。
     """
     rid = str(item.get('id') or '')
+    # PDF：索引里那条**就是**一块正文（整本书十几万字，不能每次命中都读一遍全文）。
+    # 直接返回它，`sourceFile` 指回 pdf-text 那份 md，便于用户去看上下文。
+    if rid.startswith('pdf:'):
+        stem = rid[len('pdf:'):].split('#', 1)[0]
+        path = Path(OUTPUT_ROOT) / 'pdf-text' / f'{stem}.md'
+        return (item.get('text') or ''), str(path), None
     if not rid.startswith('article:'):
         return (item.get('text') or ''), None, None
 
@@ -1586,6 +1695,10 @@ def add_window_args(parser):
                         help='聊天记录收最近多少天（默认 90）')
     parser.add_argument('--article-days', type=int, default=30,
                         help='日报文章收最近多少个日期目录（默认 30）')
+    parser.add_argument('--pdf-chunks', type=int, default=0,
+                        help='每个 PDF 最多收多少块（默认 0=不限）；PDF 文字来自 output/pdf-text')
+    parser.add_argument('--no-pdf', action='store_true',
+                        help='不收 PDF 文字（默认收：每份 PDF 按页切块进索引）')
 
 
 def main():
@@ -1667,12 +1780,14 @@ def main():
         result = build_index(api_key, full=args.full, days=args.days,
                              article_days=args.article_days,
                              include_imports=getattr(args, 'include_imports', False),
-                             use_cache=use_cache)
+                             use_cache=use_cache,
+                             pdf_chunks=0 if getattr(args, 'no_pdf', False) else getattr(args, 'pdf_chunks', 0))
     elif args.command == 'update':
         result = build_index(api_key, full=False, days=args.days,
                              article_days=args.article_days,
                              include_imports=getattr(args, 'include_imports', False),
-                             use_cache=use_cache)
+                             use_cache=use_cache,
+                             pdf_chunks=0 if getattr(args, 'no_pdf', False) else getattr(args, 'pdf_chunks', 0))
     elif args.command == 'phrase-build':
         result = build_phrase_index(line=args.line)
         result['success'] = 'error' not in result

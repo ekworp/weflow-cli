@@ -5797,6 +5797,8 @@ program
     .option('--days <n>', '聊天记录收最近多少天（默认 90）')
     .option('--article-days <n>', '日报文章收最近多少个日期目录（默认 30）')
     .option('--include-imports', '把 weflow-cli import qchat 导入的 QQ 会话也收进索引（聊天半边）')
+    .option('--pdf-chunks <n>', '每个 PDF 最多收多少块（默认 0=不限）；文字来自 output/pdf-text')
+    .option('--no-pdf', '不收 PDF 文字（默认收）')
     .option('--dry-run', '仅预览，不读取数据库、调用网络或写入索引')
     .option('--yes', '确认构建或重建索引')
     .option('--json', '输出 JSON 格式')
@@ -5881,7 +5883,9 @@ program
     const pkgRoot = resolvePackageRoot()
       const script = join(pkgRoot, 'scripts', 'semantic_search.py')
       const args: string[] = [script, 'build', '--days', String(chatDays),
-                              '--article-days', String(articleDays)]
+                              '--article-days', String(articleDays),
+                    ...(opts.pdfChunks ? ['--pdf-chunks', String(opts.pdfChunks)] : []),
+                    ...(opts.noPdf ? ['--no-pdf'] : [])]
       if (opts.full) args.push('--full')
       if (opts.includeImports) args.push('--include-imports')
       try {
