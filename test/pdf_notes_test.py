@@ -260,6 +260,60 @@ class OcrOnlyTests(unittest.TestCase):
                              '--ocr-only 竟然被 --yes 拦住')
 
 
+class ChooseSourceTests(unittest.TestCase):
+    """选路：**本地优先，本地不在才上云端，都没有退回内嵌文本**。
+
+    这是用户明确要的顺序（"有本地就本地解析，否则云端"）。纯函数，一条条钉住：
+    `auto` 的三种组合、强制模式**不偷偷换路**、以及云端那条必须能被识别出来
+    （它会把页面图片发出去，调用方要据此说清差别）。
+    """
+
+    def test_本地可用就本地(self):
+        self.assertEqual(pn.choose_source('auto', True, True)[0], 'local')
+        self.assertEqual(pn.choose_source('auto', True, False)[0], 'local')
+
+    def test_本地不在就上云端(self):
+        source, why = pn.choose_source('auto', False, True)
+        self.assertEqual(source, 'cloud')
+        self.assertIn('出境', why, '换到云端时理由里要写明图片会出境')
+
+    def test_都没有退回内嵌文本(self):
+        source, why = pn.choose_source('auto', False, False)
+        self.assertEqual(source, 'embedded')
+        self.assertIn('扫描件', why, '降级时要提示扫描件读不出')
+
+    def test_强制_local_但没有引擎时报错而不是换云端(self):
+        source, why = pn.choose_source('local', False, True)
+        self.assertEqual(source, '', '指定 local 却悄悄用了云端')
+        self.assertIn('--ocr local', why)
+
+    def test_强制_cloud_但没有_key_时报错而不是回本地(self):
+        source, why = pn.choose_source('cloud', True, False)
+        self.assertEqual(source, '', '指定 cloud 却悄悄用了本地')
+        self.assertIn('DashScope', why)
+
+    def test_none_只抽内嵌文本(self):
+        self.assertEqual(pn.choose_source('none', True, True)[0], 'embedded')
+
+    def test_默认模型是_ocr_专用模型(self):
+        self.assertIn('ocr', pn.DEFAULT_CLOUD_MODEL.lower())
+
+
+class PageSpecTests(unittest.TestCase):
+    def test_空表示全部(self):
+        self.assertEqual(pn.parse_page_spec('', 3), [0, 1, 2])
+
+    def test_区间(self):
+        self.assertEqual(pn.parse_page_spec('2-3', 5), [1, 2])
+
+    def test_单页与列表(self):
+        self.assertEqual(pn.parse_page_spec('3', 5), [2])
+        self.assertEqual(pn.parse_page_spec('1,3', 5), [0, 2])
+
+    def test_越界被丢掉(self):
+        self.assertEqual(pn.parse_page_spec('9-12', 5), [])
+
+
 class ListTests(unittest.TestCase):
     def test_目录递归找_PDF(self):
         with tempfile.TemporaryDirectory() as tmp:

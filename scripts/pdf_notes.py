@@ -44,7 +44,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _utils import (SEPARATOR, call_deepseek, get_api_key, load_config,  # noqa: E402
+from _utils import (SEPARATOR, call_deepseek, get_api_key, get_dashscope_key,  # noqa: E402
+                    load_config,
                     note_path, parse_frontmatter, plain, write_with_frontmatter)
 
 TZ = timezone(timedelta(hours=8))
@@ -90,6 +91,46 @@ def ocr_available(root: str) -> bool:
             and (base / 'ocr2_pdf.py').exists()
             and (base / '.venv' / 'Scripts' / 'python.exe').exists()
             and (base / 'model-00001-of-00002.safetensors').exists())
+
+
+# 云端 OCR 的默认模型。实测（2026-10-27，同一张 1600px 图）：
+#   qwen3.5-ocr  0.8s   qwen-vl-ocr 0.8s   qwen3-vl-plus 1.8s  —— 三个都读对了，
+# 取最快且专做 OCR 的那个。可用 `--ocr-model` 或配置键 `ocrCloudModel` 覆盖。
+DEFAULT_CLOUD_MODEL = 'qwen3.5-ocr'
+CLOUD_ENDPOINT = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
+# 一页一张图、一次请求。并发 3：实测单请求 0.8s，串行跑 300 页要 4 分钟，
+# 而再高容易撞账号级限流（429 会让整页失败，代价比慢更贵）。
+CLOUD_WORKERS = 3
+
+
+def cloud_available() -> bool:
+    """云端 OCR 能不能用：**有 DashScope key 就行**（不复用 deepseekApiKey——
+    那是另一家服务，混用会让人以为"我有 key 所以能 OCR"，实际请求会 401）。"""
+    try:
+        return bool(get_dashscope_key(load_config()))
+    except Exception:
+        return False
+
+
+def choose_source(mode: str, local_ok: bool, cloud_ok: bool) -> tuple:
+    """选路：`(来源, 理由)`。纯函数，便于测顺序。
+
+    `auto` 的优先级就是用户要的那个：**本地在就用本地，不在才上云端**，
+    两边都不行退回到 PDF 内嵌文本（并如实说这是降级）。
+    显式指定 `local`/`cloud` 时**不偷偷换路**——用户说了算，做不到就报错。
+    """
+    if mode == 'local':
+        return ('local', '') if local_ok else ('', '指定了 --ocr local，但本机引擎不完整')
+    if mode == 'cloud':
+        return ('cloud', '') if cloud_ok else ('', '指定了 --ocr cloud，但没配置 DashScope key')
+    if mode == 'none':
+        return 'embedded', ''
+    # auto
+    if local_ok:
+        return 'local', '本机引擎可用'
+    if cloud_ok:
+        return 'cloud', '本机引擎不在，改用云端 OCR（页面图片会出境）'
+    return 'embedded', '本机引擎与云端 key 都没有，退回 PDF 内嵌文本（扫描件会读不出字）'
 
 
 def pdf_page_count(pdf: Path) -> int:
@@ -158,6 +199,146 @@ def run_ocr(pdf: Path, root: str, pages: str, dpi: int, window: int,
         tail = (proc.stderr or proc.stdout or '').strip().splitlines()
         return '', 'ocr-exit-%d: %s' % (proc.returncode, tail[-1] if tail else 'no output')
     return out.read_text(encoding='utf-8'), 'local-ocr'
+
+
+def cloud_cache_path(pdf: Path, dpi: int, pages: str, model: str) -> Path:
+    """云端 OCR 的缓存：**模型也算进键**（换模型就是另一份文字，不能混）。"""
+    key = 'cloud|%s|%d|%s|%s' % (pdf.resolve(), dpi, pages, model)
+    digest = hashlib.md5(key.encode('utf-8')).hexdigest()[:10]
+    return Path(OUTPUT_ROOT) / '.cache' / 'cloud-ocr' / ('%s-%s.md' % (pdf.stem, digest))
+
+
+def _render_pages(pdf: Path, idx: list, dpi: int) -> list:
+    """把指定页渲染成 PNG 的 base64。返回 [(页号, b64)]。"""
+    import base64
+    import fitz
+    doc = fitz.open(str(pdf))
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    out = []
+    for i in idx:
+        if i >= doc.page_count:
+            continue
+        png = doc[i].get_pixmap(matrix=mat).tobytes('png')
+        out.append((i + 1, base64.b64encode(png).decode()))
+    doc.close()
+    return out
+
+
+def _cloud_ocr_page(b64: str, key: str, model: str, timeout: int = 120) -> str:
+    """一页 → 文字。失败抛异常，由上层计数（**不静默当空页**）。"""
+    import urllib.request
+    payload = {
+        'model': model, 'max_tokens': 4000,
+        'messages': [{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + b64}},
+            {'type': 'text',
+             'text': 'OCR识别这一页，保持原始段落与阅读顺序，直接输出纯文本；'
+                     '不要解释、不要加标题或代码块。'}
+        ]}],
+    }
+    req = urllib.request.Request(
+        CLOUD_ENDPOINT, data=json.dumps(payload).encode('utf-8'),
+        headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+    return (data['choices'][0]['message']['content'] or '').strip()
+
+
+def run_cloud_ocr(pdf: Path, pages: str, dpi: int, model: str, reuse: bool = True):
+    """云端 OCR：逐页渲染 → 并发调用 → 拼成与本地同款 Markdown。
+
+    为什么按**页**而不是整个 PDF：DashScope 的对话接口一次一张图，而且失败只影响一页
+    （本地那套是整份文档一个进程，中途挂了全丢）。
+
+    缓存：同一份 PDF + 同样的 dpi/页范围/模型 → 直接复用（判断依据同本地那条）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    out = cloud_cache_path(pdf, dpi, pages, model)
+    if reuse and out.exists():
+        try:
+            if out.stat().st_mtime >= pdf.stat().st_mtime:
+                return out.read_text(encoding='utf-8'), 'cloud-ocr-cached'
+        except OSError:
+            pass
+    key = get_dashscope_key(load_config())
+    if not key:
+        return '', 'cloud-no-key'
+    try:
+        idx = parse_page_spec(pages, pdf_page_count(pdf))
+        rendered = _render_pages(pdf, idx, dpi)
+    except Exception as error:
+        return '', 'cloud-render-failed: %s' % type(error).__name__
+    if not rendered:
+        return '', 'cloud-no-pages'
+
+    failed = []
+
+    def one(item):
+        page_no, b64 = item
+        try:
+            return page_no, _cloud_ocr_page(b64, key, model), None
+        except Exception as error:
+            return page_no, '', type(error).__name__
+
+    results = []
+    try:
+        with ThreadPoolExecutor(max_workers=CLOUD_WORKERS) as pool:
+            for page_no, text, err in pool.map(one, rendered):
+                if err:
+                    failed.append('%d:%s' % (page_no, err))
+                results.append((page_no, text))
+    except Exception as error:
+        return '', 'cloud-failed: %s' % type(error).__name__
+
+    if not any(text.strip() for _n, text in results):
+        return '', 'cloud-all-failed（%s）' % '; '.join(failed[:3] or ['无输出'])
+
+    parts = ['# %s\n' % pdf.stem]
+    for page_no, text in sorted(results):
+        parts.append('\n### 第 %d 页\n\n%s\n' % (page_no, text or '（本页识别失败）'))
+    body = ''.join(parts)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(body, encoding='utf-8')
+    except OSError:
+        pass
+    via = 'cloud-ocr'
+    if failed:
+        via = 'cloud-ocr-partial:%d页失败' % len(failed)
+    return body, via
+
+
+def parse_page_spec(spec: str, total: int) -> list:
+    """`1-50` / `3` / `1,5,9` / 空 → 页号列表（0 基）。与 OCR 脚本的语义保持一致。"""
+    if not spec or not total:
+        return list(range(total))
+    out = []
+    for part in str(spec).split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            a, b = part.split('-', 1)
+            out += list(range(int(a) - 1, min(int(b), total)))
+        else:
+            out.append(int(part) - 1)
+    return [i for i in out if 0 <= i < total]
+
+
+def read_text_by_source(pdf: Path, source: str, args) -> tuple:
+    """按选定的来源取正文。**一处分发**，两个调用点（--ocr-only 与出卡）共用。
+
+    放成一个函数是踩出来的教训：同一段 if/else 抄两遍，改一处忘另一处时症状是
+    "`--ocr-only` 走了云端、出卡却还走本地"，而两条路都能跑通、不报错。
+    """
+    if source == 'local':
+        return run_ocr(pdf, args.ocr_root, args.pages, args.dpi, args.window,
+                       reuse=not args.no_reuse_ocr)
+    if source == 'cloud':
+        model = getattr(args, 'ocr_model', '') or DEFAULT_CLOUD_MODEL
+        return run_cloud_ocr(pdf, args.pages, args.dpi, model,
+                             reuse=not args.no_reuse_ocr)
+    return extract_text_pdf(pdf)
 
 
 def extract_text_pdf(pdf: Path) -> tuple:
@@ -269,8 +450,11 @@ def main():
     parser.add_argument('--dir', default='', help='PDF 目录（递归找 *.pdf）')
     parser.add_argument('--out', default=OUTPUT_ROOT, help='卡片输出目录')
     parser.add_argument('--ocr-root', default=DEFAULT_OCR_ROOT, help='本机 OCR 引擎目录（Unlimited-OCR-2）')
-    parser.add_argument('--ocr', choices=['auto', 'none'], default='auto',
-                        help='auto=用本机 OCR；none=只抽 PDF 内嵌文本（不调 OCR 引擎）')
+    parser.add_argument('--ocr', choices=['auto', 'local', 'cloud', 'none'], default='auto',
+                        help='auto=本地引擎在就用本地、不在就上云端、都没有才抽内嵌文本；'
+                             'local/cloud 强制指定（做不到就报错，不偷偷换路）；none=只抽内嵌文本')
+    parser.add_argument('--ocr-model', default='',
+                        help='云端 OCR 用的模型（默认 %s）' % DEFAULT_CLOUD_MODEL)
     parser.add_argument('--pages', default='', help='只处理这些页（例 1-50），OCR 用')
     parser.add_argument('--dpi', type=int, default=200, help='OCR 渲染精度（默认 200）')
     parser.add_argument('--window', type=int, default=OCR_WINDOW, help='OCR 一次喂几页（默认 %d）' % OCR_WINDOW)
@@ -298,14 +482,17 @@ def main():
               file=sys.stdout if args.json else sys.stderr)
         return 1
 
-    use_ocr = args.ocr == 'auto'
-    if use_ocr and not ocr_available(args.ocr_root):
-        message = ('本机 OCR 引擎不在 %s（缺 ocr2_pdf.py / .venv / 权重）。'
-                   '要么把引擎装到那个目录，要么用 --ocr none 走 PDF 内嵌文本。'
-                   % args.ocr_root)
+    # 选路：本地优先，本地不在才上云端，两边都没有退回内嵌文本。
+    # `choose_source` 是纯函数，顺序由它一处决定（测试钉在那里）。
+    source, why = choose_source(args.ocr, ocr_available(args.ocr_root), cloud_available())
+    if not source:
+        message = why
         print(json.dumps({'success': False, 'error': message}) if args.json else message,
               file=sys.stdout if args.json else sys.stderr)
         return 1
+    use_ocr = source in ('local', 'cloud')
+    if why and source != 'local':
+        print('[OCR] %s' % why, file=sys.stderr)
 
     runnable, existing = [], []
     for pdf in pdfs:
@@ -316,15 +503,25 @@ def main():
         preview = {
             'success': True, 'dryRun': True, 'action': 'pdf-notes',
             'mode': 'ocr-only' if args.ocr_only else 'card',
-            'pdfs': len(runnable), 'ocr': 'local' if use_ocr else 'embedded-text',
-            'ocrEngine': args.ocr_root if use_ocr else None,
+            'pdfs': len(runnable),
+            # 这次**实际**走哪条路：`auto` 的结果要报出来，否则用户以为"没上传"、
+            # 实际页面图片已经出境了（云端那条的隐私差别就在这里）。
+            'ocrSource': source, 'ocrWhy': why or None,
+            'ocr': {'local': 'local', 'cloud': 'cloud', 'embedded': 'embedded-text'}[source],
+            'ocrEngine': args.ocr_root if source == 'local' else None,
+            'ocrModel': (args.ocr_model or DEFAULT_CLOUD_MODEL) if source == 'cloud' else None,
+            'sendsImages': source == 'cloud',
             'alreadyCarded': len(existing),
             'model': None if args.ocr_only else 'DeepSeek（生成摘要与概念）',
             'calls': 0 if args.ocr_only else len(runnable),
             'readsLocalData': True, 'invokesAI': False, 'writesFiles': True,
-            'note': ('只做本机 OCR、只写文字，不调用模型也不出境（%s）' % TEXT_ROOT
+            'note': ('只做 OCR、只写文字，不调用生成模型（%s）' % TEXT_ROOT
                      if args.ocr_only else
-                     'PDF 文字在本机 OCR（不出网）；每篇一次模型调用，同时问摘要与概念'),
+                     ('PDF 文字在本机 OCR（不出网）；每篇一次模型调用，同时问摘要与概念'
+                      if source == 'local' else
+                      'PDF **页面图片会发给云端**做 OCR；每篇另一次模型调用问摘要与概念'
+                      if source == 'cloud' else
+                      '只抽 PDF 内嵌文本（扫描件会读不出字）')),
         }
         if args.json:
             print(json.dumps(preview, ensure_ascii=False, indent=2))
@@ -353,11 +550,7 @@ def main():
         updated = datetime.now(TZ).strftime('%Y-%m-%d %H:%M')
         written, failed = [], []
         for pdf in runnable:
-            if use_ocr:
-                body, via = run_ocr(pdf, args.ocr_root, args.pages, args.dpi, args.window,
-                                    reuse=not args.no_reuse_ocr)
-            else:
-                body, via = extract_text_pdf(pdf)
+            body, via = read_text_by_source(pdf, source, args)
             if not body:
                 failed.append({'title': pdf.stem[:30], 'reason': via or 'no-text'})
                 continue
@@ -372,7 +565,7 @@ def main():
             written.append({'title': pdf.stem[:30], 'file': str(target), 'textVia': via,
                             'chars': len(body)})
         result = {'success': True, 'action': 'pdf-notes.ocr-only', 'model': None,
-                  'ocrEngine': args.ocr_root if use_ocr else None,
+                  'ocrSource': source, 'ocrEngine': args.ocr_root if source == 'local' else None,
                   'written': written, 'failed': failed, 'pdfs': len(runnable),
                   'calls': 0, 'invokesAI': False}
         if args.json:
@@ -402,11 +595,7 @@ def main():
     written, failed, skipped = [], [], []
     for pdf in runnable:
         title = pdf.stem
-        if use_ocr:
-            body, via = run_ocr(pdf, args.ocr_root, args.pages, args.dpi, args.window,
-                                reuse=not args.no_reuse_ocr)
-        else:
-            body, via = extract_text_pdf(pdf)
+        body, via = read_text_by_source(pdf, source, args)
         if not body:
             failed.append({'title': title[:30], 'reason': via or 'no-text'})
             continue
@@ -433,7 +622,7 @@ def main():
 
     result = {
         'success': True, 'action': 'pdf-notes', 'model': 'DeepSeek（生成摘要与概念）',
-        'ocrEngine': args.ocr_root if use_ocr else None,
+        'ocrSource': source, 'ocrEngine': args.ocr_root if source == 'local' else None,
         'written': written, 'failed': failed, 'skipped': skipped,
         'pdfs': len(runnable), 'calls': len(runnable),
     }

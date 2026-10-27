@@ -6844,7 +6844,8 @@ program
     .option('--dir <dir>', 'PDF 目录（递归找 *.pdf）')
     .option('--ocr-root <dir>', '本机 OCR 引擎目录（Unlimited-OCR-2）',
             'D:\\github_project\\ZhaoWen_GitHub维护\\ocr2')
-    .option('--ocr <mode>', 'auto=本机 OCR；none=只抽 PDF 内嵌文本', 'auto')
+    .option('--ocr <mode>', 'auto=本地在就用本地、不在就上云端、都没有才抽内嵌文本；local/cloud 强制；none 只抽内嵌文本', 'auto')
+    .option('--ocr-model <name>', '云端 OCR 模型（默认 qwen3.5-ocr）')
     .option('--pages <range>', '只处理这些页（例 1-50）')
     .option('--dpi <n>', 'OCR 渲染精度（默认 200）', '200')
     .option('--window <n>', 'OCR 一次喂几页（默认 10）', '10')
@@ -6894,6 +6895,7 @@ program
                     ...(opts.dir ? ['--dir', String(opts.dir)] : []),
                     '--ocr-root', String(opts.ocrRoot),
                     '--ocr', String(opts.ocr),
+                    ...(opts.ocrModel ? ['--ocr-model', String(opts.ocrModel)] : []),
                     ...(opts.pages ? ['--pages', String(opts.pages)] : []),
                     '--dpi', String(opts.dpi),
                     '--window', String(opts.window),
