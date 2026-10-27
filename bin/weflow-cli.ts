@@ -6842,6 +6842,7 @@ program
     .description('把 PDF 变知识卡（本机 OCR 转文字，再问摘要与概念）—— **只写本地文件，不发送**')
     .option('--pdf <file>', '单个 PDF 路径')
     .option('--dir <dir>', 'PDF 目录（递归找 *.pdf）')
+    .option('--from-chat', '从聊天记录里找别人发过的 PDF（读微信 hardlink.db，按文件时间倒序）')
     .option('--ocr-root <dir>', '本机 OCR 引擎目录（Unlimited-OCR-2）',
             'D:\\github_project\\ZhaoWen_GitHub维护\\ocr2')
     .option('--ocr <mode>', 'auto=本地在就用本地、不在就上云端、都没有才抽内嵌文本；local/cloud 强制；none 只抽内嵌文本', 'auto')
@@ -6893,6 +6894,7 @@ program
       const args = [script,
                     ...(opts.pdf ? ['--pdf', String(opts.pdf)] : []),
                     ...(opts.dir ? ['--dir', String(opts.dir)] : []),
+                    ...(opts.fromChat ? ['--from-chat'] : []),
                     '--ocr-root', String(opts.ocrRoot),
                     '--ocr', String(opts.ocr),
                     ...(opts.ocrModel ? ['--ocr-model', String(opts.ocrModel)] : []),

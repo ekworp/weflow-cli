@@ -53,6 +53,10 @@ OUTPUT_ROOT = 'output/pdf-notes'
 # `--ocr-only` 的落点：**只有文字**，没有卡片。与卡片目录分开，免得 compile_wiki 把
 # 没有 `[[概念]]` 的纯文本当成一份坏卡去扫（它按 `output/*-notes` 通配找目录）。
 TEXT_ROOT = 'output/pdf-text'
+# 中间产物（云端 OCR 缓存）。**必须和卡片目录分开**：`compile_wiki --source output/pdf-notes`
+# 会把那个目录下的 .md 当卡片扫，缓存落进去就会被当成一张"没有概念的坏卡"。
+# 实测踩过：缓存当时写在 `output/pdf-notes/.cache/cloud-ocr/` 下。
+CACHE_ROOT = 'output/.cache'
 DEFAULT_LIMIT = 5
 # 进提示词的字数上限。PDF 的 OCR 全文可能几万字，3000 与文章线对齐。
 MAX_PDF_CHARS = 3000
@@ -209,7 +213,7 @@ def cloud_cache_path(pdf: Path, dpi: int, pages: str, model: str) -> Path:
     """云端 OCR 的缓存：**模型也算进键**（换模型就是另一份文字，不能混）。"""
     key = 'cloud|%s|%d|%s|%s' % (pdf.resolve(), dpi, pages, model)
     digest = hashlib.md5(key.encode('utf-8')).hexdigest()[:10]
-    return Path(OUTPUT_ROOT) / '.cache' / 'cloud-ocr' / ('%s-%s.md' % (pdf.stem, digest))
+    return Path(CACHE_ROOT) / 'cloud-ocr' / ('%s-%s.md' % (pdf.stem, digest))
 
 
 def _render_pages(pdf: Path, idx: list, dpi: int) -> list:
@@ -375,6 +379,57 @@ def list_pdfs(source: str, pdf: str) -> list:
     return sorted(root.rglob('*.pdf'))
 
 
+def list_chat_pdfs(limit: int = 0) -> tuple:
+    """聊天里收到的 PDF：读微信自己的 `hardlink.db`（`file` 表 → 本地路径）。
+
+    为什么走 hardlink 而不是扫 `msg/` 目录：那个索引是微信自己维护的 `md5 → (目录, 文件名)`，
+    转发的副本、被改过名的也认；扫目录会漏。实测本机：1,978 条文件记录、**279 个 .pdf**，
+    其中 **199 个**本地还在（80 个已被微信清理）。
+
+    返回 `(文件列表, 说明)`；说明非空表示**一条都没取到**的原因（配置缺、库打不开、全是清理过的）。
+    排序按文件 mtime 倒序——hardlink 表里没有"收到时间"，mtime 是能拿到的最接近的代理。
+    """
+    try:
+        import media_index as mi
+    except Exception as error:
+        return [], '读不到 media_index（%s）' % type(error).__name__
+    try:
+        config = load_config()
+        if not config.get('ntDbPath'):
+            return [], '配置里没有 ntDbPath（先跑 weflow-cli init）'
+        got = mi.open_db(config)
+        conn = got[0] if isinstance(got, tuple) else got
+        rows = mi.load_rows(conn, 'file')
+    except SystemExit as error:
+        return [], str(error) or 'hardlink.db 不可用'
+    except Exception as error:
+        return [], '读 hardlink.db 失败（%s: %s）' % (type(error).__name__, error)
+
+    found, cleaned = [], 0
+    for row in rows:
+        if not str(row.get('file', '')).lower().endswith('.pdf'):
+            continue
+        path = mi.resolve(config, row)
+        if not path.exists():
+            cleaned += 1
+            continue
+        try:
+            found.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    found.sort(reverse=True)
+    files = [p for _mt, p in found]
+    if limit:
+        files = files[:limit]
+    note = ''
+    if not files:
+        note = ('聊天记录里没有可读的 PDF（%d 个已被微信清理）' % cleaned) if cleaned else \
+               '聊天记录里没有 PDF 文件'
+    elif cleaned:
+        note = '另有 %d 个 PDF 已被微信清理，跳过' % cleaned
+    return files, note
+
+
 def build_prompt(title: str, body: str) -> str:
     """PDF 正文 → 提示词。抽出来是为了让测试能断言"喂给模型的串"是什么。"""
     return PDF_PROMPT.format(title=title, body=body[:MAX_PDF_CHARS],
@@ -463,6 +518,8 @@ def main():
     parser = argparse.ArgumentParser(description='PDF 知识卡（PDF → 本机 OCR → 摘要与概念，喂给 wiki compile）')
     parser.add_argument('--pdf', default='', help='单个 PDF 路径')
     parser.add_argument('--dir', default='', help='PDF 目录（递归找 *.pdf）')
+    parser.add_argument('--from-chat', action='store_true',
+                        help='从聊天记录里找别人发过的 PDF（读微信 hardlink.db，按文件时间倒序）')
     parser.add_argument('--out', default=OUTPUT_ROOT, help='卡片输出目录')
     parser.add_argument('--ocr-root', default=DEFAULT_OCR_ROOT, help='本机 OCR 引擎目录（Unlimited-OCR-2）')
     parser.add_argument('--ocr', choices=['auto', 'local', 'cloud', 'none'], default='auto',
@@ -490,7 +547,17 @@ def main():
         print(json.dumps({'success': False, 'error': '--limit 要 ≥ 1'}), file=sys.stdout)
         return 1
 
-    pdfs = list_pdfs(args.dir, args.pdf)
+    if args.from_chat:
+        pdfs, chat_note = list_chat_pdfs(limit=0)     # 截断留给 --limit（它同时是花费闸门）
+        if chat_note:
+            print('[聊天 PDF] %s' % chat_note, file=sys.stderr)
+        if not pdfs:
+            message = chat_note or '聊天记录里没有可读的 PDF'
+            print(json.dumps({'success': False, 'error': message}) if args.json else message,
+                  file=sys.stdout if args.json else sys.stderr)
+            return 1
+    else:
+        pdfs = list_pdfs(args.dir, args.pdf)
     if not pdfs:
         message = '没找到 PDF（--pdf %s / --dir %s）' % (args.pdf or '-', args.dir or '-')
         print(json.dumps({'success': False, 'error': message}) if args.json else message,

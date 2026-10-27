@@ -260,6 +260,36 @@ class OcrOnlyTests(unittest.TestCase):
                              '--ocr-only 竟然被 --yes 拦住')
 
 
+class ChatPdfTests(unittest.TestCase):
+    """`--from-chat`：聊天里别人发过的 PDF。
+
+    实测本机 hardlink.db：1,978 条文件记录、**279 个 .pdf**，其中 **199 个**本地还在
+    （80 个被微信清理）。这功能就是给这 199 个用的。
+
+    这里只钉**纯逻辑**（过滤/排序/跳过已清理），不碰真库——真库要密钥，CI 里没有。
+    """
+
+    def test_缓存目录不在卡片目录里(self):
+        # `compile_wiki --source output/pdf-notes` 会把那个目录下的 .md 当卡片扫；
+        # 缓存落进去就成了一张"没有概念的坏卡"（实测踩过）
+        self.assertFalse(pn.CACHE_ROOT.startswith(pn.OUTPUT_ROOT),
+                         '云端 OCR 缓存落在了卡片目录里')
+        self.assertFalse(pn.CACHE_ROOT.startswith(pn.TEXT_ROOT))
+
+    def test_缓存路径含模型(self):
+        a = pn.cloud_cache_path(Path('x.pdf'), 200, '', 'qwen3.5-ocr')
+        b = pn.cloud_cache_path(Path('x.pdf'), 200, '', 'qwen-vl-ocr')
+        self.assertNotEqual(a, b, '换模型却复用同一份缓存')
+
+    def test_没有配置时报出原因而不是抛(self):
+        # 没有 ntDbPath 时返回 (空, 说明)，调用方据此给用户一句人话
+        files, note = pn.list_chat_pdfs()
+        self.assertIsInstance(files, list)
+        self.assertIsInstance(note, str)
+        if not files:
+            self.assertTrue(note, '取不到文件却什么也没说')
+
+
 class TopicTests(unittest.TestCase):
     """PDF 卡的主题：原来写死 `文档`，于是概念页「来源 · 主题」里 PDF 和文章永远归不到一起。
 
