@@ -6650,6 +6650,95 @@ program
       }
     })
 
+  // pdf-notes：PDF → 本机 OCR → 摘要与概念，喂给 wiki compile
+  program
+    .command('pdf-notes')
+    .description('把 PDF 变知识卡（本机 OCR 转文字，再问摘要与概念）—— **只写本地文件，不发送**')
+    .option('--pdf <file>', '单个 PDF 路径')
+    .option('--dir <dir>', 'PDF 目录（递归找 *.pdf）')
+    .option('--ocr-root <dir>', '本机 OCR 引擎目录（Unlimited-OCR-2）',
+            'D:\\github_project\\ZhaoWen_GitHub维护\\ocr2')
+    .option('--ocr <mode>', 'auto=本机 OCR；none=只抽 PDF 内嵌文本', 'auto')
+    .option('--pages <range>', '只处理这些页（例 1-50）')
+    .option('--dpi <n>', 'OCR 渲染精度（默认 200）', '200')
+    .option('--window <n>', 'OCR 一次喂几页（默认 10）', '10')
+    .option('--limit <n>', '最多处理几个 PDF', '5')
+    .option('--dry-run', '仅预览：几个 PDF、会不会调用本机 OCR（只读本地，零出境）')
+    .option('--refresh', '已有卡的也重做（默认增量：只做还没卡的）')
+    .option('--yes', '确认把 PDF 文字发给生成模型')
+    .option('--json', '输出机器可读结果；执行仍需 --yes')
+    .action(async (opts) => {
+      const { execFile } = await import('child_process')
+      const { promisify } = await import('util')
+      const execFileAsync = promisify(execFile)
+      const pkgRoot = resolvePackageRoot()
+      const script = join(pkgRoot, 'scripts', 'pdf_notes.py')
+      const limit = parseCliInteger(opts.limit, 'limit', 1, 5000, opts.json)
+      // 与其它几条线同一条纪律：**"确认过了"只用一个变量**，参数在确认之后才拼。
+      // 这条线多一句提示：PDF 的**文字**会出境（PDF 本身不出境，本机 OCR）。
+      let confirmed = !!opts.yes
+      if (!opts.dryRun && !confirmed) {
+        const preview = {
+          success: false, dryRun: false, action: 'pdf-notes',
+          code: 'CONFIRMATION_REQUIRED', pdf: opts.pdf, dir: opts.dir, limit,
+          readsLocalData: true, invokesAI: true, writesLocalFiles: true, sendsNothing: true,
+          note: 'PDF 在本机 OCR（不出网）；只有 OCR 后的文字会发给模型',
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(preview))
+          process.exit(1)
+        }
+        const answer = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'confirmed',
+          message: '确认把这些 PDF 的文字（OCR 后）发给生成模型吗？（PDF 本身在本机 OCR，不出境）',
+          default: false,
+        }])
+        confirmed = !!answer.confirmed
+        if (!confirmed) {
+          console.log(chalk.gray('已取消'))
+          return
+        }
+      }
+      const args = [script,
+                    ...(opts.pdf ? ['--pdf', String(opts.pdf)] : []),
+                    ...(opts.dir ? ['--dir', String(opts.dir)] : []),
+                    '--ocr-root', String(opts.ocrRoot),
+                    '--ocr', String(opts.ocr),
+                    ...(opts.pages ? ['--pages', String(opts.pages)] : []),
+                    '--dpi', String(opts.dpi),
+                    '--window', String(opts.window),
+                    '--limit', String(limit),
+                    ...(opts.refresh ? ['--refresh'] : []),
+                    ...(confirmed ? ['--yes'] : []),
+                    ...(opts.json ? ['--json'] : []),
+                    ...(opts.dryRun ? ['--dry-run'] : [])]
+      try {
+        const { stdout } = await execFileAsync(getPythonCommand(), args, {
+          timeout: 7_200_000, maxBuffer: 50 * 1024 * 1024,
+          env: pythonProcessEnv(),
+        })
+        process.stdout.write(stdout)
+      } catch (error) {
+        // 脚本自己在 `--json` 下会打印一条**结构化**错误（没找到 PDF、OCR 引擎缺失…）。
+        // 直接透出它，比一句"子进程执行失败"有用得多——那正是这个命令最需要说清的两件事。
+        const raw = String((error as { stdout?: unknown }).stdout ?? '').trim()
+        const parsed = (() => {
+          if (!raw) return null
+          try { return JSON.parse(raw) as { success?: boolean; error?: string } } catch { return null }
+        })()
+        if (opts.json) {
+          console.log(parsed
+            ? JSON.stringify({ ...parsed, code: 'PDF_NOTES_FAILED', action: 'pdf-notes' })
+            : JSON.stringify({ success: false, code: 'PDF_NOTES_FAILED', action: 'pdf-notes', error: safeSubprocessError(error) }))
+        } else {
+          const message = parsed?.error || safeSubprocessError(error)
+          console.error(chalk.red(`\n✗ ${message}`))
+        }
+        process.exit(1)
+      }
+    })
+
   // todos
   const todosCmd = program
     .command('todos')

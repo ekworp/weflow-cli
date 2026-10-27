@@ -4135,3 +4135,29 @@ CHANGELOG 不记、机器读不到。用户升级微信后读不出数据时，�
   人类输出与 report 的措辞共用 `describeCompatVerdict` / 渲染器里的一份，不各写一套。
 - 判定是**对"本机此刻"的陈述**，不是兼容性承诺：说"verified"只是"这个组合验证过"，
   "older"一般兼容但没有保证——措辞已按此收敛。
+## D-131: PDF 走本机 OCR 再出境；卡片形状与其它四条线一致
+
+**Status:** Active
+
+**Decision.** 新增 `pdf-notes` 命令与 `scripts/pdf_notes.py`：**PDF 本身不出境**，先在本机用
+Unlimited-OCR-2（`ocr2/`，默认 `--ocr-root D:\github_project\ZhaoWen_GitHub维护\ocr2`）转成
+Markdown；**只有 OCR 后的文字**（截断到 3000 字，与文章线同量级）发给 DeepSeek，一次调用同时问出
+`summary` 与 `concepts`。产出的卡是 `type: pdf-card`，形状与 `article-card` 同款（frontmatter +
+`## AI 摘要` + `## 概念`），`wiki compile --source output/pdf-notes` 直接能吃。OCR 引擎不可用时
+**如实报错**并提示 `--ocr none`（走 PDF 内嵌文本），不静默降级。
+
+**Reason.** 其它四条线（文章/聊天/收藏/自己的笔记）的材料**已经是文字**，出境的只有文字；PDF 多
+一步"变文字"。若把 PDF 直接丢给云端视觉模型，**整份文档出境**——与本项目"只发必要内容"的边界
+冲突，而本机已经有能读几百页 PDF 的 OCR 引擎，正好补上这条边界。卡片的形状必须一致，否则
+`compile_wiki` 要为 PDF 单独开一条分支，而它现在对四条线一视同仁。
+
+**Consequences.**
+- 摘要是**模型写的**（PDF 没有"原笔记"可抄），所以 frontmatter 标 `summary_by: model`，
+  与收藏线一致；`text_via` 记下正文来自 `local-ocr` 还是 `embedded-text`。
+- OCR 引擎是**外部依赖**：`--ocr-root` 指向它，缺目录/权重时命令失败并说清怎么修，不假装能跑。
+- 多页 OCR 必须用 gundam 切块（`ocr2_pdf.py` 传 `crop_mode=True`）：base 模式把整页压成
+  1024×1024，A4 小字会糊——实测只读出每页第一行。这是 OCR 脚本内部的默认差异，写在这里免得
+  下次重新踩。
+- 一次模型调用同时问摘要与概念（收藏线的形状），**不**分两次问：多一次调用就多一次编造机会，
+  而摘要能从概念里得到骨架。
+- 卡片目录沿用 `output/*-notes` 通配（`output/pdf-notes`），体检与聚合不用改。
