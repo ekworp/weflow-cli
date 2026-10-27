@@ -260,6 +260,65 @@ class OcrOnlyTests(unittest.TestCase):
                              '--ocr-only 竟然被 --yes 拦住')
 
 
+class RenderTests(unittest.TestCase):
+    """页面渲染：**必须封顶 + 用 JPEG**。
+
+    实测事故：聊天里一份 17 MB 宣传资料，页面 200 dpi 下是 13978×9548 px → PNG 26 MB、
+    base64 35 MB，请求直接超限，三页全挂 `URLError`（而错误信息只说 URLError，
+    完全看不出是"图太大"）。封顶到 3000 px + JPEG 后同一份 26 秒跑完。
+    """
+
+    def _pdf_with_huge_page(self, path):
+        import fitz
+        doc = fitz.open()
+        # 2000×2000 pt 的页面 → 200dpi 下是 5555×5555 px，远超上限
+        doc.new_page(width=2000, height=2000)
+        doc.save(str(path))
+        doc.close()
+
+    def test_超大页面被压到上限内(self):
+        import base64
+        import io
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / 'huge.pdf'
+            self._pdf_with_huge_page(pdf)
+            pages = pn._render_pages(pdf, [0], dpi=200)
+            self.assertEqual(len(pages), 1)
+            raw = base64.b64decode(pages[0][1])
+            self.assertLess(len(raw), 3 * 1024 * 1024, '压完了还是太大，请求会超限')
+            img = Image.open(io.BytesIO(raw))
+            self.assertLessEqual(max(img.size), pn.MAX_PAGE_PX, '最长边没封顶到 MAX_PAGE_PX')
+            self.assertEqual(img.format, 'JPEG')
+
+    def test_普通_A4_按_dpi_渲染(self):
+        import base64
+        import io
+        from PIL import Image
+        import fitz
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / 'a4.pdf'
+            doc = fitz.open()
+            doc.new_page(width=595, height=842)      # A4 in points
+            doc.save(str(pdf))
+            doc.close()
+            pages = pn._render_pages(pdf, [0], dpi=200)
+            img = Image.open(io.BytesIO(base64.b64decode(pages[0][1])))
+            # A4 200dpi ≈ 1654×2339，不该被压
+            self.assertGreater(img.size[0], 1600)
+            self.assertLessEqual(max(img.size), pn.MAX_PAGE_PX)
+
+    def test_页号从_1_开始(self):
+        import fitz
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / 'two.pdf'
+            doc = fitz.open()
+            doc.new_page(); doc.new_page()
+            doc.save(str(pdf))
+            doc.close()
+            self.assertEqual([n for n, _ in pn._render_pages(pdf, [0, 1], 150)], [1, 2])
+
+
 class ChatPdfTests(unittest.TestCase):
     """`--from-chat`：聊天里别人发过的 PDF。
 

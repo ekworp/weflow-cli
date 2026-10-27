@@ -221,18 +221,39 @@ def cloud_cache_path(pdf: Path, dpi: int, pages: str, model: str) -> Path:
     return Path(CACHE_ROOT) / 'cloud-ocr' / ('%s-%s.md' % (pdf.stem, digest))
 
 
+# 单页渲染的最长边（像素）。**必须设上限**：实测聊天里有一份 17 MB 的宣传资料，
+# 页面在 200 dpi 下是 13978×9548 px，PNG 26 MB、base64 35 MB —— 请求直接超限，
+# 三页全挂在 `URLError`（而错误信息只说 URLError，看不出是"图太大"）。
+# 3000 px 对 OCR 足够：A4 在 200 dpi 下是 1654×2339，远小于它。
+MAX_PAGE_PX = 3000
+JPEG_QUALITY = 88
+
+
 def _render_pages(pdf: Path, idx: list, dpi: int) -> list:
-    """把指定页渲染成 PNG 的 base64。返回 [(页号, b64)]。"""
+    """把指定页渲染成 **JPEG** 的 base64。返回 [(页号, b64)]。
+
+    用 JPEG 而不是 PNG：同一页 PNG 26 MB / JPEG 1–2 MB，而 OCR 不在乎无损。
+    再配合 `MAX_PAGE_PX` 的上限，异常大的页面（海报、扫描大幅面）也能送出去。
+    """
     import base64
+    import io
     import fitz
+    from PIL import Image
     doc = fitz.open(str(pdf))
-    mat = fitz.Matrix(dpi / 72, dpi / 72)
     out = []
     for i in idx:
         if i >= doc.page_count:
             continue
-        png = doc[i].get_pixmap(matrix=mat).tobytes('png')
-        out.append((i + 1, base64.b64encode(png).decode()))
+        page = doc[i]
+        scale = dpi / 72.0
+        longest = max(page.rect.width, page.rect.height) * scale
+        if longest > MAX_PAGE_PX:
+            scale *= MAX_PAGE_PX / longest
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        img = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=JPEG_QUALITY, optimize=True)
+        out.append((i + 1, base64.b64encode(buf.getvalue()).decode()))
     doc.close()
     return out
 
@@ -252,7 +273,7 @@ def _cloud_ocr_page(b64: str, key: str, model: str, timeout: int = 120,
     payload = {
         'model': model, 'max_tokens': 4000,
         'messages': [{'role': 'user', 'content': [
-            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + b64}},
+            {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + b64}},
             {'type': 'text',
              'text': 'OCR识别这一页，保持原始段落与阅读顺序，直接输出纯文本；'
                      '不要解释、不要加标题或代码块。'}
