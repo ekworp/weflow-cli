@@ -2076,12 +2076,19 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
 
         const safeName = contact.replace(/[\/:*?"<>|]/g, '_').slice(0, 20) || 'chat'
         const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12)
-        // 目录名到秒，同一秒里导两次会撞进同一个目录——那就不是"绝不覆盖"了。撞了就往后加序号。
         // 导出根目录可用环境变量改（测试用临时目录；也方便自定义）。默认在仓库的 output/exports 下。
         const exportRoot = process.env.WEFLOW_ASSISTANT_EXPORT_ROOT || join(PKG_ROOT, 'output', 'exports')
-        let outDir = join(exportRoot, `${safeName}-${stamp}`)
-        for (let n = 2; existsSync(outDir) && n < 100; n++) {
-          outDir = join(exportRoot, `${safeName}-${stamp}-${n}`)
+        // HTML 自己会建 `<联系人>_<时间戳>/` 这个目录（D-133），所以它直接落在导出根下。
+        // 再替它包一层只会得到 `甲-20261027/甲_20261027/index.html` —— 用户要的是**一层**目录，
+        // 而且嵌套之后"报出导到哪"也不得不拼接两级，读的人得自己猜哪一级才是导出物。
+        // 其它格式没有自己的目录，仍由这里建（时间戳到秒，撞名往后加序号，绝不覆盖）。
+        let outDir = exportRoot
+        if (format !== 'html') {
+          let candidate = join(exportRoot, `${safeName}-${stamp}`)
+          for (let n = 2; existsSync(candidate) && n < 100; n++) {
+            candidate = join(exportRoot, `${safeName}-${stamp}-${n}`)
+          }
+          outDir = candidate
         }
         const result = format === 'txt' ? await exportService.exportTxt(talker, outDir, limit)
           : format === 'json' ? await exportService.exportJson(talker, outDir, limit)
@@ -2089,13 +2096,15 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
               : await exportService.exportHtml(talker, outDir, limit, '', undefined, undefined, true)
         if (!result.success) return `(导出失败: ${String(result.error || '未知').slice(0, 100)})`
         const suffix = format === 'html' ? '，含图片' : ''
-        // 报**真的写到了哪**：`outDir` 才是（撞名之后会带 `-2`），而事前拼的 `safeName-stamp`
-        // 两次导出会报成同一个名字——实测第二次明明是 `…-2`，消息里却是基础名（2026-09-23 验收）。
+        // 报**真的写到了哪**：HTML 的 `path` 是 `<导出目录>/index.html`，导出目录就是它的父目录；
+        // 其它格式的产物在 `outDir` 里。事前拼的名字不能用 —— 撞名时实际目录带 `-2`，
+        // 两次导出会报成同一个（2026-09-23 验收：第二次明明是 `…-2`，消息里却是基础名）。
+        const writtenDir = format === 'html' && result.path ? dirname(result.path) : outDir
         // 根目录是默认值时按仓库相对路径报（用户照着找得到）；自定义根时只报目录名——
         // **不把绝对路径发进聊天**，那是本机路径，没必要出境。
         const shown = exportRoot === join(PKG_ROOT, 'output', 'exports')
-          ? `output/exports/${basename(outDir)}`
-          : basename(outDir)
+          ? `output/exports/${basename(writtenDir)}`
+          : basename(writtenDir)
         return `已导出 ${result.count ?? 0} 条消息到 ${shown}/（${format}${suffix}）`
       }
       case 'search_knowledge': {

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Export WeChat NT chat history as self-contained HTML files.
-Splits large conversations into multiple parts.
-Embeds cached image thumbnails from NT cache directory.
+Export WeChat NT chat history as an HTML bundle.
+
+One export is a directory: `<contact>_<YYYYMMDD-HHMMSS>/index.html`, with
+cached previews under `assets/thumbs/` and, with `--save-originals`, decrypted
+originals under `assets/originals/`. Large conversations are split into
+`index_partN.html` inside the same directory.
 """
 import sys
 import time
@@ -39,7 +42,7 @@ MSG_TYPES = {
     43: 'video', 47: 'emoji', 48: 'location', 49: 'link',
     50: 'voip', 10000: 'system', 10002: 'quote',
 }
-MAX_EMBED_SIZE = 8 * 1024 * 1024  # Bound self-contained HTML growth per image.
+MAX_EMBED_SIZE = 8 * 1024 * 1024  # Bound the preview bytes read per image.
 V2_MAGIC = b'\x07\x08V2\x08\x07'
 V2_CIPHERTEXT_START = 0x0F
 BUILTIN_EMOJI_DIR = os.path.join(os.path.dirname(__file__), '..', 'resources', 'wechat-emoji')
@@ -264,15 +267,58 @@ def load_original(info):
                                limit=ORIGINAL_MAX_BYTES)
 
 
-def save_originals(items, out_dir, file_prefix):
-    """Write each message's original under `<out>/<prefix>_assets/originals/`.
+# ---- export bundle layout ---------------------------------------------------
+# An HTML export is a directory, not a lone file: `<contact>_<timestamp>/`
+# holds `index.html` plus `assets/`. The timestamp is what keeps a re-export
+# from overwriting the previous one; the numeric suffix covers two runs that
+# start inside the same second.
+def export_directory_name(display_name, talker, now=None):
+    base = sanitize_filename(display_name or talker) or 'export'
+    stamp = (now or datetime.datetime.now()).strftime('%Y%m%d-%H%M%S')
+    return '%s_%s' % (base, stamp)
+
+
+def create_export_dir(out_dir, name):
+    """Create a new bundle directory under `out_dir` without reusing one.
+
+    `exist_ok=False` is the check itself: two runs racing for the same second
+    cannot both believe the directory was theirs, because only one `makedirs`
+    succeeds and the loser moves on to `-2`.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    candidate = name
+    index = 2
+    while True:
+        path = os.path.join(out_dir, candidate)
+        try:
+            os.makedirs(path, exist_ok=False)
+            # Every bundle carries an `assets/` directory, even when this
+            # conversation has no media: a stable layout is easier to explain
+            # than one that appears only sometimes.
+            os.makedirs(os.path.join(path, 'assets'), exist_ok=True)
+            return path
+        except FileExistsError:
+            candidate = '%s-%d' % (name, index)
+            index += 1
+
+
+def part_filenames(parts):
+    """Page names inside one bundle: `index.html`, then `index_partN.html`."""
+    if parts <= 1:
+        return ['index.html']
+    return ['index.html'] + ['index_part%d.html' % (index + 1)
+                             for index in range(1, parts)]
+
+
+def save_originals(items, export_dir):
+    """Write each message's original under `<export_dir>/assets/originals/`.
 
     Names are content-addressed, so a forwarded picture shared by several
-    messages - or the same export run twice - lands on one file. A missing,
-    unreadable or thumbnail-only source is recorded on the item rather than
-    silently dropped; the media report carries that word out.
+    messages - or the same picture cached under two timestamps - lands on one
+    file. A missing, unreadable or thumbnail-only source is recorded on the
+    item rather than silently dropped; the media report carries that word out.
     """
-    assets = os.path.join(out_dir, '%s_assets' % file_prefix, 'originals')
+    assets = os.path.join(export_dir, 'assets', 'originals')
     ORIGINAL_STATE['dir'] = assets
     seen = {}
     for item in items:
@@ -304,7 +350,7 @@ def save_originals(items, out_dir, file_prefix):
         extension = _IMAGE_EXT_BY_MIME.get(mime, '.jpg')
         name = 'img_%s%s' % (hashlib.md5(data).hexdigest()[:12], extension)
         target = os.path.join(assets, name)
-        rel = os.path.relpath(target, out_dir).replace('\\', '/')
+        rel = os.path.relpath(target, export_dir).replace('\\', '/')
         existed = os.path.isfile(target)
         partial = target + '.part'
         if not existed:
@@ -342,6 +388,79 @@ def original_summary():
         'reused': ORIGINAL_STATE['reused'],
         'failed': ORIGINAL_STATE['failed'],
     }
+
+
+def _use_thumbnail_file(display, blob, rel):
+    """Swap one embedded `data:` preview for its file path.
+
+    Only the exact payload this item carries is replaced: an article card and
+    a bubble can render two different `img` tags, and rewriting by position
+    would put the wrong picture behind the wrong message.
+    """
+    pattern = r'src="data:[^"]*;base64,%s"' % re.escape(blob)
+    replaced, count = re.subn(pattern, 'src="%s"' % rel, display)
+    return replaced if count else None
+
+
+def save_thumbnails(items, export_dir):
+    """Write each embedded preview under `<export_dir>/assets/thumbs/`.
+
+    The page used to carry every preview as a `data:` URI, so `index.html` grew
+    with the conversation and the browser decoded the whole album before the
+    first screen. Files keep the page text-sized; names are content-addressed,
+    so a forwarded picture - or a re-export into a new bundle - stores one copy
+    per directory.
+
+    A failed write leaves that bubble's `data:` URI in place rather than
+    producing a broken image: one embedded preview is better than a page with
+    a hole in it.
+    """
+    thumbs = os.path.join(export_dir, 'assets', 'thumbs')
+    state = {'written': 0, 'reused': 0, 'failed': 0}
+    for item in items:
+        blob = item.get('image_b64')
+        if not blob:
+            continue
+        try:
+            data = base64.b64decode(blob)
+        except Exception:
+            state['failed'] += 1
+            continue
+        mime = detect_mime_from_bytes(data[:32]) or 'image/jpeg'
+        name = 'thumb_%s%s' % (hashlib.md5(data).hexdigest()[:12],
+                               _IMAGE_EXT_BY_MIME.get(mime, '.jpg'))
+        target = os.path.join(thumbs, name)
+        rel = 'assets/thumbs/%s' % name
+        if os.path.isfile(target):
+            state['reused'] += 1
+        else:
+            partial = target + '.part'
+            try:
+                os.makedirs(thumbs, exist_ok=True)
+                with open(partial, 'wb') as handle:
+                    handle.write(data)
+                # Same rule as originals: a half-written image must not be
+                # mistaken for a finished one by the next run.
+                os.replace(partial, target)
+                state['written'] += 1
+            except OSError:
+                try:
+                    os.remove(partial)
+                except OSError:
+                    pass
+                state['failed'] += 1
+                continue
+        display = _use_thumbnail_file(item.get('display') or '', blob, rel)
+        if display is None:
+            # The item's rendered HTML did not contain this payload (a shape
+            # the exporter does not produce today). Keep the base64 preview;
+            # the stored file is harmless, but claiming it would leave a page
+            # that never references it.
+            state['failed'] += 1
+            continue
+        item['display'] = display
+        item['thumb_rel'] = rel
+    return state
 
 
 # Remote media is discovered one message at a time, but a conversation needs
@@ -2508,15 +2627,14 @@ def decode_xml(text):
             .replace('&apos;', "'"))
 
 
-def build_html_page(talker, messages_part, part_num, total_parts, display_name, file_prefix=''):
-    """Build a single HTML page for a part.
+def build_html_page(talker, messages_part, part_num, total_parts, display_name):
+    """Build one page of the bundle.
 
-    `file_prefix` must be the prefix the parts were actually written under.
-    Deriving it from the talker instead produced links to
-    `wxid_..._part2.html` next to files named after the remark, so every
-    navigation link 404'd.
+    Part names come from `part_filenames`, not from the talker: deriving them
+    from the talker used to produce links to `wxid_..._part2.html` beside files
+    named after the remark, so every navigation link 404'd. A single-part
+    export renders no nav - there is nothing to navigate to.
     """
-    talker_safe = file_prefix or talker.replace('@', '_').replace('/', '_')
     rows = []
     for m in messages_part:
         dt = datetime.datetime.fromtimestamp(m['create_time'])
@@ -2558,8 +2676,21 @@ def build_html_page(talker, messages_part, part_num, total_parts, display_name, 
     if SAVE_ORIGINALS and any(m.get('original_rel') for m in messages_part):
         originals_hint = (
             '\n  <p class="hint">🖼 点击图片可查看大图。原图保存在同目录的 '
-            '<code>%s_assets/originals/</code> 下，拷贝这份 HTML 时请连同该目录一起带走。</p>'
-            % escape_html(talker_safe))
+            '<code>assets/originals/</code> 下；分享时请带走整个导出目录。</p>')
+
+    bundle_hint = (
+        '\n  <p class="hint">📁 图片预览在同目录的 <code>assets/thumbs/</code> 下；'
+        '这个页面不能单独拷走，请连同整个导出目录一起分享。</p>')
+
+    nav = ''
+    if total_parts > 1:
+        names = part_filenames(total_parts)
+        nav = '\n  <div class="part-nav">\n%s\n  </div>' % '\n'.join(
+            '    <a href="%s" class="%s">第%d部分</a>' % (
+                escape_html(filename),
+                'active' if index + 1 == part_num else '',
+                index + 1)
+            for index, filename in enumerate(names))
 
     return f'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2722,10 +2853,7 @@ body {{
 <div class="container">
 <div class="header">
   <h2>聊天记录 - {escape_html(name)}</h2>
-  <p>第 {part_num}/{total_parts} 部分 · {len(messages_part)} 条消息 · {from_time} ~ {to_time}</p>
-  <div class="part-nav">
-{chr(10).join(f'    <a href="{talker_safe}_part{i+1}.html" class="{"active" if i+1 == part_num else ""}">第{i+1}部分</a>' for i in range(total_parts))}
-  </div>
+  <p>第 {part_num}/{total_parts} 部分 · {len(messages_part)} 条消息 · {from_time} ~ {to_time}</p>{nav}
   <div class="search-box">
     <input type="text" placeholder="搜索聊天记录..." oninput="searchMessages(this.value)">
     <div class="search-info" id="search-info"></div>
@@ -2735,7 +2863,7 @@ body {{
 </div>
 <div class="footer">
   <p>Exported by WeFlow CLI · {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
-  <p class="hint">💡 图片与表情来自本机微信数据（会话缓存 + 账号媒体索引）。本机从未下载过的图片、以及未缓存封面的视频，无法显示。</p>{originals_hint}
+  <p class="hint">💡 图片与表情来自本机微信数据（会话缓存 + 账号媒体索引）。本机从未下载过的图片、以及未缓存封面的视频，无法显示。</p>{bundle_hint}{originals_hint}
   <p class="hint">⚠️ 语音下方文字为<b>本机机器转写</b>，未经校对。粤语/方言的识别准确率有限，可能出现通顺但并非原话的内容——<b>不可作为原话引用</b>；需要确证时请以录音为准。</p>
 </div>
 <div class="lightbox" id="lightbox"><img alt=""><div class="lb-hint">点击任意处或按 Esc 关闭</div></div>
@@ -3080,15 +3208,15 @@ def main():
     parser.add_argument('--name', default=os.environ.get('WEFLOW_EXPORT_NAME', ''), help='Display name')
     parser.add_argument('--out', default=os.environ.get('WEFLOW_EXPORT_OUTPUT', './output'), help='Output directory')
     parser.add_argument('--format', choices=('html', 'md'), default='html',
-                        help='html=内嵌图片的多分页页面（默认）；md=markdown + 图片落盘到 assets/')
+                        help='html=<联系人>_<时间戳>/index.html + assets/（默认）；md=markdown + 图片落盘到 assets/')
     parser.add_argument('--assets-only', action='store_true',
                         help='只抽取媒体到 assets/ 并写清单，不写 markdown（给 json/txt/excel 的 --media 用）')
     parser.add_argument('--assets-dir', default='',
                         help='md 模式下图片落到哪个目录（默认 <out>/<前缀>_assets；同时写 manifest.json）')
     parser.add_argument('--save-originals', action='store_true',
                         default=os.environ.get('WEFLOW_SAVE_ORIGINALS', '') == '1',
-                        help='HTML 模式：把原图存到 <out>/<前缀>_assets/originals/，'
-                             '聊天里仍显示缩略图，点击后打开原图（该目录必须随 HTML 一起拷贝）')
+                        help='HTML 模式：把原图存到 <输出>/<联系人>_<时间戳>/assets/originals/，'
+                             '聊天里仍显示缩略图，点击后打开原图')
     parser.add_argument('--parts', type=int, default=5, help='Number of parts to split into')
     parser.add_argument('--wx-dir', default='', help='Traditional WeChat data dir (FileStorage fallback)')
     parser.add_argument('--cache-dir', default=os.environ.get('WEFLOW_EXPORT_CACHE_DIR', ''), help='NT cache directory for image thumbnails')
@@ -3226,8 +3354,9 @@ def main():
 
     if not messages:
         if args.date:
-            file_prefix = sanitize_filename(args.name or args.talker)
-            filepath = os.path.join(args.out, f'{file_prefix}.html')
+            export_dir = create_export_dir(
+                args.out, export_directory_name(args.name or args.talker, args.talker))
+            filepath = os.path.join(export_dir, 'index.html')
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(build_empty_html(args.talker, args.date, args.name or args.talker))
             print(f"No messages found for {args.date}; wrote empty date-scoped page")
@@ -3357,28 +3486,39 @@ def main():
         conn.close()
         return
 
+    # One export = one directory. Created after the md/assets branches (they
+    # keep their own `<prefix>_assets/` layout) and before the media passes,
+    # because everything below writes relative to this directory. The helper
+    # also creates `assets/`, so the layout is stable even without media.
+    export_dir = create_export_dir(
+        args.out, export_directory_name(display_name, args.talker))
+    print(f"Export directory: {export_dir}")
+
+    thumbs = save_thumbnails(formatted, export_dir)
+    print(f"Previews: {thumbs['written']} saved, {thumbs['reused']} reused, "
+          f"{thumbs['failed']} failed -> assets/thumbs/")
+
     # Originals on disk (`--save-originals`). Runs before the report, so each
     # media item can record what happened to its click-through copy, and before
     # the pages, so `data-full` points at a file that exists.
     originals = None
     if SAVE_ORIGINALS and formatted:
-        assets_dir = save_originals(formatted, args.out, file_prefix)
+        save_originals(formatted, export_dir)
         for record in media_items:
             status = formatted[record['index']].get('original_status')
             if status:
                 record['original'] = status
         originals = original_summary()
         print(f"Originals: {originals['saved']} saved, {originals['reused']} reused, "
-              f"{originals['failed']} unreadable -> "
-              f"{os.path.basename(os.path.dirname(assets_dir))}/originals/")
+              f"{originals['failed']} unreadable -> assets/originals/")
 
-    # Media coverage report. Written beside the HTML parts, under the same
-    # prefix, so it is always found next to what it describes.
+    # Media coverage report. Written inside the bundle, so it is always found
+    # next to what it describes.
     media_report = None
     media_report_path = None
     if media_items:
         media_report = build_media_report(media_items, display_name, args.talker, per_part)
-        media_report_path = os.path.join(args.out, f'{file_prefix}_media.json')
+        media_report_path = os.path.join(export_dir, f'{file_prefix}_media.json')
         with open(media_report_path, 'w', encoding='utf-8') as handle:
             json.dump(media_report, handle, ensure_ascii=False, indent=2)
         summary = media_report['counts']
@@ -3387,6 +3527,7 @@ def main():
               f"-> {os.path.basename(media_report_path)}")
 
     html_files = []
+    filenames = part_filenames(parts)
     for i in range(parts):
         start = i * per_part
         end = min(start + per_part, total)
@@ -3395,12 +3536,9 @@ def main():
         if not chunk:
             break
 
-        html = build_html_page(args.talker, chunk, i + 1, parts, display_name, file_prefix)
-        if parts == 1:
-            filename = f"{file_prefix}.html"
-        else:
-            filename = f"{file_prefix}_part{i+1}.html"
-        filepath = os.path.join(args.out, filename)
+        html = build_html_page(args.talker, chunk, i + 1, parts, display_name)
+        filename = filenames[i]
+        filepath = os.path.join(export_dir, filename)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(html)
@@ -3411,7 +3549,7 @@ def main():
 
     conn.close()
 
-    print(f"\nDone! {len(html_files)} HTML files written to {args.out}")
+    print(f"\nDone! {len(html_files)} HTML file(s) written to {export_dir}")
     print(f"Total: {total} messages")
 
     # Print JSON summary for CLI integration.

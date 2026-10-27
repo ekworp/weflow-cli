@@ -4173,10 +4173,15 @@ CHANGELOG 不记、机器读不到。用户升级微信后读不出数据时，�
 
 ## D-132: `--save-originals` 把原图写到磁盘，导出物从此是「HTML + 目录」
 
-**Status:** Active
+**Status:** Active；**默认值已被 D-133 取代**（HTML 现在默认就是目录），来源优先级、内容哈希命名、状态词与
+`data-full`/lightbox 机制不变。
+
+> 2026-10-27 更新：D-133 把 HTML 的**默认**产物改成了 `<联系人>_<时间戳>/index.html` + `assets/`，
+> 因此本条里"默认保持单文件"与"不加开关时行为不变"两句不再成立；原图位置也随目录变成
+> `<导出目录>/assets/originals/`。
 
 **Decision.** 新增**默认关闭**的 `--save-originals`（仅 HTML）：页面里仍是内嵌的缩放预览，另外把解密后的
-原图写到 `<输出>/<前缀>_assets/originals/`，气泡里的 `<img>` 带上 `data-full="<相对路径>"`，点击由内置
+原图写到 `<导出目录>/assets/originals/`，气泡里的 `<img>` 带上 `data-full="<相对路径>"`，点击由内置
 lightbox 打开原图。源优先级 **账号媒体索引 `msg/attach/…` > 会话缓存 `ImageTemp` > `Thumb`**；只有缩略图时
 不落盘、在媒体报告里记 `thumbnail-only`。文件名用内容哈希（`img_<md5前12位><扩展名>`），先写 `.part` 再
 `os.replace`。默认导出**保持**单文件自包含（不加开关时行为不变）。
@@ -4188,8 +4193,9 @@ lightbox 打开原图。源优先级 **账号媒体索引 `msg/attach/…` > 会
 而且现有导出物的消费方（分享、归档）会突然多出一个必须一起拷贝的目录。
 
 **Consequences.**
-- **导出契约分叉要写清楚**：`--save-originals` 的产物是两个东西，拷贝 HTML 必须连 `_assets/originals/`
-  一起带走；文档、CLI 帮助、页面 footer 都明说。不加开关时产物仍是一个文件。
+- **导出契约分叉要写清楚**：`--save-originals` 的产物是两个东西，拷贝 HTML 必须连 `assets/originals/`
+  一起带走；文档、CLI 帮助、页面 footer 都明说。不加开关时目录里没有 `assets/originals/`（导出物本身
+  从 D-133 起就是目录）。
 - **明文原图落盘是隐私面变大**：originals 是解密后的图片，与 HTML 同级，按普通敏感数据处理（SECURITY.md）；
   不需要时删目录即可，重导会重建。不写进媒体报告的文件名/路径（报告仍是 path-free，只加状态词 `original`）。
 - **只承认能证明的来源**：`Thumb` 那档（约 120–210px）【推断：按微信缩略图命名与既有观测】不写进 originals
@@ -4201,3 +4207,32 @@ lightbox 打开原图。源优先级 **账号媒体索引 `msg/attach/…` > 会
   `WEFLOW_SAVE_ORIGINALS=1`，供 TS 透传与测试直接调用。
 - **ID 不唯一的老问题不在这里重犯**：原图按键（`mediaKey` / `pair:` / `md5:` / `unique:`）匹配，和页面用
   同一套 `resolve_media` 词汇；裸 `local_id` 仍然不参与匹配（D-014）。
+
+## D-133: HTML 导出默认改为 `<联系人>_<时间戳>/index.html` + `assets/`
+
+**Status:** Active（取代 D-132 的"默认仍是单文件"；D-132 的原图来源优先级、内容哈希命名与状态词继续有效）
+
+**Decision.** `export … html` 的产物是一个目录：`<输出>/<联系人或id>_<YYYYMMDD-HHMMSS>/`，入口
+`index.html`，分页时依次是 `index_part2.html` …；媒体报告 `<前缀>_media.json` 同目录；页面引用的预览写在
+`assets/thumbs/`（`thumb_<md5前12位><扩展名>`）；`--save-originals` 的原图写在 `assets/originals/`。同一秒内
+再次导出用 `-2`、`-3` 后缀，**从不复用或覆盖已有目录**。`--date` 的空结果页也落在同样的目录里。md / json /
+txt / excel 的 `<前缀>_assets/` 布局与文件名不变。
+
+**Reason.** 默认的内嵌布局把一个会话的图片全部变成 base64 塞进页面：`index.html` 随相册线性增长，浏览器要
+先解码完整张相册才能显示第一屏，而"按会话归档"本来就该是一个目录。用户明确要求按
+`<联系人>_<时间戳>/index.html` 组织，并让重复导出互不覆盖 —— 时间戳目录同时解决了"再导一次分不清哪次"和
+"同名文件被覆盖"两个问题。预览落盘而不是内嵌，也让 `--full-images` 的代价只体现在 `assets/thumbs/` 的清晰度上。
+
+**Consequences.**
+- **契约变了**：`path` / JSON 的 `files[0]` 是 `index.html`，但拷贝、分享、归档必须带整个目录。页面 footer、
+  README、OPERATIONS 与 CLI 帮助都写明这一点，避免读者只拿走一个 HTML。
+- **缓存不跟着走**：`.cover-cache` / `.imgshrink-cache` / `.sticker-cache` 仍在 `--out` 下，重复导出依旧接近
+  瞬时；缓存可以随时删除，删了只退回首次导出的耗时。
+- **失败不制造坏图**：某条预览写不进 `assets/thumbs/` 时，该条退回内嵌 base64，页面照常打开；原图的失败路径
+  仍按 D-132 记 `write-failed`，不静默丢文件。
+- **旧产物不迁移**：以前导出的单个 `<前缀>.html` 留在原处，不会被删除或改名；新导出另起目录，两者可以并存。
+- **简版回退保持同一形状**：`--from/--to` 走的 TS 简版渲染器也写 `index.html` + 空 `assets/`，因此调用方拿到的
+  `path` 语义在两条路径上一致（该分支本来就不含图片，不涉及预览落盘）。
+- **助手与 MCP 的 `export_chat` 不再自己包一层**：HTML 直接导出到 `output/exports/` 下，由导出器建
+  `<联系人>_<时间戳>/`，回复里报的就是那个目录名；txt/json/excel 仍由工具建 `<名字>-<时间戳>` 目录。
+  否则会得到 `甲-20261027/甲_20261027/index.html` 这种两层嵌套，而回复只能报其中一层。

@@ -19,17 +19,24 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
-> 验证所用微信：4.1.15.56（2026-10-26，`WECHAT_VERIFIED`）。本版新增的原图落盘只有合成数据回归
+> 验证所用微信：4.1.15.56（2026-10-26，`WECHAT_VERIFIED`）。本版的导出目录结构与原图落盘只有合成数据回归
 > （`test/export_originals_test.py`），**未在真实会话上验证**——第一次真机使用请先拿一小段会话试。
 
+- **HTML 导出改为一个目录：`<联系人>_<时间戳>/index.html` + `assets/`。**
+  图片预览从 base64 内嵌改为落盘到 `assets/thumbs/`（内容哈希命名），页面用相对路径引用；分页文件是
+  `index_part2.html`…，媒体报告 `<联系人>_media.json` 在同一个目录里。时间戳为 `YYYYMMDD-HHMMSS`，同一秒内
+  重复导出会得到 `-2`、`-3` 后缀，**不会复用或覆盖已有目录**。`.cover-cache` / `.imgshrink-cache` /
+  `.sticker-cache` 仍在 `--out` 下，重复导出依旧接近瞬时。md / json / txt / excel 的 `<前缀>_assets/` 布局不变。
+  助手/MCP 的 `export_chat`（HTML）现在直接导出到 `output/exports/` 下并把那个目录名报给你，不再套两层目录。D-133。
 - **新增 `--save-originals`（仅 HTML 导出）：聊天里仍是缩略图，点击用 lightbox 打开原图。**
-  原图按内容哈希存到 `<输出>/<前缀>_assets/originals/`（`img_<md5前12位>.<扩展名>`），转发多次的同一张图
+  原图按内容哈希存到同一导出目录的 `assets/originals/`（`img_<md5前12位>.<扩展名>`），转发多次的同一张图
   只落一份，重复导出不重写；来源优先级为 账号媒体索引 `msg/attach/…` > 会话缓存 `ImageTemp` > `Thumb`。
-  只有 120–210px 缩略图时不落盘、在媒体报告里记 `thumbnail-only`，点击放大内嵌预览——不会把缩略图冒充原图。
-  **导出物从此是「HTML + 一个目录」，拷贝或分享时必须连该目录一起带走**；不加这个开关时行为不变（仍是单文件）。
-  与 `--from/--to` 不兼容，对 md / json / txt / excel 不生效（CLI 会提示而不是静默忽略）。D-132。
-- **默认导出也能点击放大内嵌预览**：页面里加了 lightbox（点图片打开、点任意处或按 Esc 关闭）。
-  没有原图时放大的是内嵌的缩放预览，所以这种情况下清晰度不会提高——要真清晰得加 `--save-originals`。
+  只有 120–210px 缩略图时不落盘、在媒体报告里记 `thumbnail-only`，点击放大缩略图——不会把缩略图冒充原图。
+  **拷贝或分享时必须带走整个导出目录**（只拿 `index.html` 会让图片全部 404）；不加这个开关时目录里没有
+  `assets/originals/`，其余结构不变。与 `--from/--to` 不兼容，对 md / json / txt / excel 不生效
+  （CLI 会提示而不是静默忽略）。D-132。
+- **默认导出也能点击放大缩略图**：页面里加了 lightbox（点图片打开、点任意处或按 Esc 关闭）。
+  没有原图时放大的是 `assets/thumbs/` 里的预览，所以这种情况下清晰度不会提高——要真清晰得加 `--save-originals`。
 
 ## 1.19.0
 

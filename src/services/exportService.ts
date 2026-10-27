@@ -28,7 +28,7 @@ export interface ExportResult {
    * `--save-originals` 的计数（`saved`/`reused`/`failed`），由 Python 侧给出。
    *
    * 只有开了那个开关才有；不带路径，调用方可以直接把它写进日志。导出物从此多一个
-   * `<前缀>_assets/originals/` 目录，这个字段是"到底写了没写"的机器可读答案。
+   * `<会话>_<时间戳>/assets/originals/` 目录，这个字段是"到底写了没写"的机器可读答案。
    */
   originals?: unknown
 }
@@ -265,8 +265,8 @@ export class ExportService {
           // hundred of them costs minutes in PIL.
           WEFLOW_FULL_IMAGES: options.fullImages ? '1' : undefined,
           // 原图落盘（`--save-originals`）：页面里仍是缩略图，点击时打开同目录的
-          // `<前缀>_assets/originals/`。与 `--full-images` 不同 —— 那个决定预览用哪档字节，
-          // 这个决定原图要不要留在磁盘上。默认关：导出物从「一个 HTML」变成「HTML + 目录」。
+          // `assets/originals/`。与 `--full-images` 不同 —— 那个决定预览用哪档字节，
+          // 这个决定原图要不要留在磁盘上。默认关：导出物会因此多出几百 MB 的原图。
           WEFLOW_SAVE_ORIGINALS: options.saveOriginals ? '1' : undefined,
           WEFLOW_EXPORT_DATE: date || undefined,
           // Without this the Python path exported the entire history: `--limit`
@@ -345,8 +345,11 @@ export class ExportService {
     }
 
     const html = this.buildHtml(talker, messages)
-    const dir = this.ensureOutputDir(outputDir)
-    const filePath = join(dir, `${talker}_messages.html`)
+    // Even the degraded renderer writes the bundle shape: callers that treat
+    // `path` as "the page inside an export directory" behave the same whether
+    // Python ran or this fallback did.
+    const bundle = this.createExportBundle(outputDir, this.exportBundleName(talker))
+    const filePath = join(bundle, 'index.html')
     writeFileSync(filePath, html, 'utf8')
     return { success: true, path: filePath, count: messages.length }
   }
@@ -524,6 +527,42 @@ export class ExportService {
       mkdirSync(resolved, { recursive: true })
     }
     return resolved
+  }
+
+  /** `联系人_20261027-153012`: filesystem-safe, timestamped, no `wxid`-specific shape. */
+  private exportBundleName(talker: string): string {
+    const base = String(talker || 'export')
+      .replace(/[\u0000-\u001f<>:"|?*\\/]/g, '_')
+      .trim()
+      .slice(0, 80) || 'export'
+    const now = new Date()
+    const pad = (value: number) => String(value).padStart(2, '0')
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+      + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+    return `${base}_${stamp}`
+  }
+
+  /**
+   * Create `<output>/<name>/assets/` without ever reusing an existing bundle.
+   *
+   * The numeric suffix covers two exports starting in the same second. The
+   * Python path does the same (`create_export_dir`), so both writers agree on
+   * what a re-export must never do: overwrite the previous one.
+   */
+  private createExportBundle(outputDir: string, name: string): string {
+    const root = this.ensureOutputDir(outputDir)
+    for (let index = 1; index < 1000; index++) {
+      const dir = join(root, index === 1 ? name : `${name}-${index}`)
+      try {
+        mkdirSync(dir)
+        mkdirSync(join(dir, 'assets'))
+        return dir
+      } catch (error: any) {
+        if (error?.code === 'EEXIST') continue
+        throw error
+      }
+    }
+    throw new Error('无法创建导出目录：同名目录过多')
   }
 }
 

@@ -1,10 +1,11 @@
-"""`--save-originals`: originals on disk, thumbnails in the bubble, click-through.
+"""HTML bundle layout (`index.html` + `assets/`) and `--save-originals`.
 
 Separate file from the rendering tests on purpose: those 31 stay untouched and
-guard the behaviour this feature is layered on. Nothing here touches a real
-WeChat directory - every source file is a temp-dir synthetic.
+guard the behaviour these two changes are layered on. Nothing here touches a
+real WeChat directory - every source file is a temp-dir synthetic.
 """
 import base64
+import datetime
 import importlib.util
 import json
 from pathlib import Path
@@ -61,14 +62,14 @@ class OriginalTests(unittest.TestCase):
             export.remember_original('pair:7:1700000000', path, 'cache-image')
             first, second = item(), item()
 
-            assets = export.save_originals([first, second], directory, '示例群')
+            assets = export.save_originals([first, second], directory)
 
             self.assertEqual(first['original_status'], 'saved')
             self.assertEqual(second['original_status'], 'reused')
             self.assertEqual(first['original_rel'], second['original_rel'])
-            # Content-addressed and relative to the page, not an absolute path.
+            # Content-addressed and relative to index.html, not an absolute path.
             self.assertRegex(first['original_rel'],
-                             r'^示例群_assets/originals/img_[0-9a-f]{12}\.gif$')
+                             r'^assets/originals/img_[0-9a-f]{12}\.gif$')
             written = sorted(p.name for p in Path(assets).iterdir())
             self.assertEqual(len(written), 1)
             self.assertEqual((Path(assets) / written[0]).read_bytes(), GIF)
@@ -79,12 +80,12 @@ class OriginalTests(unittest.TestCase):
             path = self.source(directory)
             export.remember_original('pair:7:1700000000', path, 'cache-image')
             first = item()
-            export.save_originals([first], directory, '示例群')
+            export.save_originals([first], directory)
             stored = Path(directory) / first['original_rel']
             before = stored.stat().st_mtime_ns
 
             again = item()
-            export.save_originals([again], directory, '示例群')
+            export.save_originals([again], directory)
 
             self.assertEqual(again['original_status'], 'reused')
             self.assertEqual(again['original_rel'], first['original_rel'])
@@ -97,7 +98,7 @@ class OriginalTests(unittest.TestCase):
             export.remember_original('pair:7:1700000000', path, 'thumb')
             message = item()
 
-            assets = export.save_originals([message], directory, '示例群')
+            assets = export.save_originals([message], directory)
 
             self.assertEqual(message['original_status'], 'thumbnail-only')
             self.assertIsNone(message.get('original_rel'))
@@ -106,7 +107,7 @@ class OriginalTests(unittest.TestCase):
     def test_an_original_the_cache_never_had_says_so(self):
         with tempfile.TemporaryDirectory() as directory:
             message = item()
-            export.save_originals([message], directory, '示例群')
+            export.save_originals([message], directory)
             self.assertEqual(message['original_status'], 'not-in-local-cache')
 
     def test_the_message_md5_finds_an_original_the_cache_key_did_not(self):
@@ -116,7 +117,7 @@ class OriginalTests(unittest.TestCase):
             export.remember_original(f'md5:{MD5}', path, 'account')
             message = item(media_key='unindexed-local', media_md5s=[MD5])
 
-            export.save_originals([message], directory, '示例群')
+            export.save_originals([message], directory)
 
             self.assertEqual(message['original_status'], 'saved')
 
@@ -129,7 +130,7 @@ class OriginalTests(unittest.TestCase):
             export.remember_original('pair:7:1700000000', path, 'account')
             message = item()
 
-            assets = export.save_originals([message], directory, '示例群')
+            assets = export.save_originals([message], directory)
 
             saved = Path(assets) / Path(message['original_rel']).name
             self.assertEqual(saved.read_bytes(), GIF)
@@ -139,10 +140,10 @@ class OriginalTests(unittest.TestCase):
             path = self.source(directory)
             export.remember_original('pair:7:1700000000', path, 'cache-image')
             linked, plain = item(), item(local_id=8, create_time=1_700_000_100)
-            export.save_originals([linked, plain], directory, '示例群')
+            export.save_originals([linked, plain], directory)
 
             html = export.build_html_page('synthetic-contact', [linked, plain],
-                                          1, 1, '示例群', '示例群')
+                                          1, 1, '示例群')
 
             self.assertEqual(html.count('data-full='), 1)
             self.assertIn(f'data-full="{linked["original_rel"]}"', html)
@@ -163,8 +164,89 @@ class OriginalTests(unittest.TestCase):
         self.assertNotIn('img_', blob)
 
     def test_the_flag_is_off_unless_explicitly_requested(self):
-        """Default export stays a single self-contained file."""
         self.assertFalse(export.SAVE_ORIGINALS)
+
+
+class BundleLayoutTests(unittest.TestCase):
+    """The export is a directory: `index.html` plus `assets/`."""
+
+    def test_the_directory_name_is_the_contact_plus_a_timestamp(self):
+        now = datetime.datetime(2026, 10, 27, 15, 30, 12)
+        self.assertEqual(
+            export.export_directory_name('示例群', 'synthetic-contact', now),
+            '示例群_20261027-153012')
+        # Path characters cannot leak into the directory name, and an empty
+        # display name falls back to the id rather than producing `_2026...`.
+        self.assertEqual(
+            export.export_directory_name('', 'a/b', now), 'a_b_20261027-153012')
+
+    def test_a_new_export_never_reuses_an_existing_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = export.create_export_dir(directory, '示例群_20261027-153012')
+            second = export.create_export_dir(directory, '示例群_20261027-153012')
+            third = export.create_export_dir(directory, '示例群_20261027-153012')
+
+            self.assertEqual(Path(first).name, '示例群_20261027-153012')
+            self.assertEqual(Path(second).name, '示例群_20261027-153012-2')
+            self.assertEqual(Path(third).name, '示例群_20261027-153012-3')
+            # Every bundle gets its own assets dir, even before media is written.
+            for path in (first, second, third):
+                self.assertTrue((Path(path) / 'assets').is_dir())
+
+    def test_parts_are_index_and_index_partN(self):
+        self.assertEqual(export.part_filenames(1), ['index.html'])
+        self.assertEqual(export.part_filenames(3),
+                         ['index.html', 'index_part2.html', 'index_part3.html'])
+
+    def test_previews_are_files_and_the_page_stops_embedding_base64(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = export.create_export_dir(directory, '示例群_20261027-153012')
+            message = item()
+
+            state = export.save_thumbnails([message], bundle)
+
+            self.assertEqual(state, {'written': 1, 'reused': 0, 'failed': 0})
+            self.assertRegex(message['thumb_rel'],
+                             r'^assets/thumbs/thumb_[0-9a-f]{12}\.gif$')
+            self.assertTrue((Path(bundle) / message['thumb_rel']).is_file())
+            self.assertNotIn('data:', message['display'])
+            self.assertIn(f'src="{message["thumb_rel"]}"', message['display'])
+
+            html = export.build_html_page('synthetic-contact', [message],
+                                          1, 1, '示例群')
+            self.assertIn(f'src="{message["thumb_rel"]}"', html)
+            self.assertNotIn('data:image/gif;base64,', html)
+            self.assertIn('assets/thumbs/', html)
+
+    def test_a_repeated_preview_is_written_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = export.create_export_dir(directory, '示例群_20261027-153012')
+            first, second = item(), item()
+
+            state = export.save_thumbnails([first, second], bundle)
+
+            self.assertEqual(state, {'written': 1, 'reused': 1, 'failed': 0})
+            self.assertEqual(first['thumb_rel'], second['thumb_rel'])
+            self.assertEqual(len(list((Path(bundle) / 'assets' / 'thumbs').iterdir())), 1)
+
+    def test_navigation_links_use_the_page_names_in_the_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = export.create_export_dir(directory, '示例群_20261027-153012')
+            messages = [item(local_id=7, create_time=1_700_000_000),
+                        item(local_id=8, create_time=1_700_000_100)]
+
+            multi = export.build_html_page('synthetic-contact', messages,
+                                           1, 2, '示例群')
+            self.assertIn('href="index.html"', multi)
+            self.assertIn('href="index_part2.html"', multi)
+            self.assertNotIn('_part1.html', multi)
+
+            # One part means there is nothing to navigate to; the old renderer
+            # still emitted a link to a file that was never written.
+            single = export.build_html_page('synthetic-contact', messages[:1],
+                                            1, 1, '示例群')
+            self.assertNotIn('<div class="part-nav">', single)
+            self.assertNotIn('_part1.html', single)
 
 
 if __name__ == '__main__':

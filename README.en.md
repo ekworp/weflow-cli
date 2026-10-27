@@ -105,7 +105,7 @@ Automatic initialization on Linux depends on the WeChat distribution, the Python
 
 | Scenario | Capability |
 | --- | --- |
-| Chat history | Query sessions, contacts, and messages; export to JSON, TXT, HTML, Excel. An HTML export also writes a media coverage report saying which images and stickers could not be embedded, and why. |
+| Chat history | Query sessions, contacts, and messages; export to JSON, TXT, HTML, Excel. An HTML export writes previews under `<contact>_<timestamp>/assets/thumbs/` with `index.html` beside them, plus a media coverage report saying which images and stickers could not be embedded, and why. |
 | Official-account digest | Crawl articles, AI summarization and classification, generate a local reading page, keep favorites and read states. |
 | Personal knowledge base | Sync WeRead notes, build an Obsidian vault, semantic search, RAG Q&A, a concept wiki, and a **self-contained graph page** you can open by double-clicking (`weflow-cli wiki graph --open` for 3D, `--flat` for 2D - no server, no network; `--min-degree N` keeps only the hubs, `--line wiki\|chat` draws one corpus). |
 | AI collaboration | Expose article crawling, knowledge-base retrieval, digests, and selected local-data tools to MCP-compatible clients. The inventory follows the current code and `docs/MCP.md`. |
@@ -171,9 +171,9 @@ For key, database, or Python environment issues, follow the [Operations & Troubl
 weflow-cli export "contact" html --output ./output
 ```
 
-HTML export embeds WeChat's cached thumbnails by default and reconstructs images, custom stickers, system messages, and article cards as far as the local data allows. Remote media is cached per URL under `.cover-cache/` in the output directory, so **a re-export is near-instant** (about 2s for 1600+ messages) and only the first export pays the network cost. Custom stickers decrypt offline from the local cache; when no sticker seed is configured the exporter derives it from WeChat's process memory and prints the command to persist it. Add `--full-images` for originals (5-24MB each) at several times the cost. See the [operations manual](./OPERATIONS.md#4-导出聊天记录) for details.
+HTML export now produces **a directory**: `<output>/<contact>_<YYYYMMDD-HHMMSS>/index.html`, with cached previews under `assets/thumbs/`. The page itself no longer embeds base64, so a long conversation does not inflate the HTML with its photo album; a re-export creates a new timestamped directory and **never overwrites the previous one**. Remote media is cached per URL under `.cover-cache/` in the output directory, so **a re-export is near-instant** (about 2s for 1600+ messages) and only the first export pays the network cost. Custom stickers decrypt offline from the local cache; when no sticker seed is configured the exporter derives it from WeChat's process memory and prints the command to persist it. Add `--full-images` for originals (5-24MB each) at several times the cost; previews are still scaled down before they land in `assets/thumbs/`. See the [operations manual](./OPERATIONS.md#4-导出聊天记录) for details.
 
-To keep the thumbnail in the bubble but open the **original** on click, add `--save-originals` (HTML only). Originals are written under `<output>/<prefix>_assets/originals/`, content-addressed, and a lightbox opens them; **the export is then a page plus a directory, so copy that directory with the HTML**. Without the flag the export stays a single file, and a click can only zoom the embedded preview. Not compatible with `--from`/`--to`; ignored (with a message) for md / json / txt / excel.
+To keep the thumbnail in the bubble but open the **original** on click, add `--save-originals` (HTML only). Originals are written, content-addressed, under `assets/originals/` in the same export directory, and a lightbox opens them; **copy or share the whole directory, not just `index.html`**. Not compatible with `--from`/`--to`; ignored (with a message) for md / json / txt / excel.
 
 **Generate the official-account digest for a day**
 

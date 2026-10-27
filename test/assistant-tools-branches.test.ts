@@ -802,7 +802,7 @@ test('search_semantic：脚本换了输出形状时必须响，不许降级成"�
   } finally { bridge.setScriptRunner(null) }
 })
 
-test('export_chat：导出到 output/exports/ 下的新目录，并报出条数', async () => {
+test('export_chat：HTML 直接导出到导出根下的 <联系人>_<时间戳>/，并报出那个目录', async () => {
   const exportRoot = join(HOME, 'exports-tmp')
   mkdirSync(exportRoot, { recursive: true })
   process.env.WEFLOW_ASSISTANT_EXPORT_ROOT = exportRoot
@@ -811,7 +811,8 @@ test('export_chat：导出到 output/exports/ 下的新目录，并报出条数'
   const realExport = exportService.exportHtml.bind(exportService)
   ;(exportService as any).exportHtml = async (talker: string, outDir: string, limit: number) => {
     calls.push({ talker, outDir, limit })
-    return { success: true, path: outDir, count: 42 }
+    // 真实契约（D-133）：path 指向导出目录里的 index.html，不是目录本身。
+    return { success: true, path: join(outDir, '甲_20261027-153012', 'index.html'), count: 42 }
   }
   svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
   try {
@@ -820,39 +821,40 @@ test('export_chat：导出到 output/exports/ 下的新目录，并报出条数'
     // **自定义导出根时只报目录名**：原来这条断言钉的是 `output/exports/甲-…`，而那时写的
     // 是导出根被改过的情况——于是它把"报错位置"这个 bug 一起钉住了（测试照着代码写、
     // 不是照着意图写）。默认根那条在下面另一个用例里。
-    assert.match(out, /甲-\d{12}\//, '带时间戳的目录名')
+    assert.match(out, /甲_20261027-153012\//, '报的是导出器真正建出来的目录')
+    assert.doesNotMatch(out, /甲-\d{12}\//, '不再报助手自己拼的那层目录名')
     assert.doesNotMatch(out, /output\/exports\//, '自定义根时不该假称在 output/exports 下')
     assert.doesNotMatch(out, new RegExp(HOME.split(sep).pop() as string), '不报本机路径')
     assert.equal(calls[0].talker, 'wxid_a', '显示名要先解析成会话 id')
     assert.equal(calls[0].limit, 100)
-    const normalized = calls[0].outDir.split(String.fromCharCode(92)).join('/')
-    assert.match(normalized, /(^|\/)甲-\d{12}(-\d+)?$/, '目录是导出根下的新目录（不依赖根目录名）')
+    // HTML 自己的目录已经带时间戳且绝不覆盖；再包一层会变成 `甲-…/甲_…/index.html`。
+    assert.equal(calls[0].outDir, exportRoot, 'HTML 直接导出到导出根，由导出器建目录')
   } finally {
     ;(exportService as any).exportHtml = realExport
   }
 })
 
-test('export_chat：目录已存在时往后加序号，绝不覆盖', async () => {
-  const exportRoot = join(HOME, 'exports-tmp')
+test('export_chat：非 HTML 的目录已存在时往后加序号，绝不覆盖', async () => {
+  const exportRoot = join(HOME, 'exports-tmp-txt')
   mkdirSync(exportRoot, { recursive: true })
   process.env.WEFLOW_ASSISTANT_EXPORT_ROOT = exportRoot
 
   const dirs: string[] = []
-  const realExport = exportService.exportHtml.bind(exportService)
-  ;(exportService as any).exportHtml = async (_t: string, outDir: string) => {
+  const realExport = exportService.exportTxt.bind(exportService)
+  ;(exportService as any).exportTxt = async (_t: string, outDir: string) => {
     dirs.push(outDir)
     // 模拟"这一秒里已经导过一次"：把目录真实建出来，逼下一次换名字
     mkdirSync(outDir, { recursive: true })
-    return { success: true, path: outDir, count: 1 }
+    return { success: true, path: join(outDir, 'messages.txt'), count: 1 }
   }
   svc.listSessions = async () => ([{ displayName: '甲', username: 'wxid_a' }])
   try {
-    await run('export_chat', { contact: '甲' })
-    await run('export_chat', { contact: '甲' })
+    await run('export_chat', { contact: '甲', format: 'txt' })
+    await run('export_chat', { contact: '甲', format: 'txt' })
     assert.notEqual(dirs[0], dirs[1], '同一秒内两次导出必须落进不同目录')
     assert.match(dirs[1], /-2$/, '撞了就加序号')
   } finally {
-    ;(exportService as any).exportHtml = realExport
+    ;(exportService as any).exportTxt = realExport
   }
 })
 

@@ -2313,7 +2313,7 @@ program
   .option('--json', '输出机器可读的导出结果，不改变导出文件格式')
   .option('--non-interactive', '禁止交互选择；匹配不唯一时返回错误')
   .option('--full-images', '使用原图而非微信缓存缩略图（更清晰，但导出慢数倍）')
-  .option('--save-originals', 'html 导出时把原图存到 <输出>/<前缀>_assets/originals/，聊天里仍是缩略图，点击后打开原图（该目录要随 HTML 一起拷贝）')
+  .option('--save-originals', 'html 导出时把原图存到 <输出>/<联系人>_<时间戳>/assets/originals/，聊天里仍是缩略图，点击后打开原图')
   .option('--media', 'json/txt/excel 导出时一并抽出图片与文档（落盘到 <输出>/<会话>_assets，并在导出物里给出相对路径）')
   .action(async (talkerInput: string, format: string, opts) => {
     const validFormats = ['json', 'txt', 'html', 'md', 'excel']
@@ -2379,10 +2379,10 @@ program
         process.exit(1)
       }
     } else if (opts.media && format === 'html') {
-      // HTML 的用法是"单文件可分享"，所以它不写文档本体（把几 MB 的 PDF 内嵌进网页，既打不开也把文件撑大）。
+      // HTML 的产物是页面 + 图片，文档本体不在它的契约里（要文档请用 md 或 json|txt|excel --media）。
       // 静默忽略这个开关会让人以为它生效了 —— 明说一句，并给出该用哪个格式。
       if (!opts.json) {
-        console.error(chalk.gray('  提示：HTML 导出不含文档本体（单文件分享的用法），--media 对它不生效；'))
+        console.error(chalk.gray('  提示：HTML 导出不含文档本体，--media 对它不生效；'))
         console.error(chalk.gray('        要连文档一起导出请用 md，或 json|txt|excel --media。'))
       }
     }

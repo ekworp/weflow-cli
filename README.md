@@ -105,7 +105,7 @@ Linux 的自动初始化能力取决于微信发行版、Python 依赖和当前�
 
 | 场景 | 能力 |
 | --- | --- |
-| 聊天记录 | 查询会话、联系人和消息；导出 **Markdown / JSON / TXT / HTML / Excel**。Markdown 导出把图片**落盘**到 `<会话>_assets/`、正文用相对路径引用（喂给编辑器或别的工具时这才是能用的形态）；**文档本体**（微信里的 Word/Excel/PDF/PPT 等）按原名与扩展名拷进 `<会话>_assets/files/`，正文里按原名链接到 `files/` 下；HTML 导出内嵌图片并给出一份媒体覆盖报告（哪些没嵌上、为什么）。**匹配只做一遍**：Markdown 导出写下清单，之后 JSON/TXT/Excel 导出（或 `--media`）会自动带上同样的图片与文档路径。 |
+| 聊天记录 | 查询会话、联系人和消息；导出 **Markdown / JSON / TXT / HTML / Excel**。Markdown 导出把图片**落盘**到 `<会话>_assets/`、正文用相对路径引用（喂给编辑器或别的工具时这才是能用的形态）；**文档本体**（微信里的 Word/Excel/PDF/PPT 等）按原名与扩展名拷进 `<会话>_assets/files/`，正文里按原名链接到 `files/` 下；HTML 导出把预览落盘到 `<联系人>_<时间戳>/assets/thumbs/`，入口是同一目录的 `index.html`，并给出一份媒体覆盖报告（哪些没嵌上、为什么）。**匹配只做一遍**：Markdown 导出写下清单，之后 JSON/TXT/Excel 导出（或 `--media`）会自动带上同样的图片与文档路径。 |
 | 公众号日报 | 抓取文章、AI 摘要与分类、生成本地阅读页，保留收藏和已读状态。 |
 | 个人知识库 | 同步微信读书笔记、构建 Obsidian Vault、语义搜索、RAG 问答和概念 Wiki，以及**双击就能打开**的概念图谱页面（`weflow-cli wiki graph --open` 出 3D、加 `--flat` 出 2D；自包含、不联网、不需要服务器；`--min-degree N` 只看枢纽、`--line wiki\|chat` 只看一条线；**2D 页里点一条边能看到它凭什么连着**——两页的共同来源卡片，没有共同来源的边也会如实说来自正文链接）。 |
 | AI 协作 | 通过 MCP 把文章、知识库、日报和受控的本地数据能力交给兼容客户端；工具清单以 `weflow-cli mcp-config` 和 `docs/MCP.md` 为准。 |
@@ -189,9 +189,9 @@ weflow-cli messages "联系人" -n 10
 weflow-cli export "联系人" html --output ./output
 ```
 
-HTML 导出默认内嵌微信缓存里的缩略图，并尽力还原图片、表情包、系统消息和公众号卡片。远程媒体按 URL 缓存在输出目录的 `.cover-cache/`，所以**重复导出接近瞬时**（实测 1600+ 条约 2 秒），首次导出才需要联网。自定义表情包从本地缓存离线解密，seed 未配置时会自动扫描微信内存反推并提示固化命令。想改用**原图作为来源**时加 `--full-images`（原图常有 5–24MB/张，处理它们会慢数倍；**嵌入前仍按上限缩放**，所以导出物不会因此变大成几百 MB，实测两档体积相当）。细节见[操作与排障手册](./OPERATIONS.md#4-导出聊天记录)。
+HTML 导出的产物是**一个目录**：`<输出>/<联系人>_<YYYYMMDD-HHMMSS>/`，入口是 `index.html`，图片预览在 `assets/thumbs/`。页面本身不再内嵌 base64，所以长会话的 HTML 不会跟着相册一起膨胀；重复导出会新建带时间戳的目录，**不会覆盖上一次**。远程媒体按 URL 缓存在输出目录的 `.cover-cache/`，所以**重复导出接近瞬时**（实测 1600+ 条约 2 秒），首次导出才需要联网。自定义表情包从本地缓存离线解密，seed 未配置时会自动扫描微信内存反推并提示固化命令。想改用**原图作为来源**时加 `--full-images`（原图常有 5–24MB/张，处理它们会慢数倍；写进 `assets/thumbs/` 前仍按上限缩放，所以预览体积不会变成几百 MB）。细节见[操作与排障手册](./OPERATIONS.md#4-导出聊天记录)。
 
-**聊天里看缩略图、点开看原图**：加 `--save-originals`（仅 HTML）。原图按内容哈希存到 `<输出>/<前缀>_assets/originals/`，气泡里仍是缩略图，点击后用 lightbox 打开原图。这时导出物不再是一个文件——**拷贝 HTML 时必须连同那个 `_assets/originals/` 目录一起带走**，否则点击只能放大内嵌的缩略图。`--save-originals` 与 `--from/--to` 不兼容（那条分支不含图片），对 md / json / txt / excel 不生效。
+**聊天里看缩略图、点开看原图**：加 `--save-originals`（仅 HTML）。原图按内容哈希存到同一导出目录的 `assets/originals/`，气泡里仍是 `assets/thumbs/` 的缩略图，点击后用 lightbox 打开原图。**拷贝或分享时必须带走整个导出目录**（只有 `index.html` 的话图片会全部 404）。`--save-originals` 与 `--from/--to` 不兼容（那条分支是简版渲染器，不含图片），对 md / json / txt / excel 不生效。
 
 **生成当天公众号日报**
 
