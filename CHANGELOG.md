@@ -1,20 +1,3 @@
-# 更新日志
-
-## [1.20.0] - 2026-10-27
-
-### 新增
-
-- **数据库缓存系统**（默认关闭，需显式开启）
-  - 新增 cache 命令：nable/disable/status/clear/list/prune
-  - 用 hash(path, mtime, size, key) 索引缓存，源文件变化自动失效
-  - 导出策略：sqlcipher_export → VACUUM INTO → backup API 三级回退
-  - 首次查询需导出明文（约 20 s），后续查询无解密开销（<0.1 s）
-  - ⚠️ 开启后会在本地存储明文聊天记录，详见 docs/CACHE.md
-
-### 修复
-
-- 修复测试环境变量污染（database_cache_test.py）
-
 ---
 # Changelog
 
@@ -34,6 +17,58 @@ Everything published to npm has a section in this file. **No version numbers are
 purpose** - a hand-written "latest is X" is exactly the claim that goes stale here; those two commands never do.
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
+
+## 1.21.0
+
+- **`extras`：把此前没人读过的 NT 库读出来。** 2026-10-27 二次普查（`docs/NT_DATABASES.md`）
+  补齐最后一批读取方，共 9 个 kind + `overview`（每库每表的行数）：
+  `search-history` / `sessions` / `emoticons` / `fmessages` / `solitaire` /
+  `biz-subscribe` / `revoke` / `bizchat`。本机实测 8 个库 52 张表、33 张有数据。
+  - **`search-history`**：`websearch_record`（微信内置搜索历史）+ `SearchRecent`（点过谁）
+    + `brand_search_record`。三路**不合并**——实测前两张表的 query 交集为 0，是来源不同的
+    两件事，合成一张会丢一半。
+  - **`sessions`**：微信自己的 `SessionTable`（710 行：未读数、摘要、隐藏位、草稿有无）
+    + `SessionDeleteTable`（6 行，**唯一**记录"你删过哪个会话"的地方——实测这 6 条**都不在**
+    `SessionTable` 里了）。`--unread` 再带上 2.6 万行未读明细，`username_id → Name2Id.rowid`
+    实测 26816/26816 全部解出。**和 `weflow-cli sessions` 不是一回事**（那个是从消息分片推导的），
+    所以不合并、不互相覆盖。
+  - **`emoticons`**：只给**元数据**（76 个自定义表情的 md5/caption/CDN 地址、5 个表情包、
+    102 个包内文件偏移、494 条多语言 caption）。**图片本体解不开**：`aes_key` 是 32 位 hex
+    （=16 字节，长度上正好 AES-128）但实测 111 个本机缓存文件三种组合全 0 命中，且用错 key 的
+    对照也是 0——这个否定是可靠的，不是测试坏了。
+  - `fmessages`（好友申请）/ `solitaire`（群接龙，表名 md5 = `md5(会话 username)` 实测 2/2 命中）
+    / `biz-subscribe`（公众号订阅 + 470 个小程序）/ `revoke`（撤回）/ `bizchat`（企业微信）。
+  - **未验证的枚举原样给数字**，结果里带 `unverifiedEnums`。`SessionTable.type`、`FMessageTable.type_`、
+    `wacontact.type`、`biz_subscribe_status.is_subscribe`、`kNonStoreEmoticonTable.type`
+    在本机都是**常量**（710/710=0、11/11=37、470/470=0、41/41=1、76/76=3），拿它们当分类维度
+    只会得到"全中/全空"两种假象，所以脚本**不提供**按这些列过滤。
+  - 空表**如实报 0**：`chatbot_message.db` 四张表全 0 行、`revokemessage` 0 行但表存在——
+    "有表无记录"不等于"没这个功能"。
+- 修复：**`WeAppBizAttrSyncBufferTableV02.version` 存了非法 UTF-8**，直接 `SELECT` 会让**整条查询**
+  抛 `Could not decode to UTF-8`，于是那张 470 行的表被读成 0 行（"读不到"和"没有"变成同一个数字）。
+  现在所有文本列一律走 `hex()` + 解码兜底，输出里那一列叫 `versionHex`。
+  另外每个 reader 都带 `readErrors`：查询失败会被报出来，不再静默返回空列表。
+- 修复：删掉死键 `cacheDbEnabled`——它声明了接口/默认值/load/clear 四处但**没有任何读取方**，
+  用户照 `docs/CACHE.md` 去 `config set` 会毫无效果（而且它也不在 `configurableKeys` 里，
+  那条命令本身还会被拒）。开关只有环境变量一条路。
+- 修复：`cache enable` / `cache disable` 缺 `--json`，被 `test/json-surface.test.ts` 点名
+  （1.20.0 带着这个红发出的）。它们只打印环境变量设置说明、不改状态，已按该测试的约定写进
+  `ALLOWED_WITHOUT_JSON` 并说明机器路径是 `cache status --json`。
+- 修复：`docs/CACHE.md` 里写了一个不存在的 `config get` 命令，缓存目录也写成了
+  `~/.weflow-cli/cache/databases`（实际是 `%TEMP%/weflow-cli-cache/databases`，
+  不可写时回退到当前目录）；同时补上 `WEFLOW_CACHE_DIR`。
+
+## 1.20.0
+
+- **数据库缓存（默认关闭，需显式开启）**：`weflow-cli cache enable|disable|status|clear|list|prune`。
+  首次查询把库导出成明文缓存在本地，之后**不再付解密开销**。
+  - 缓存键是 `hash(路径, mtime, size, key)`：源文件或密钥一变就自动失效。
+  - 导出三级回退：`sqlcipher_export` → `VACUUM INTO` → `backup API`。
+  - 开关是环境变量 `WEFLOW_CACHE_ENABLED=1`；**没有配置键**（早先那个 `cacheDbEnabled`
+    没有任何读取方，写了不生效，1.21.0 已删）。
+  - ⚠️ 开启后本地存的是**明文聊天记录**，详见 `docs/CACHE.md` 的风险段。
+- 修复：测试之间的环境变量污染（`database_cache_test.py` 在模块级设了
+  `WEFLOW_CACHE_ENABLED`，让后面的 `nt_decrypt_shards_test` 也走了缓存路径）。
 
 ## 1.19.1
 

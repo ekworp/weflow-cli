@@ -24,6 +24,11 @@ import test from 'node:test'
 const ALLOWED_WITHOUT_JSON: Record<string, string> = {
   whitelist: '不传参数的那个 action 只是给人看的一张表；机器路径是 `whitelist list --json`',
   blacklist: '同上：机器路径是 `blacklist list --json`',
+  // `cache enable` / `cache disable` 只打印"怎么设环境变量"那几行说明：缓存开关是
+  // 环境变量 `WEFLOW_CACHE_ENABLED`，由用户的 shell 决定，这两个命令**不改任何状态**。
+  // 机器路径是 `cache status --json`（它才报开关状态、目录、大小与文件清单）。
+  enable: '只打印环境变量设置说明、不改状态；机器路径是 `cache status --json`',
+  disable: '同上（`cache status --json` 才是机器可读的那一档）',
 }
 
 const SOURCE = join(process.cwd(), 'bin', 'weflow-cli.ts')
