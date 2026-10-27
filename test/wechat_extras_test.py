@@ -14,6 +14,7 @@
 夹具一律是**普通 sqlite3**（不加密）——这些 reader 只吃一个连接，加密与否是
 `connect()` 的事，测试不重复验它。
 """
+import json
 import os
 import sqlite3
 import sys
@@ -177,17 +178,20 @@ class SearchHistoryTests(unittest.TestCase):
             ['CREATE TABLE websearch_record (keyword TEXT, pay_load_ TEXT, create_time INTEGER)',
              'CREATE TABLE SearchRecent (username TEXT, query TEXT, score INTEGER, last_click_time INTEGER)',
              'CREATE TABLE brand_search_record (keyword TEXT, pay_load_ TEXT, create_time INTEGER)'],
-            ["INSERT INTO websearch_record VALUES ('词A', '{\"x\":1}', 300)",
-             "INSERT INTO websearch_record VALUES ('词B', '{\"y\":2}', 100)",
+            ["INSERT INTO websearch_record VALUES ('词A', "
+             "'{\"requestId\":\"r-1\",\"scene\":88,\"hotword\":\"词A\","
+             "\"extReqParams\":[{\"key\":\"lastSearchId\",\"textValue\":\"999\"}]}', 300)",
+             "INSERT INTO websearch_record VALUES ('词B', '{\"requestId\":\"r-2\"}', 100)",
              "INSERT INTO SearchRecent VALUES ('wxid_x', '人名', 5, 200)",
-             "INSERT INTO brand_search_record VALUES ('品牌', '{}', 400)"])
+             "INSERT INTO brand_search_record VALUES ('品牌', '{\"requestId\":\"r-3\"}', 400)"])
 
     def test_three_sources_are_kept_separate(self):
         """实测三路交集为 0，所以合成一张表就是丢数据。"""
         conn = self._conn()
         data = X.search_history_rows(conn)
-        self.assertEqual(data['counts'],
-                         {'websearch': 2, 'searchRecent': 1, 'brandSearch': 1})
+        self.assertEqual(data['counts']['websearch'], 2)
+        self.assertEqual(data['counts']['searchRecent'], 1)
+        self.assertEqual(data['counts']['brandSearch'], 1)
         self.assertEqual(len(data['rows']), 4)
         self.assertEqual({r['source'] for r in data['rows']},
                          {'websearch', 'search-recent', 'brand-search'})
@@ -199,13 +203,30 @@ class SearchHistoryTests(unittest.TestCase):
         self.assertEqual(times, sorted(times, reverse=True))
         conn.close()
 
-    def test_payload_length_is_reported_not_parsed(self):
-        """pay_load_ 的形状是 JSON，但内容没解析——所以只报长度，不假装解出了字段。"""
+    def test_payload_fields_reach_the_rows(self):
+        """`pay_load_` 是要解析的：requestId/scene 必须出现在行上。
+
+        （上一版的判据是"只报长度、不解析"——那在实测出 JSON 形状和哪些键真在变之后
+        已经过时了，解析取舍由 `PayloadTests` 钉住。）
+        """
         conn = self._conn()
         row = next(r for r in X.search_history_rows(conn)['rows']
                    if r['source'] == 'websearch' and r['keyword'] == '词A')
-        self.assertEqual(row['payloadLen'], len('{"x":1}'))
-        self.assertNotIn('payload', row)
+        self.assertEqual(row['requestId'], 'r-1')
+        self.assertEqual(row['scene'], 88)
+        self.assertEqual(row['extReqParams'], [{'key': 'lastSearchId', 'value': '999'}])
+        self.assertNotIn('hotWord', row)
+        conn.close()
+
+    def test_unparsable_payload_is_counted_not_hidden(self):
+        conn = make_db(
+            ['CREATE TABLE websearch_record (keyword TEXT, pay_load_ TEXT, create_time INTEGER)',
+             'CREATE TABLE SearchRecent (username TEXT, query TEXT, score INTEGER, last_click_time INTEGER)',
+             'CREATE TABLE brand_search_record (keyword TEXT, pay_load_ TEXT, create_time INTEGER)'],
+            ["INSERT INTO websearch_record VALUES ('词', 'not json', 1)"])
+        data = X.search_history_rows(conn)
+        self.assertEqual(data['counts']['payloadUnparsed'], 1)
+        self.assertTrue(data['rows'][0].get('jsonError'))
         conn.close()
 
 
@@ -363,6 +384,139 @@ class FMessageTests(unittest.TestCase):
         data = X.fmessage_rows(conn)
         self.assertEqual(data['counts'], {'total': 3, 'incoming': 2, 'outgoing': 1})
         self.assertEqual([r['time'] for r in data['rows']], [300, 200, 100])
+        conn.close()
+
+
+class ProtobufTests(unittest.TestCase):
+    """`contact_pack_data` 的最小解码器。
+
+    编码器写在测试里，是为了让夹具和被测代码**不共享实现**：如果两边用同一份
+    wire-format 逻辑，写错会一起错、测试照样绿。
+    """
+
+    @staticmethod
+    def _varint(n):
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+
+    @classmethod
+    def _field(cls, fno, payload):
+        """wire type 2（长度前缀）的一个字段。"""
+        return cls._varint((fno << 3) | 2) + cls._varint(len(payload)) + payload
+
+    def test_parses_length_delimited_and_varint(self):
+        blob = (self._field(2, '腾讯微保'.encode())
+                + self._field(3, b'tengxunweibao')
+                + self._varint((7 << 3) | 0) + self._varint(0))
+        fields = X.parse_protobuf(blob)
+        self.assertEqual([(f, w) for f, w, _ in fields], [(2, 2), (3, 2), (7, 0)])
+        self.assertEqual(fields[2][2], 0, 'wire 0 的值是整数')
+
+    def test_decode_contact_pack_maps_known_fields(self):
+        blob = (self._field(2, '喜茶GO'.encode())
+                + self._field(3, b'xichaGO')
+                + self._field(4, b'http://wx.qlogo.cn/mmhead/AAA')
+                + self._field(5, b'http://wx.qlogo.cn/mmhead/AAA')
+                + self._field(6, ('这是一段简介' * 3).encode()))
+        got = X.decode_contact_pack(blob)
+        self.assertEqual(got['name'], '喜茶GO')
+        self.assertEqual(got['englishId'], 'xichaGO')
+        self.assertEqual(got['logoUrl'], 'http://wx.qlogo.cn/mmhead/AAA')
+        self.assertIn('这是一段简介', got['description'])
+
+    def test_unknown_fields_are_reported_not_dropped(self):
+        """没有实测证据的字段号要进 unknownFields，不能默默消失。"""
+        blob = self._field(2, '名字'.encode()) + self._field(99, b'?\x01\x02')
+        got = X.decode_contact_pack(blob)
+        self.assertIn(99, got['unknownFields'])
+
+    def test_garbage_returns_none_instead_of_empty_dict(self):
+        """解不出必须返回 None —— 回 `{}` 会让调用方以为"这个号没有资料"。"""
+        self.assertIsNone(X.decode_contact_pack(b'\xff\xff\xff\xff\xff'))
+        self.assertIsNone(X.decode_contact_pack(b''))
+        self.assertIsNone(X.decode_contact_pack(None))
+
+    def test_truncated_length_raises_rather_than_silently_short(self):
+        blob = self._varint((2 << 3) | 2) + self._varint(10) + b'ab'
+        with self.assertRaises(ValueError):
+            X.parse_protobuf(blob)
+
+
+class PayloadTests(unittest.TestCase):
+    """`pay_load_` 的取舍：只留**真的在变**的键。"""
+
+    def test_keeps_the_fields_that_vary(self):
+        payload = json.dumps({
+            'requestId': 'r-1', 'scene': 88, 'parentType': 7,
+            'hotword': '某词', 'optype': 1, 'businesstype': 0, 'timestamp': 111,
+            'extReqParams': [{'key': 'lastSearchId', 'textValue': '999'}],
+        })
+        got = X.summarize_payload(payload)
+        self.assertEqual(got['requestId'], 'r-1')
+        self.assertEqual(got['scene'], 88)
+        self.assertEqual(got['parentType'], 7)
+        self.assertEqual(got['extReqParams'], [{'key': 'lastSearchId', 'value': '999'}])
+        # 这四个实测无新信息（84/84 相同 / 常量 / 同刻），不该往外抛
+        for dropped in ('hotWord', 'optype', 'businessType', 'payloadTimestamp'):
+            self.assertNotIn(dropped, got, '%s 实测无新信息' % dropped)
+
+    def test_empty_string_searchId_is_omitted(self):
+        got = X.summarize_payload(json.dumps({'searchId': '', 'scene': 1}))
+        self.assertNotIn('searchId', got)
+        self.assertEqual(X.summarize_payload(json.dumps({'searchId': 'abc'}))['searchId'],
+                         'abc')
+
+    def test_non_json_marks_itself_instead_of_returning_empty(self):
+        self.assertEqual(X.summarize_payload('not json at all'), {'jsonError': True})
+        self.assertEqual(X.summarize_payload(json.dumps([1, 2])), {'jsonError': True})
+
+    def test_accepts_hex_from_the_reader(self):
+        raw = '{"scene": 5, "requestId": "x"}'
+        self.assertEqual(X.summarize_payload(raw.encode().hex())['scene'], 5)
+        self.assertEqual(X.summarize_payload(raw)['scene'], 5)
+
+
+class BizSubscribeTests(unittest.TestCase):
+    def test_mini_programs_with_decoded_pack(self):
+        """`wacontact` 是小程序资料卡（id 形如 `gh_`，但 `gh_` 不专属于公众号）。"""
+        enc = ProtobufTests
+        name = '喜茶GO'
+        pack = (enc._varint((2 << 3) | 2) + enc._varint(len(name.encode()))
+                + name.encode())
+        conn = make_db([
+            'CREATE TABLE wacontact (user_name TEXT, type INTEGER, '
+            'brand_icon_url TEXT, external_info TEXT, contact_pack_data BLOB, '
+            'wx_app_opt INTEGER, head_image_status TEXT, app_id TEXT)',
+            'CREATE TABLE biz_subscribe_status (biz_username TEXT, '
+            'template_id TEXT, is_subscribe INTEGER)',
+            'CREATE TABLE WeAppBizAttrSyncBufferTableV02 (user_name TEXT, '
+            'last_update_time INTEGER, version TEXT)',
+        ], [
+            "INSERT INTO biz_subscribe_status VALUES ('gh_a', 't1', 1)",
+            "INSERT INTO biz_subscribe_status VALUES ('gh_b', 't2', 1)",
+        ])
+        conn.execute("INSERT INTO wacontact VALUES ('gh_a', 0, '', '', ?, 0, '', '')",
+                     (pack,))
+        conn.execute("INSERT INTO wacontact VALUES ('gh_c', 0, '', '', NULL, 0, '', '')")
+        conn.commit()
+
+        data = X.biz_subscribe_rows(conn)
+        self.assertIn('miniPrograms', data)
+        by_name = {w['username']: w for w in data['miniPrograms']}
+        self.assertEqual(by_name['gh_a']['name'], '喜茶GO')
+        self.assertTrue(by_name['gh_a']['packDecoded'])
+        self.assertFalse(by_name['gh_c']['packDecoded'], 'NULL BLOB 要标成没解出来')
+        self.assertEqual(data['counts']['packUndecoded'], 1)
+
+        # 订阅 ≠ 有资料卡：2 条订阅里只有 1 条能找到卡
+        self.assertEqual(data['joins']['subscribedWithMiniProgramCard'], 1)
+        self.assertEqual(data['joins']['subscribedWithoutCard'], 1)
+        self.assertEqual(data['joins']['miniProgrammingNotSubscribed'], 1)
         conn.close()
 
 

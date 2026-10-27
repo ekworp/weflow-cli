@@ -18,6 +18,35 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.21.1
+
+- **`extras biz-subscribe` 解出小程序资料卡**（`wacontact.contact_pack_data` 是 protobuf）。
+  470/470 全部可解析、0 失败，解出**名称 / 英文 id / logo / 简介**——订阅表本身只有
+  `biz_username` 和 `template_id`，这两张表合起来才有"我订阅的号叫什么"。
+  字段号 → 含义是按实测值反推的（2 名称 / 3 英文 id / 4·5 logo / 6 简介）；
+  没有证据的字段号进 `unknownFields`，只报号与次数、**不猜名字**。
+  解不出返回 `packDecoded: false`，不给空字典（空字典会让人以为"这个号没有资料"）。
+- **`extras biz-subscribe` 报出「订阅 ∩ 资料卡」的实际交集**：本机 41 条订阅里
+  **40 条**能在 `wacontact` 找到卡、**1 条没有**，另有 **451 个**有卡但没订阅。
+  以前只有一个 `miniPrograms=470`，读的人很容易把它当成"我订阅了 470 个"。
+- **`extras search-history` 解析 `pay_load_`**（实测 84/84 是 JSON）。它是**这次搜索的
+  请求上下文**，不是搜索结果。只保留**真的在变**的键：`requestId`、`scene`（6 档）、
+  `parentType`（6 档）、`extReqParams`（搜索过滤器）、`searchId`（仅非空时）。
+  实测**无新信息**因此丢掉的：`hotword`（与 `keyword` 84/84 完全相同）、
+  `optype`（84/84 恒为 1）、`businesstype`（83/84 为 0）、`timestamp`（与 `create_time`
+  只差 0～−2 秒）。`scene` / `parentType` 的语义**未验证**，原样给数字。
+  `searchId` 在 78/84 行是空串 → 空串不出现在输出里（写成 `""` 会让人以为"有 id 但为空"）。
+- **一个值得记下来的纠正**：1.21.0 的 `biz-subscribe` 把 `wacontact` 叫 `miniPrograms`
+  其实是**对的**。我在 1.21.1 开发中看到 `user_name` 全是 `gh_` 就断定"这些是公众号，
+  不是小程序"，改名成 `bizContacts` —— 等 protobuf 解出来才发现简介写的是
+  「下单免排队 外卖送上门」「快递查询、发货打单」「通过蓝牙技术连接蓝牙水控器」
+  「官方点餐、买单小程序」，**它们就是小程序**，只是 id 恰好也是 `gh_` 前缀。
+  已改回 `miniPrograms`。
+- **顺带查到的一个边界（不是 bug，但值得写下来）**：`gh_` 前缀**不专属于公众号**。
+  已验边界——那 470 个小程序与 `contact.db`（4228 个号）、`session.db.Name2Id`、
+  消息库 `Name2Id` 的交集**都是 0**，所以仓库里 9 处 `LIKE 'gh_%'` 的公众号过滤
+  **没有被污染**（小程序只住在 `general.db` 的 `wacontact` 里）。
+
 ## 1.21.0
 
 - **`extras`：把此前没人读过的 NT 库读出来。** 2026-10-27 二次普查（`docs/NT_DATABASES.md`）

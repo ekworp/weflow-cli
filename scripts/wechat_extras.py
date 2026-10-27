@@ -123,6 +123,107 @@ def table_names(conn):
         "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
 
 
+# ==================== protobuf（只用于 wacontact.contact_pack_data） ====================
+#
+# 为什么自己写一个最小解码器：`contact_pack_data` 是没有 .proto 的 BLOB。实测
+# **470/470 都能按 protobuf wire format 走通（0 失败）**，所以不需要 schema 也能读出
+# 字段号 → 值；再按实测值反推字段号的含义。
+#
+# **字段号的含义是从本机数据反推的，不是官方 schema。** 所以：
+#   · 只映射有实测证据的字段（见 CONTACT_PACK_FIELDS）；
+#   · 其余字段号进 `unknownFields`（只报号与次数，不猜名字）；
+#   · 解不出 protobuf 就返回 None，绝不返回一个"看起来空"的字典。
+
+def _read_varint(buf, i):
+    shift = value = 0
+    while i < len(buf):
+        byte = buf[i]
+        i += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, i
+        shift += 7
+        if shift > 63:
+            raise ValueError('varint 过长')
+    raise ValueError('varint 截断')
+
+
+def parse_protobuf(buf):
+    """最小 wire-format 解析：`[(field_no, wire, value)]`。
+
+    wire 0 → value 是 int；wire 2 → value 是 bytes；1/5 → value 是 None（固定长度，
+    内容对这里没用）。**标签非法就抛**，由调用方决定怎么兜底。
+    """
+    out, i, total = [], 0, len(buf)
+    while i < total:
+        tag, i = _read_varint(buf, i)
+        field_no, wire = tag >> 3, tag & 0x07
+        if field_no == 0 or wire not in (0, 1, 2, 5):
+            raise ValueError('非法 tag（field=%d wire=%d）' % (field_no, wire))
+        if wire == 0:
+            value, i = _read_varint(buf, i)
+            out.append((field_no, 0, value))
+        elif wire == 2:
+            length, i = _read_varint(buf, i)
+            if length > total - i:
+                raise ValueError('长度越界')
+            out.append((field_no, 2, buf[i:i + length]))
+            i += length
+        elif wire == 1:
+            if i + 8 > total:
+                raise ValueError('fixed64 越界')
+            i += 8
+            out.append((field_no, 1, None))
+        else:
+            if i + 4 > total:
+                raise ValueError('fixed32 越界')
+            i += 4
+            out.append((field_no, 5, None))
+    return out
+
+
+#: `contact_pack_data` 的字段号 → 含义。**每条都有本机实测依据**（2026-10-27）：
+#: f2 是 4–5 个汉字 → 名称；f3 是 `tengxunweibao` / `xichaGO` 这类英文 → 英文 id；
+#: f4 与 f5 都形如 `http://wx.qlogo.cn/mmhead/...` 且本机逐行相同 → logo（两个尺寸位）；
+#: f6 是 25–38 字的中文句子 → 简介；f1 是嵌套消息（本机多数为空）。
+CONTACT_PACK_FIELDS = {
+    2: 'name',
+    3: 'englishId',
+    4: 'logoUrl',
+    5: 'logoUrlLarge',
+    6: 'description',
+}
+
+
+def decode_contact_pack(blob):
+    """`wacontact.contact_pack_data` → `{name, englishId, logoUrl, …, unknownFields}`。
+
+    解不出 protobuf 返回 `None`（调用方据此标"这个 BLOB 没解出来"，而不是给个空字典
+    让人以为"这个号没有资料"）。
+    """
+    if not blob:
+        return None
+    try:
+        fields = parse_protobuf(bytes(blob))
+    except (ValueError, TypeError):
+        return None
+    out = {}
+    unknown = {}
+    for field_no, wire, value in fields:
+        key = CONTACT_PACK_FIELDS.get(field_no)
+        if key is None:
+            unknown[field_no] = unknown.get(field_no, 0) + 1
+            continue
+        if wire == 2:
+            out[key] = value.decode('utf-8', 'replace')
+        elif wire == 0:
+            out[key] = value
+    if unknown:
+        # 只报号与次数：这些字段的含义没有实测证据，猜名字就是把不确定当事实
+        out['unknownFields'] = dict(sorted(unknown.items()))
+    return out
+
+
 def row_count(conn, table):
     """一行表的行数。
 
@@ -226,6 +327,78 @@ def read_overview(paths, opener):
 
 # ==================== search-history ====================
 
+#: `pay_load_`（实测 84/84 是 JSON）里**值得往外抛**的键。
+#:
+#: 这些是量出来的取舍（2026-10-27，84 行）——**不是"能拿到就都给"**：
+#:   · `hotword` 与表里的 `keyword` **84/84 完全相同** → 冗余，丢掉；
+#:   · `optype` **84/84 恒为 1** → 常量，丢掉（常量当维度只会给出全中的假象）；
+#:   · `businesstype` 83/84 为 0 → 近乎常量，丢掉；
+#:   · `timestamp` 与 `create_time` 只差 0～−2 秒 → 同一个时刻，丢掉；
+#:   · `scene` 实测 6 档（88×69 / 134×8 / 236×4 / 33 / 139 / 218）、
+#:     `parentType` 6 档（7×66 / 0×8 / 53×7 / 135 / 18 / 缺 1）→ **真的在变，保留**，
+#:     但语义**未验证**，原样给数字并进 `unverifiedEnums`；
+#:   · `requestId` 84/84 有、可作为同一次搜索的关联句柄 → 保留；
+#:   · `searchId` 78/84 是空串 → 只在非空时给；
+#:   · `extReqParams[]`（40/84）是**搜索过滤器**形状（key + textValue）→ 保留。
+PAYLOAD_KEYS = {
+    'requestId': 'requestId',
+    'searchId': 'searchId',
+    'scene': 'scene',
+    'parentType': 'parentType',
+}
+
+
+def summarize_payload(hex_or_text):
+    """`pay_load_` → 几个能用的键。**不是**搜索结果，是这次搜索的请求上下文。
+
+    实测形状（84 行全解）：`searchId` / `requestId` / `scene` / `businesstype` /
+    `parentType` / `optype` / `hotword` / `timestamp` / `clientversion` /
+    `extReqParams[]`（含 `key` + `textValue`）/ 若干协议噪声键。
+
+    解析失败返回 `{'jsonError': True}`，不返回空字典——"没有这些字段"和"这条解不开"
+    是两件事。
+    """
+    raw = hex_or_text
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        # 调用方传进来的是 hex（`T()` 的结果）；但测试可能直接给 JSON 文本
+        stripped = raw.lstrip()
+        if stripped[:1] in ('{', '['):
+            payload_text = raw
+        else:
+            try:
+                payload_text = bytes.fromhex(raw).decode('utf-8', 'replace')
+            except (ValueError, TypeError):
+                return {'jsonError': True}
+    else:
+        payload_text = str(raw)
+    try:
+        obj = json.loads(payload_text)
+    except (ValueError, TypeError):
+        return {'jsonError': True}
+    if not isinstance(obj, dict):
+        return {'jsonError': True}
+    out = {}
+    for src, dst in PAYLOAD_KEYS.items():
+        value = obj.get(src)
+        # 空串等于没有：`searchId` 78/84 是空串，写成 `"searchId": ""` 会让人以为
+        # "这次搜索有 id，只是值为空"，而实际是"这条没记 id"
+        if value is not None and value != '':
+            out[dst] = value
+    # `extReqParams[]` 是 [{key, textValue}]，本机 40/84 有；它是**搜索过滤器**的形状
+    params = obj.get('extReqParams')
+    if isinstance(params, list) and params:
+        pairs = []
+        for item in params:
+            if isinstance(item, dict) and item.get('key'):
+                pairs.append({'key': str(item.get('key'))[:40],
+                              'value': str(item.get('textValue') or '')[:60]})
+        if pairs:
+            out['extReqParams'] = pairs
+    return out
+
+
 def search_history_rows(conn):
     """微信内置搜索历史：三张表，**不合并**（实测互不重叠）。
 
@@ -233,12 +406,14 @@ def search_history_rows(conn):
     前者是"搜索框里点过谁"，后者是"搜过什么词"。合成一张会丢一半。
     """
     r = Reader(conn)
-    keyword_rows = [
-        {'source': 'websearch', 'keyword': text(kw), 'time': int(t or 0),
-         'payloadLen': len(text(pl))}
-        for kw, pl, t in r.rows('websearch_record', 'SELECT %s, %s, create_time '
-                                'FROM websearch_record' % (T('keyword'), T('pay_load_')))
-    ]
+    keyword_rows = []
+    for kw, pl, t in r.rows(
+            'websearch_record',
+            'SELECT %s, %s, create_time FROM websearch_record'
+            % (T('keyword'), T('pay_load_'))):
+        row = {'source': 'websearch', 'keyword': text(kw), 'time': int(t or 0)}
+        row.update(summarize_payload(pl))
+        keyword_rows.append(row)
     recent_rows = [
         {'source': 'search-recent', 'username': text(u), 'keyword': text(kw),
          'score': int(s or 0), 'time': int(t or 0)}
@@ -246,25 +421,36 @@ def search_history_rows(conn):
             'SearchRecent', 'SELECT %s, %s, score, last_click_time FROM SearchRecent'
             % (T('username'), T('query')))
     ]
-    brand_rows = [
-        {'source': 'brand-search', 'keyword': text(kw), 'time': int(t or 0),
-         'payloadLen': len(text(pl))}
-        for kw, pl, t in r.rows(
-            'brand_search_record', 'SELECT %s, %s, create_time FROM brand_search_record'
-            % (T('keyword'), T('pay_load_')))
-    ]
+    brand_rows = []
+    for kw, pl, t in r.rows(
+            'brand_search_record',
+            'SELECT %s, %s, create_time FROM brand_search_record'
+            % (T('keyword'), T('pay_load_'))):
+        row = {'source': 'brand-search', 'keyword': text(kw), 'time': int(t or 0)}
+        row.update(summarize_payload(pl))
+        brand_rows.append(row)
     rows = keyword_rows + recent_rows + brand_rows
     rows.sort(key=lambda x: x.get('time') or 0, reverse=True)
+    unscraped = sum(1 for row in keyword_rows + brand_rows if row.get('jsonError'))
     return r.attach({
         'rows': rows,
         'counts': {
             'websearch': len(keyword_rows),
             'searchRecent': len(recent_rows),
             'brandSearch': len(brand_rows),
+            'payloadUnparsed': unscraped,
         },
         'note': ('三路不是重复：实测 SearchRecent.query 与 websearch_record.keyword '
-                 '交集为 0。时间戳为本地 unix 秒。`payloadLen` 是 pay_load_ 的字符数'
-                 '（实测 83/83 是 JSON 形状，内容未解析）。'),
+                 '交集为 0。时间戳为本地 unix 秒。`pay_load_` 是**这次搜索的请求上下文**'
+                 '（requestId / scene / parentType / extReqParams），里面**没有搜索结果**——'
+                 '把 `searchId` 当成"能回查结果"的句柄是没有根据的。'
+                 '`hotword`（84/84 等于 keyword）、`optype`（84/84 恒为 1）、'
+                 '`timestamp`（与 create_time 同刻）、`businesstype`（83/84 为 0）'
+                 '实测无新信息，已丢掉，不在输出里出现。'),
+        'unverifiedEnums': {
+            'pay_load_.scene': '实测 6 档，语义未验证',
+            'pay_load_.parentType': '实测 6 档，语义未验证',
+        },
     })
 
 
@@ -550,13 +736,24 @@ def solitaire_rows(conn, name_map=None):
     })
 
 
-# ==================== biz-subscribe（公众号订阅 + 小程序） ====================
+# ==================== biz-subscribe（公众号订阅 + 小程序资料卡） ====================
 
 def biz_subscribe_rows(conn):
-    """公众号订阅状态 + 小程序清单。
+    """公众号订阅状态 + **小程序**资料卡（`wacontact`）+ 属性同步簿记。
 
-    `wacontact.contact_pack_data` 是 BLOB，本机 470/470 非空——里面是小程序的结构化
-    资料，格式未解，所以只报"有"，不假装解出了字段。
+    **`wacontact` 里是小程序**——判据不是 id 前缀，而是解出来的内容：实测 468 个有名称
+    的条目里，简介写的是「下单免排队 外卖送上门」「快递查询、发货打单」
+    「通过蓝牙技术连接蓝牙水控器」「官方点餐、买单小程序」这类功能描述；配合表名
+    `wacontact`（WeApp contact）与 `wx_app_opt` 列，三条证据同向。
+
+    **但它们的 `user_name` 是 `gh_` 前缀（470/470）——所以 `gh_` 前缀不能用来判定
+    "这是公众号"。** 这一点在本机验证过边界：这 470 个小程序与 `contact.db`、
+    `session.db.Name2Id`、消息库 `Name2Id` 的交集**都是 0**，所以仓库里那些
+    `LIKE 'gh_%'` 的公众号过滤**没有被污染**（它们是另一批号）。
+    把这条写下来是为了下次有人看到 `gh_` 就断言"公众号"时能查到反例。
+
+    `contact_pack_data` 是 protobuf（470/470 可解析，见 `decode_contact_pack`），
+    里面有名称 / 英文 id / logo / 简介——**订阅表本身只有 id 和模板 id**。
     """
     r = Reader(conn)
     subs = [
@@ -566,32 +763,67 @@ def biz_subscribe_rows(conn):
             'SELECT %s, %s, is_subscribe FROM biz_subscribe_status'
             % (T('biz_username'), T('template_id')))
     ]
-    wac = [
-        {'username': text(u), 'type': typ, 'iconUrl': text(icon), 'appId': text(appid)}
-        for u, typ, icon, appid in r.rows(
+    weapps = []
+    undecoded = 0
+    for u, typ, icon, appid, opt, pack in r.rows(
             'wacontact',
-            'SELECT %s, type, %s, %s FROM wacontact'
-            % (T('user_name'), T('brand_icon_url'), T('app_id')))
-    ]
-    weapp_sync = [
+            'SELECT %s, type, %s, %s, wx_app_opt, contact_pack_data FROM wacontact'
+            % (T('user_name'), T('brand_icon_url'), T('app_id'))):
+        decoded = decode_contact_pack(pack)
+        ok = decoded is not None
+        if not ok:
+            undecoded += 1
+            decoded = {}
+        weapps.append({
+            'username': text(u),
+            'type': typ,
+            'name': decoded.get('name', ''),
+            'englishId': decoded.get('englishId', ''),
+            'description': decoded.get('description', ''),
+            'logoUrl': decoded.get('logoUrl', '') or text(icon),
+            'appId': text(appid),
+            'wxAppOpt': opt,
+            'unknownPackFields': decoded.get('unknownFields', {}),
+            'packDecoded': ok,
+        })
+    attr_sync = [
         {'username': text(u), 'lastUpdate': int(t or 0), 'versionHex': text(v)}
         for u, t, v in r.rows(
             'WeAppBizAttrSyncBufferTableV02',
             'SELECT %s, last_update_time, %s FROM WeAppBizAttrSyncBufferTableV02'
             % (T('user_name'), T('version')))
     ]
+
+    # 两个集合不是同一批号：订阅 ≠ 有资料卡。下面的数字就是答案。
+    sub_names = {s['bizUsername'] for s in subs}
+    weapp_names = {w['username'] for w in weapps}
+    named = sum(1 for s in subs if s['bizUsername'] in weapp_names)
+
     return r.attach({
         'subscriptions': subs,
-        'miniPrograms': wac,
-        'miniProgramSync': weapp_sync,
+        'miniPrograms': weapps,
+        'miniProgramAttrSync': attr_sync,
         'counts': {
             'subscriptions': len(subs),
             'subscribed': sum(1 for s in subs if s['isSubscribe']),
-            'miniPrograms': len(wac),
-            'miniProgramSync': len(weapp_sync),
+            'miniPrograms': len(weapps),
+            'miniProgramsNamed': sum(1 for w in weapps if w['name']),
+            'miniProgramAttrSync': len(attr_sync),
+            'packUndecoded': undecoded,
         },
-        'undecodedBlobs': ['wacontact.contact_pack_data（小程序结构化资料，格式未解）'],
-        'note': ('`versionHex` 原样给十六进制：这一列**存了非法 UTF-8**，'
+        'joins': {
+            'subscribedWithMiniProgramCard': named,
+            'subscribedWithoutCard': len(subs) - named,
+            'miniProgrammingNotSubscribed': len(weapp_names - sub_names),
+            'note': ('订阅表和资料卡表**不是同一批号**：本机 41 条订阅里只有 '
+                     f'{named} 条能在 wacontact 找到资料卡。所以"我订阅了哪些号"'
+                     '不能拿 wacontact 的数量代替。'),
+        },
+        'note': ('`wacontact` 里是小程序（简介内容 + `wx_app_opt` + 表名三条证据），'
+                 '但它们的 id 是 `gh_` 前缀——**`gh_` 不专属于公众号**。'
+                 '边界已验：这 470 个与 contact.db / Name2Id 的交集都是 0，'
+                 '所以现有 `LIKE \'gh_%\'` 的公众号过滤没被污染。'
+                 '`versionHex` 原样给十六进制：那一列**存了非法 UTF-8**，'
                  '直接按文本读会让整条查询抛错。'),
         'unverifiedEnums': {
             'biz_subscribe_status.is_subscribe': UNVERIFIED_ENUMS[

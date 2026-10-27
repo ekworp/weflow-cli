@@ -44,8 +44,8 @@
 | `transferTable` | 22 | `ledger` | 转账（有 `begin_transfer_time`） |
 | `FMessageTable` | 11 | `extras fmessages` | **好友/群申请**（`content_` 是申请语，本机长度 3–33） |
 | `biz_subscribe_status` | 41 | `extras biz-subscribe` | 公众号订阅状态 |
-| `wacontact` | 470 | 同上 | 小程序清单；`contact_pack_data` 是 BLOB（470/470 非空，**格式未解**） |
-| `WeAppBizAttrSyncBufferTableV02` | 470 | 同上 | 小程序属性同步；`version` 列**存了非法 UTF-8**（见 §五） |
+| `wacontact` | 470 | 同上 | **小程序资料卡**：`contact_pack_data` 是 **protobuf，470/470 可解析**（见 §四），解出名称 / 英文 id / logo / 简介 |
+| `WeAppBizAttrSyncBufferTableV02` | 470 | 同上 | 同一批小程序的属性同步；`version` 列**存了非法 UTF-8**（见 §六） |
 | `revokebatchmessage` | 2 | `extras revoke` | 批量撤回 |
 | `revokemessage` | 0 | 同上 | 表在、本机无记录 |
 
@@ -67,8 +67,34 @@
 | `SearchRecent` 与 `websearch_record` **不是**重复 | 35 条 query ∩ 83 条 keyword = **0**；合成一张会丢一半 |
 | `kStoreEmoticonFilesTable` 是**单文件归档** | 每包 12–24 个文件，`emoticon_offset_` 从 0 起连续到 2–6 MB |
 | 表情缓存里**有一部分本来就是明文图** | 抽 2000 个缓存文件看前 8 字节：JPEG 502 / PNG 141 / GIF 9 / wxgf 9 / 其他 1339（文件层结论，不是库层） |
+| **`gh_` 前缀不专属于公众号** | `wacontact` 的 470 个**小程序** id 全是 `gh_`（470/470）。判据不是前缀而是内容：解出的简介写的是「下单免排队 外卖送上门」「快递查询、发货打单」「通过蓝牙技术连接蓝牙水控器」「官方点餐、买单小程序」，配合 `wx_app_opt` 列与表名 `wacontact` |
+| 上面那条**不影响**现有 `LIKE 'gh_%'` 过滤 | 那 470 个小程序与 `contact.db`（4228 个号）、`session.db.Name2Id`、消息库 `Name2Id` 的交集**都是 0** —— 它们只住在 `general.db` 的 `wacontact` 里，所以 9 处 `gh_%` 公众号过滤没有被污染 |
+| `pay_load_` 里哪些字段**真的在变** | 84 行实测：`scene` 6 档（88×69/134×8/236×4/33/139/218）、`parentType` 6 档（7×66/0×8/53×7/135/18/缺 1）→ 保留；`hotword` 与 `keyword` **84/84 相同**、`optype` **84/84 恒为 1**、`businesstype` 83/84 为 0、`timestamp` 与 `create_time` 只差 0～−2 秒 → **无新信息，丢掉**；`searchId` 78/84 是空串 |
 
-## 四、`emoticon.db` 的 `aes_key`：解不开（带正对照的否定）
+## 四、`contact_pack_data` 是 protobuf（已解）
+
+`wacontact.contact_pack_data` 没有 `.proto`，但**470/470 都能按 protobuf wire format
+走通、0 失败**，所以不需要 schema：读字段号 → 值，再按实测值反推含义。
+
+| 字段号 | 含义 | 实测依据 |
+| --- | --- | --- |
+| 2 | `name` | 4–5 个汉字（如「腾讯微保」「喜茶GO」「圆通速递」） |
+| 3 | `englishId` | `tengxunweibao` / `xichaGO` / `yuantongsudi` 这类 |
+| 4 / 5 | `logoUrl` / `logoUrlLarge` | 都是 `http://wx.qlogo.cn/mmhead/…`，本机逐行相同 |
+| 6 | `description` | 25–38 字的中文句子（「下单免排队 外卖送上门」等） |
+| 1 | （嵌套消息） | 本机多数为空，**不去猜它是干什么的** |
+| 其余 | `unknownFields` | 只报字段号与出现次数，不猜名字 |
+
+实现：`scripts/wechat_extras.py` 的 `parse_protobuf` / `decode_contact_pack`。
+解不出返回 `None`（调用方标 `packDecoded: false`），**不返回空字典**——空字典会让人
+以为"这个号没有资料"。
+
+> 顺带一个反面记录：我一度看到 `user_name` 全是 `gh_` 就断定"这些是公众号、不是小程序"，
+> 把字段改名成 `bizContacts`——**那是错的**。解出的简介内容（点餐 / 快递查询 / 蓝牙水控）
+> 直接证明了它们是小程序。**前缀不是内容**；这次的教训是：换个角度（读内容）再验一遍，
+> 比顺着一个看起来很强的信号推下去更可靠。
+
+## 五、`emoticon.db` 的 `aes_key`：解不开（带正对照的否定）
 
 76 行全部 `aes_key` 长度 32（hex → 16 字节，长度上正好是 AES-128），76 个**全不同**。
 试解结果：
@@ -82,7 +108,7 @@
 所以 `extras emoticons` **只给元数据**（md5 / caption / CDN 地址 / 所属表情包 /
 包内文件偏移）。自定义表情的**解码**那条路仍未通，靠内存扫 seed 的老办法还在。
 
-## 五、`WeAppBizAttrSyncBufferTableV02.version` 存了非法 UTF-8
+## 六、`WeAppBizAttrSyncBufferTableV02.version` 存了非法 UTF-8
 
 直接 `SELECT version FROM WeAppBizAttrSyncBufferTableV02` 会抛
 `Could not decode to UTF-8 column 'version'`，而**整条查询**失败——于是那张表被读成
@@ -92,7 +118,7 @@
 `scripts/wechat_extras.py` 的 `T()`/`text()` 就是这个；输出里那一列叫 `versionHex`。
 **同理适用于任何 TEXT 列装了二进制的情况**——所以那个脚本的文本列一律走 hex。
 
-## 六、常量列（不可当分类维度）
+## 七、常量列（不可当分类维度）
 
 同一台机器上的分布说明这些列在这个账号里**只有一个值**：
 
@@ -106,7 +132,7 @@
 
 `wechat_extras.py` 因此**不提供**按这些列过滤，并在结果里带 `unverifiedEnums`。
 
-## 七、仍然没解析的
+## 八、仍然没解析的
 
 | 库 | 表 / 行数（本机） | 是什么 | 价值判断 |
 | --- | --- | --- | --- |
@@ -116,16 +142,20 @@
 | `contact/contact_fts.db`、`favorite/favorite_fts.db` | FTS5 结构 | 联系人/收藏的搜索索引（衍生库） | 低：可从主库重建；分词器同样不可用 |
 | `general.db` 那 8 张 0 行表 | 见 §二 | 各种客户端簿记 | 无（0 行，且语义未验证） |
 
-## 八、钥匙
+## 九、钥匙
 
 全部库用同一派生链打开（`nt_common.derive_database_key`：全库口令 PBKDF2 → 每库 salt）。
 两次普查合计 22 个库**全部一次打开成功**——**NT 库没有按库独立的钥匙体系**。
 `emoticon.aes_key` 那类字段是**内容层**（表情包 CDN 下载/解密）的钥匙，不是库钥匙；
-而且它在实测里连内容层也没解开（§四）。
+而且它在实测里连内容层也没解开（§五）。
 
-## 九、下一步候选
+## 十、下一步候选
 
-1. `wacontact.contact_pack_data`（470 个 BLOB）→ 小程序资料格式。**未开工，格式没线索。**
-2. 表情解码 → 仍然卡在 §四 那个否定上；要动它得先找到 16 字节 key 的真正来源。
-3. `websearch_record.pay_load_` 的 JSON 内容 → 搜索结果的元信息（本文件只报了长度）。
-4. `SessionTable.draft` / `summary` 之外的会话列（`last_msg_*` 那几个）语义未逐值验证。
+1. ~~`wacontact.contact_pack_data`~~ → **已解**（§四，protobuf）。仍未映射的是字段 1
+   （嵌套消息，本机多数为空）与 8–12：没有实测证据，不猜名字。
+2. ~~`websearch_record.pay_load_`~~ → **已解**（§三末两行）。它是**请求上下文**、不是搜索结果；
+   `searchId` 不能当"回查结果"的句柄。
+3. 表情解码 → 仍然卡在 §五 那个否定上；要动它得先找到 16 字节 key 的真正来源。
+4. `SessionTable.last_msg_type` / `last_msg_sub_type` / `last_msg_ext_type` 的语义未逐值验证
+   （`draft` / `summary` 只是原样搬运，也没有语义结论）。
+5. `contact_pack_data` 的字段 8–12（256 / 177 行有）含义未验证。

@@ -2480,7 +2480,8 @@ function printExtrasBlock(name: string, data: any): void {
   } else if (name === 'search-history') {
     for (const row of (data.rows || []).slice(0, 12)) {
       const when = row.time ? new Date(row.time * 1000).toLocaleString('zh-CN', { hour12: false }) : '?'
-      console.log(`  [${when}] ${row.source.padEnd(13)} ${row.keyword || row.username || ''}`)
+      const scene = row.scene === undefined ? '' : chalk.gray(` scene=${row.scene}`)
+      console.log(`  [${when}] ${row.source.padEnd(13)} ${row.keyword || row.username || ''}${scene}`)
     }
     console.log(chalk.gray(`  ${data.note || ''}`))
   } else if (name === 'sessions') {
@@ -2529,7 +2530,16 @@ function printExtrasBlock(name: string, data: any): void {
       console.log(`  批量撤回 [${when}] ${row.session}`)
     }
     console.log(chalk.gray(`  ${data.note || ''}`))
-  } else if (name === 'biz-subscribe' || name === 'bizchat') {
+  } else if (name === 'biz-subscribe') {
+    if (data.joins) {
+      console.log(chalk.gray(`  订阅 ∩ 小程序资料卡：${data.joins.subscribedWithMiniProgramCard} 有卡、`
+        + `${data.joins.subscribedWithoutCard} 无卡；另 ${data.joins.miniProgrammingNotSubscribed} 个有卡未订阅`))
+    }
+    for (const w of (data.miniPrograms || []).filter((x: any) => x.name).slice(0, 10)) {
+      console.log(`  ${w.name}  ${chalk.gray(w.englishId || '')}  ${(w.description || '').slice(0, 24)}`)
+    }
+    console.log(chalk.gray(`  ${data.note || ''}`))
+  } else if (name === 'bizchat') {
     // counts 已经打过了，没有更细的摘要可给
   }
   if (data.readErrors) {
