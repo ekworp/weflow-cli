@@ -45,7 +45,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _utils import (SEPARATOR, TOPICS, call_deepseek, get_api_key,  # noqa: E402
+from _utils import (SEPARATOR, call_deepseek, get_api_key,  # noqa: E402
                     get_dashscope_key, load_config,
                     note_path, parse_frontmatter, plain, write_with_frontmatter)
 
@@ -67,25 +67,23 @@ DEFAULT_OCR_ROOT = r'D:\github_project\ZhaoWen_GitHub维护\ocr2'
 # OCR 一次喂几页。10 是官方默认（跨页缝合在这个窗口内生效）。
 OCR_WINDOW = 10
 
-# 形状与收藏线同款：**一次**问出主题、摘要与概念，不额外多问。
-# `topic` 是这一版加的：原来所有 PDF 卡都写死 `文档`，于是概念页「来源」栏里
-# PDF 和文章永远归不进同一个主题（`来源 · 主题` 那句要靠它）。分类口径直接取
-# `_utils.TOPICS`，免得两处各写一份六类名字。
+# 形状与收藏线同款：**一次**问出摘要与概念，不额外多问。
+# **不问主题**（2026-10-27 定）：那六类（AI/学术/新闻/文学/投资/政治）是**公众号文章**的
+# 分类口径，PDF 硬套只会产生假分类——实测 177 张聊天 PDF 里，第一版把 145 张判成「学术」
+# （志愿者招募、发票、备考手册全在内），加了「其他」出口又有 99 张落到「其他」。
+# 结论：PDF 不是文章，不参与那套分类；卡片统一 `topic: 文档`，概念页「来源」栏照实写。
 PDF_PROMPT = """你是知识库的**编译者，不是作者**。下面是一份 PDF 文档的正文。
 
 请只依据它，返回一个 JSON 对象（不要解释、不要代码块围栏）：
-{{"topic": "从这些里选一个，都不合适就写 其他：{topics}、其他",
-  "summary": "这份文档在说什么（2-3 句，只写文档里有的）",
+{{"summary": "这份文档在说什么（2-3 句，只写文档里有的）",
   "concepts": [{{"name": "概念名（2-12 字，不要带书名号引号方括号）", "desc": "这份文档关于它说了什么（一句话，具体）"}}]}}
 
 要求：
 1. **只写文档里有的**。没讲到的不许补；拿不准的宁可不写。
-2. `topic` 只能取上面列出的那几个词之一，**不要自创**；都不合适（发票、行程单、证明这类）
-   就写 `其他`——**不要硬塞进一个不相干的主题**（实测一张滴滴电子发票被塞成"投资"）。
-3. `concepts` 2-6 条、按重要度排序；**概念要具体**（"MCP 协议"可以，"技术"不行），
+2. `concepts` 2-6 条、按重要度排序；**概念要具体**（"MCP 协议"可以，"技术"不行），
    也不是分类词（"AI"、"新闻"这种主题标签不算概念）。
-4. 每条 desc 是"这份文档关于它的说法"，不是百科定义。
-5. 全部中文，不要 markdown 语法（不要 #、*、-）。
+3. 每条 desc 是"这份文档关于它的说法"，不是百科定义。
+4. 全部中文，不要 markdown 语法（不要 #、*、-）。
 
 文档：{title}
 
@@ -515,8 +513,7 @@ def build_prompt(title: str, body: str) -> str:
 
     长文档走 `sample_body`（头尾采样），不硬截前 N 字——见那个函数的注释。
     """
-    return PDF_PROMPT.format(title=title, body=sample_body(body),
-                             topics='、'.join(TOPICS))
+    return PDF_PROMPT.format(title=title, body=sample_body(body))
 
 
 def parse_note(raw: str):
@@ -541,9 +538,6 @@ def parse_note(raw: str):
     summary = plain(data.get('summary')).strip()
     if not summary:
         return None
-    topic = plain(data.get('topic')).strip().strip('[]')
-    if topic not in TOPICS:
-        topic = ''
     concepts = []
     for item in data['concepts']:
         if not isinstance(item, dict):
@@ -554,7 +548,7 @@ def parse_note(raw: str):
             concepts.append({'name': name, 'desc': desc})
         if len(concepts) >= 6:
             break
-    return {'topic': topic, 'summary': summary, 'concepts': concepts}
+    return {'summary': summary, 'concepts': concepts}
 
 
 def build_card(title: str, note: dict, source_name: str, pages: int, body_len: int,
@@ -566,7 +560,7 @@ def build_card(title: str, note: dict, source_name: str, pages: int, body_len: i
         'source': source_name,
         # 模型能判断就用它的六类主题（和文章卡同一套口径，概念页的「来源 · 主题」才对得上）；
         # 判断不出才落到 `文档`——它是"未分类"的位置，不是第七类。
-        'topic': note.get('topic') or '文档',
+        'topic': '文档',
         'tags': ['PDF', note.get('topic') or '文档'],
         'saved': saved,
         'pages': pages,

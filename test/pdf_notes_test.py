@@ -402,50 +402,43 @@ class SampleBodyTests(unittest.TestCase):
 
 
 class TopicTests(unittest.TestCase):
-    """PDF 卡的主题：原来写死 `文档`，于是概念页「来源 · 主题」里 PDF 和文章永远归不到一起。
+    """PDF 卡**不参与**公众号那六类主题（2026-10-27 定）。
 
-    口径直接取 `_utils.TOPICS`（和文章线同一份六类），**不自创第七类**：
-    自创词会让 `compile_wiki` 的主题统计里多出只出现一次的怪名字。
+    那六类（AI/学术/新闻/文学/投资/政治）是**文章**的分类口径。实测拿它去分 177 张聊天
+    PDF 的结果：第一版把 145 张判成「学术」（志愿者招募、发票、备考手册全在内），
+    加「其他」出口后又有 99 张落到「其他」——两个结果都不比"统一写文档"更有信息量。
+    所以提示词**不问主题**，卡片统一 `topic: 文档`。
     """
 
-    def test_提示词里列出全部六类(self):
+    def test_提示词不问主题(self):
         prompt = pn.build_prompt('标题', '正文')
-        for topic in pn.TOPICS:
-            self.assertIn(topic, prompt, '提示词里少了主题 %s' % topic)
+        self.assertNotIn('topic', prompt, '又把文章的分类塞回 PDF 的提示词了')
 
-    def test_合法主题被保留(self):
-        raw = json.dumps({'topic': '投资', 'summary': '一份财报。', 'concepts': []},
-                         ensure_ascii=False)
-        self.assertEqual(pn.parse_note(raw)['topic'], '投资')
-
-    def test_自创主题被丢掉_不影响其余字段(self):
-        # 宁可退到"未分类"，也不让怪名字进主题统计
-        raw = json.dumps({'topic': '随便起的', 'summary': '一份文档。',
+    def test_模型就算多给了主题也不采纳(self):
+        # 模型偶尔会自作多情多给一个 topic；解出来只留摘要与概念
+        raw = json.dumps({'topic': '学术', 'summary': '一份文档。',
                           'concepts': [{'name': '甲', 'desc': '在说甲'}]}, ensure_ascii=False)
         note = pn.parse_note(raw)
-        self.assertEqual(note['topic'], '')
-        self.assertEqual(len(note['concepts']), 1, '主题不合法不该拖累概念')
+        self.assertNotIn('topic', note)
         self.assertEqual(note['summary'], '一份文档。')
+        self.assertEqual(len(note['concepts']), 1)
 
-    def test_没给主题就是空(self):
-        raw = json.dumps({'summary': '一份文档。', 'concepts': []}, ensure_ascii=False)
-        self.assertEqual(pn.parse_note(raw)['topic'], '')
-
-    def test_卡片用模型给的主题(self):
-        note = {'topic': '学术', 'summary': '一份论文。', 'concepts': []}
+    def test_卡片主题固定为文档(self):
+        note = {'summary': '一份论文。', 'concepts': [{'name': '甲', 'desc': '在说甲'}]}
         fm, body = pn.build_card('某论文', note, '某论文.pdf', pages=3, body_len=900,
                                  saved='2026-10-27 20:00', updated='2026-10-27 20:00',
                                  via='local-ocr')
-        self.assertEqual(fm['topic'], '学术')
-        self.assertIn('学术', fm['tags'])
-        self.assertIn('## AI 摘要', body)
-
-    def test_卡片在模型没给主题时落到文档(self):
-        note = {'topic': '', 'summary': '一份文档。', 'concepts': []}
-        fm, _ = pn.build_card('x', note, 'x.pdf', pages=1, body_len=300,
-                              saved='2026-10-27 20:00', updated='2026-10-27 20:00',
-                              via='embedded-text')
         self.assertEqual(fm['topic'], '文档')
+        self.assertIn('## AI 摘要', body)
+        self.assertIn('- [[甲]] — 在说甲', body)
+
+    def test_空概念也能出卡(self):
+        note = {'summary': '一份文档。', 'concepts': []}
+        fm, body = pn.build_card('x', note, 'x.pdf', pages=1, body_len=300,
+                                 saved='2026-10-27 20:00', updated='2026-10-27 20:00',
+                                 via='embedded-text')
+        self.assertEqual(fm['topic'], '文档')
+        self.assertNotIn('## 概念', body)
 
 
 class ChooseSourceTests(unittest.TestCase):
