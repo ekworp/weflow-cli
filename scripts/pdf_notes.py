@@ -123,8 +123,11 @@ def cloud_available() -> bool:
 def choose_source(mode: str, local_ok: bool, cloud_ok: bool) -> tuple:
     """选路：`(来源, 理由)`。纯函数，便于测顺序。
 
-    `auto` 的优先级就是用户要的那个：**本地在就用本地，不在才上云端**，
-    两边都不行退回到 PDF 内嵌文本（并如实说这是降级）。
+    `auto` = **云端优先、本地兜底**（2026-10-27 按用户要求改过一次，原来是本地优先）。
+    改的依据是实测：同一份 5 页 PDF——本地 270 s（54 s/页，8 GB 卡上 crop 切块很慢），
+    云端 6.1 s（1.2 s/页），**44 倍**，而且云端多读出 608 字。页面图片出境换来的是
+    快两个数量级、且成本约 ¥0.002/页。
+
     显式指定 `local`/`cloud` 时**不偷偷换路**——用户说了算，做不到就报错。
     """
     if mode == 'local':
@@ -133,11 +136,11 @@ def choose_source(mode: str, local_ok: bool, cloud_ok: bool) -> tuple:
         return ('cloud', '') if cloud_ok else ('', '指定了 --ocr cloud，但没配置 DashScope key')
     if mode == 'none':
         return 'embedded', ''
-    # auto
-    if local_ok:
-        return 'local', '本机引擎可用'
+    # auto：云端优先，本地兜底
     if cloud_ok:
-        return 'cloud', '本机引擎不在，改用云端 OCR（页面图片会出境）'
+        return 'cloud', '云端优先（实测 1.2s/页 vs 本地 54s/页；页面图片会出境）'
+    if local_ok:
+        return 'local', '没有云端 key，改用本机引擎（不出网）'
     return 'embedded', '本机引擎与云端 key 都没有，退回 PDF 内嵌文本（扫描件会读不出字）'
 
 

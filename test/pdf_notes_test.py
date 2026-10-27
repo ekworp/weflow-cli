@@ -338,21 +338,22 @@ class TopicTests(unittest.TestCase):
 
 
 class ChooseSourceTests(unittest.TestCase):
-    """选路：**本地优先，本地不在才上云端，都没有退回内嵌文本**。
+    """选路：**云端优先、本地兜底**（2026-10-27 按实测改过一次，原来本地优先）。
 
-    这是用户明确要的顺序（"有本地就本地解析，否则云端"）。纯函数，一条条钉住：
-    `auto` 的三种组合、强制模式**不偷偷换路**、以及云端那条必须能被识别出来
-    （它会把页面图片发出去，调用方要据此说清差别）。
+    依据：同一份 5 页 PDF，本地 270 s（54 s/页）vs 云端 6.1 s（1.2 s/页），44 倍，
+    云端还多读出 608 字。顺序改在这里，一条条钉住：
+    `auto` 的三种组合、强制模式**不偷偷换路**、以及换到云端时理由必须写明图片会出境。
     """
 
-    def test_本地可用就本地(self):
-        self.assertEqual(pn.choose_source('auto', True, True)[0], 'local')
-        self.assertEqual(pn.choose_source('auto', True, False)[0], 'local')
-
-    def test_本地不在就上云端(self):
-        source, why = pn.choose_source('auto', False, True)
-        self.assertEqual(source, 'cloud')
+    def test_云端可用就用云端(self):
+        source, why = pn.choose_source('auto', True, True)
+        self.assertEqual(source, 'cloud', '云端可用却没优先，回到本地优先了？')
         self.assertIn('出境', why, '换到云端时理由里要写明图片会出境')
+
+    def test_没有_key_才退回本地(self):
+        source, why = pn.choose_source('auto', True, False)
+        self.assertEqual(source, 'local')
+        self.assertIn('不出网', why)
 
     def test_都没有退回内嵌文本(self):
         source, why = pn.choose_source('auto', False, False)
