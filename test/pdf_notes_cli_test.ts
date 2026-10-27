@@ -41,3 +41,15 @@ test('pdf-notes 的确认门：没有 --yes 时要求确认', () => {
   assert.match(b, /CONFIRMATION_REQUIRED/, '缺确认门')
   assert.match(b, /inquirer\.prompt/, '缺交互确认')
 })
+
+test('--ocr-only 不弹确认（零出境不该被拦住）', () => {
+  const b = block()
+  // 确认门的条件里必须带上 !opts.ocrOnly，否则零出境的模式也要人点一次确认
+  const gate = b.slice(b.indexOf('if (!opts.dryRun'), b.indexOf('const args = ['))
+  assert.match(gate, /!opts\.ocrOnly/, '--ocr-only 仍然会被确认门拦住')
+})
+
+test('--ocr-only 透传给脚本', () => {
+  const b = block()
+  assert.match(b, /opts\.ocrOnly \? \['--ocr-only'\]/, 'CLI 收了 --ocr-only 却没传给脚本')
+})

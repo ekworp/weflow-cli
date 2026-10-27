@@ -6848,6 +6848,7 @@ program
     .option('--dry-run', '仅预览：几个 PDF、会不会调用本机 OCR（只读本地，零出境）')
     .option('--refresh', '已有卡的也重做（默认增量：只做还没卡的）')
     .option('--no-reuse-ocr', '不复用缓存的 OCR 文字（默认复用：PDF 没改过就不重做识别，实测 30.9s → 2.3s）')
+    .option('--ocr-only', '只做识别、只写文字（不调用模型、不花钱、不需要 --yes 与 API key）—— 可挂着过夜跑完，白天再出卡')
     .option('--yes', '确认把 PDF 文字发给生成模型')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (opts) => {
@@ -6860,7 +6861,8 @@ program
       // 与其它几条线同一条纪律：**"确认过了"只用一个变量**，参数在确认之后才拼。
       // 这条线多一句提示：PDF 的**文字**会出境（PDF 本身不出境，本机 OCR）。
       let confirmed = !!opts.yes
-      if (!opts.dryRun && !confirmed) {
+      // `--ocr-only` 零出境、零花费，不该弹确认框（确认框是给"要发出去"那一步的）
+      if (!opts.dryRun && !opts.ocrOnly && !confirmed) {
         const preview = {
           success: false, dryRun: false, action: 'pdf-notes',
           code: 'CONFIRMATION_REQUIRED', pdf: opts.pdf, dir: opts.dir, limit,
@@ -6894,6 +6896,7 @@ program
                     '--limit', String(limit),
                     ...(opts.refresh ? ['--refresh'] : []),
                     ...(opts.reuseOcr === false ? ['--no-reuse-ocr'] : []),
+                    ...(opts.ocrOnly ? ['--ocr-only'] : []),
                     ...(confirmed ? ['--yes'] : []),
                     ...(opts.json ? ['--json'] : []),
                     ...(opts.dryRun ? ['--dry-run'] : [])]

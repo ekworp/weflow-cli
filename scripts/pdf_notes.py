@@ -49,6 +49,9 @@ from _utils import (SEPARATOR, call_deepseek, get_api_key, load_config,  # noqa:
 
 TZ = timezone(timedelta(hours=8))
 OUTPUT_ROOT = 'output/pdf-notes'
+# `--ocr-only` 的落点：**只有文字**，没有卡片。与卡片目录分开，免得 compile_wiki 把
+# 没有 `[[概念]]` 的纯文本当成一份坏卡去扫（它按 `output/*-notes` 通配找目录）。
+TEXT_ROOT = 'output/pdf-text'
 DEFAULT_LIMIT = 5
 # 进提示词的字数上限。PDF 的 OCR 全文可能几万字，3000 与文章线对齐。
 MAX_PDF_CHARS = 3000
@@ -275,6 +278,9 @@ def main():
                         help='最多处理几个 PDF（默认 %d）' % DEFAULT_LIMIT)
     parser.add_argument('--dry-run', action='store_true', help='只报要做什么，不调用')
     parser.add_argument('--refresh', action='store_true', help='已有卡的也重做')
+    parser.add_argument('--ocr-only', action='store_true',
+                        help='只做识别、只写文字（不调用模型、不花钱、不需要 --yes/API key）——'
+                             '可以先挂着过夜跑完，白天再出卡')
     parser.add_argument('--no-reuse-ocr', action='store_true',
                         help='不复用缓存的 OCR 文字，强制重新识别（默认复用：PDF 没改过就不重做）')
     parser.add_argument('--yes', action='store_true', help='确认调用云端模型')
@@ -309,15 +315,24 @@ def main():
     if args.dry_run:
         preview = {
             'success': True, 'dryRun': True, 'action': 'pdf-notes',
+            'mode': 'ocr-only' if args.ocr_only else 'card',
             'pdfs': len(runnable), 'ocr': 'local' if use_ocr else 'embedded-text',
             'ocrEngine': args.ocr_root if use_ocr else None,
             'alreadyCarded': len(existing),
-            'model': 'DeepSeek（生成摘要与概念）', 'calls': len(runnable),
+            'model': None if args.ocr_only else 'DeepSeek（生成摘要与概念）',
+            'calls': 0 if args.ocr_only else len(runnable),
             'readsLocalData': True, 'invokesAI': False, 'writesFiles': True,
-            'note': 'PDF 文字在本机 OCR（不出网）；每篇一次模型调用，同时问摘要与概念',
+            'note': ('只做本机 OCR、只写文字，不调用模型也不出境（%s）' % TEXT_ROOT
+                     if args.ocr_only else
+                     'PDF 文字在本机 OCR（不出网）；每篇一次模型调用，同时问摘要与概念'),
         }
         if args.json:
             print(json.dumps(preview, ensure_ascii=False, indent=2))
+        elif args.ocr_only:
+            print('%d 个 PDF 只做识别（不出境、不花钱），文字写到 %s'
+                  % (len(runnable), TEXT_ROOT))
+            if existing:
+                print('已有卡 %d 个（--ocr-only 不看卡片，照样识别）' % len(existing))
         else:
             print('%d 个 PDF 待处理（文字在本机 OCR，不出境）；每篇一次模型调用同时问摘要与概念'
                   % len(runnable))
@@ -330,6 +345,47 @@ def main():
     if not runnable:
         print('没有待处理的 PDF（都已有卡）', file=sys.stderr)
         return 1
+
+    if args.ocr_only:
+        # 只识别、不调用模型：**零出境、零花费**，所以不需要 --yes，也不需要 API key。
+        # 为什么值得单独一步：一本 300 页的书 OCR 要七八分钟，而调用只要几秒——
+        # 把贵的、慢的、不出网的那一步单独跑完（可以挂着过夜），白天再出卡。
+        updated = datetime.now(TZ).strftime('%Y-%m-%d %H:%M')
+        written, failed = [], []
+        for pdf in runnable:
+            if use_ocr:
+                body, via = run_ocr(pdf, args.ocr_root, args.pages, args.dpi, args.window,
+                                    reuse=not args.no_reuse_ocr)
+            else:
+                body, via = extract_text_pdf(pdf)
+            if not body:
+                failed.append({'title': pdf.stem[:30], 'reason': via or 'no-text'})
+                continue
+            frontmatter = {
+                'title': pdf.stem, 'type': 'pdf-text', 'source': pdf.name,
+                'pages': pdf_page_count(pdf), 'text_via': via,
+                'bodyChars': len(body), 'saved': updated, 'updated': updated,
+            }
+            target = note_path(TEXT_ROOT, pdf.stem)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_with_frontmatter(str(target), frontmatter, body)
+            written.append({'title': pdf.stem[:30], 'file': str(target), 'textVia': via,
+                            'chars': len(body)})
+        result = {'success': True, 'action': 'pdf-notes.ocr-only', 'model': None,
+                  'ocrEngine': args.ocr_root if use_ocr else None,
+                  'written': written, 'failed': failed, 'pdfs': len(runnable),
+                  'calls': 0, 'invokesAI': False}
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            for item in written:
+                print('✓ %s（%d 字，来自 %s）→ %s'
+                      % (item['title'], item['chars'], item['textVia'], item['file']))
+            for item in failed:
+                print('✗ %s：%s' % (item['title'], item['reason']), file=sys.stderr)
+            print('\n共 %d 份文字 → %s（未调用模型，未出境）；之后可跑 pdf-notes 出卡'
+                  % (len(written), TEXT_ROOT))
+        return exit_code(len(written))
 
     if not args.yes:
         print('会把 %d 个 PDF 的文字发给 DeepSeek（只问摘要与概念，每篇一次）。加 --yes 确认。'

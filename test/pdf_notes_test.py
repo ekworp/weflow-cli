@@ -221,6 +221,45 @@ class OcrCacheTests(unittest.TestCase):
             self.assertNotEqual(via, 'local-ocr-cached', '--no-reuse-ocr 没生效')
 
 
+class OcrOnlyTests(unittest.TestCase):
+    """`--ocr-only`：只识别、只写文字。**零出境、零花费**，所以不需要 --yes 与 API key。
+
+    这条线的意义是把贵的、慢的、不出网的那一步单独跑完（可以挂着过夜），白天再出卡。
+    """
+
+    def test_文字目录与卡片目录分开(self):
+        # 纯文本没有 [[概念]]，混进 output/*-notes 会让 compile_wiki 扫到一份"坏卡"
+        self.assertNotEqual(pn.TEXT_ROOT, pn.OUTPUT_ROOT)
+        self.assertTrue(pn.TEXT_ROOT.startswith('output/'))
+
+    def test_ocr_only_分支在确认门之前(self):
+        """必须在 `if not args.yes` **之前**返回，否则没有 key 就跑不了。"""
+        src = (SCRIPTS / 'pdf_notes.py').read_text(encoding='utf-8')
+        self.assertIn("'--ocr-only'", src)
+        # 只看 main() 里的执行段：`args.ocr_only:` 那个分支的位置
+        run_part = src[src.index('if args.ocr_only:'):]
+        gate_at = src.index('if not args.yes:', src.index('def main'))
+        self.assertLess(src.index('if args.ocr_only:'), gate_at,
+                        '--ocr-only 分支排在 --yes 闸门之后，没有 key 时会先被拦住')
+
+    def test_ocr_only_不需要_api_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / 'x.pdf'
+            pdf.write_bytes(b'%PDF-1.4')
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ('DEEPSEEK_API_KEY', 'WEFLOW_API_KEY')}
+            r = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'pdf_notes.py'), '--pdf', str(pdf),
+                 '--ocr', 'none', '--ocr-only', '--json'],
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                env={**env, 'PYTHONIOENCODING': 'utf-8'},
+                cwd=str(Path(tmp)))
+            self.assertNotIn('deepseekApiKey', (r.stdout + r.stderr),
+                             '--ocr-only 竟然要求配置 key')
+            self.assertNotIn('加 --yes 确认', (r.stdout + r.stderr),
+                             '--ocr-only 竟然被 --yes 拦住')
+
+
 class ListTests(unittest.TestCase):
     def test_目录递归找_PDF(self):
         with tempfile.TemporaryDirectory() as tmp:
