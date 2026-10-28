@@ -536,7 +536,7 @@ weflow-cli search-index --days 3650 --article-days 365 --yes   # 要"整段历�
                                                      vault search / 助手的 search_knowledge
 ```
 
-四条命令，各管一段（**故意不做成一条大命令**：中间两步都要出境，合成一条会把"这一步要发什么出去"
+五条命令，各管一段（**故意不做成一条大命令**：中间两步都要出境，合成一条会把"这一步要发什么出去"
 藏起来）：
 
 | 命令 | 出境 | 说什么 |
@@ -545,6 +545,9 @@ weflow-cli search-index --days 3650 --article-days 365 --yes   # 要"整段历�
 | `weflow-cli chat-notes --days N --yes` | 对话发给 DeepSeek（每会话一次） | 卡是滚动快照，重跑即覆盖 |
 | `weflow-cli fav-notes --limit N --yes` | 收藏的正文发给 DeepSeek（每条一次） | 正文优先用收藏自带的；文章类走日报那条线的抓取（**带缓存**，日报抓过就零网络）；`--dry-run` 只报"几条要抓"，自己不联网 |
 | `weflow-cli user-notes --limit N --yes` | **你自己写的**笔记发给 DeepSeek（每篇一次） | 你的笔记**只读、绝不修改**；卡上标 `summary_by: model`（那是模型的理解，不是你的原话）；**你笔记里的 `[[链接]]` 优先** |
+| `weflow-cli pdf-notes --from-chat --limit N --yes` | PDF 文字（OCR 后）发给 DeepSeek | **聊天里别人发过的 PDF**：读微信 `hardlink.db` 的 `file` 表（本机实测 1,978 条记录 / 279 个 .pdf / 199 个仍在本地），按文件时间倒序取前 N 个；已被微信清理的跳过并报数 |
+| `weflow-cli pdf-notes --pdf X.pdf --yes` | **PDF 文字**发给 DeepSeek（每篇一次） | **PDF 本身不出境**：先在本机 OCR（Unlimited-OCR-2）转成文字，只有截断到 3000 字的文字出境。OCR 引擎不在时用 `--ocr none` 走 PDF 内嵌文本（要 PDF 本身是文字版）；`--ocr-root` 指向引擎目录。**OCR 结果默认缓存**：PDF 没改过就复用（实测 30.9s → 2.3s，书越大差越多）；`--no-reuse-ocr` 强制重识别。**`--ocr auto`（默认）云端优先、本地兜底、都没有才抽内嵌文本**；`--ocr local|cloud|none` 强制指定（做不到就报错，不偷偷换路），云端默认 `qwen3.5-ocr`（`--ocr-model` 可换，实测 0.8s/页、约 ¥0.002/页，**页面图片会出境**）。**`--ocr-only` 只识别不调用模型**（零出境零花费、不需要 `--yes` 与 key，文字写到 `output/pdf-text/`）—— 几百页的书可以挂着过夜识别，白天再出卡 |
+| `weflow-cli search-index --days N --yes` | **不出境**（如果含 PDF 就是本机文字） | 语义索引的窗口：`--days` 聊天天数、`--article-days` 日报目录数。**自 2026-10-27 起默认把 `output/pdf-text/` 里的 PDF 文字也收进来**（按页切块，`--pdf-chunks N` 限每个文件块数，`--no-pdf` 关掉）—— 于是 `search` 能搜到 PDF，和公众号文章混排 |
 | `weflow-cli wiki compile --source … --min-refs 2 --yes` | 概念发给 DeepSeek（每个概念一次） | `--min-refs 2` 滤掉只被一篇提到的一次性实体 |
 | `weflow-cli wiki compile --refresh-sources --yes` | **不出境** | 只把**已有页**的「来源」段补齐成当前全部来源（本地重写）。**拉完新文章要跑这一条**，否则新文章提到老概念时，那一页不会多出这条边 |
 | `weflow-cli wiki compile --qualify-links --dry-run` | **不出境** | 两条线同名（本机 36 个）时，把指向它们的链接改成带路径的 `[[Chat/Concepts/DeepSeek|DeepSeek]]` —— 否则 Obsidian 里那条裸链接会**命中另一条线**的那张。只改同名的、不碰「来源」段；幂等，重跑不改第二遍。本机实测 539 条 / 477 张页 |
@@ -553,7 +556,7 @@ weflow-cli search-index --days 3650 --article-days 365 --yes   # 要"整段历�
 | `weflow-cli wiki lint` | **不出境** | 断链 / 孤儿 / 空页 / **同一条线内**的同名 / **二义链接**（`ambiguousLinks`，修法见下一行的 `--qualify-links`）/ 近似重名 / 退化字段；两条线都有同一个概念名会**单列一节**报出来（`crossLineSameName` —— 设计如此，不是要修的东西）。不传 `--dir` 就体检清单里的全部线 |
 | `weflow-cli wiki graph --open` | **不出境** | 把概念图谱导成一张**自包含**的 3D 页面（`output/knowledge-graph-3d.html`，本机 49,956 个概念约 9MB，**双击就能逛，不需要起服务器**）。库、数据、坐标全部内联进去，所以它不联网 —— `file://` 下 `fetch` 会被 CORS 挡死，而引 CDN 又会把"本地优先"变成"要有网"。坐标是构建期用 Node 算好缓存的（`output/.graph3d-cache/`），只改渲染不会重算；先看规模用 `--dry-run`。**`--min-degree N`** 只画**在原图里**连接数 ≥N 的概念（去掉细枝看骨架：本机 ≥10 只剩 **3,825 点 / 1.09MB**，全量是 5 万点 / 9MB —— 5 万点时那张图看不清，不是不好看，是布局本身就糊）；**`--line wiki|chat`** 只画一条线（文章线 4.8 万 / 聊天线 1,527，两套概念口径不同，混在一起看不出结构）。两者都只改**给页面看的点集**；坐标按图内容分槽缓存（`graph-<hash>.json`），核心图与全量图来回切都不用重算。**`--flat`** 出 2D 版（canvas 平面图，更像 Obsidian 那种；默认写到 `output/knowledge-graph-2d.html`）：布局同样是构建期算好，但**按 2D 重算**而不是把 3D 的 x/y 拍扁（z 那一维也承载结构，拍扁会把两团不相干的点叠在一起），而且它**一个库都不引**（渲染是裸 canvas）。2D 的快得多：3,825 点 250 tick 只要 2.4 秒，页面 0.71MB（3D 同图 1.34MB）。 |
 
-四条卡片来源（文章 / 聊天 / 收藏 / 你自己的笔记）产出的东西是**同一种形状**（带 frontmatter +
+四条卡片来源（文章 / 聊天 / 收藏 / 你自己的笔记 / PDF）产出的东西是**同一种形状**（带 frontmatter +
 `## AI 摘要` + `[[概念]] — 说明`），所以 `wiki compile` 一视同仁——再加一条来源时改的是产卡那一步，
 聚合那一步不用动（体检也一样：卡片目录用 `output/*-notes` 通配找，不写死目录名）。
 

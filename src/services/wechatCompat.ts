@@ -51,8 +51,15 @@ export function compareWechatVersions(live: string | null | undefined, verified:
   return 'verified'
 }
 
-/** 判定的人类可读一句话（check 人类输出与 --report 共用，措辞只有这一份）。 */
-export function describeCompatVerdict(verdict: CompatVerdict, verifiedVersion: string): string {
+/**
+ * 判定的人类可读一句话（check 人类输出与 `--report` 共用，措辞只有这一份）。
+ *
+ * `reason` 用来把"为什么判不了"说准：沙箱/容器里本进程的进程视图可能被隔离，
+ * 那时原因**不是**"微信没在运行"（2026-10-28 实测：微信在跑、库正在被写，
+ * 而这句话把它讲成了没开）。不给 `reason` 时保持原措辞。
+ */
+export function describeCompatVerdict(verdict: CompatVerdict, verifiedVersion: string,
+                                     reason = ''): string {
   switch (verdict) {
     case 'verified':
       return `本机加载的微信就是本版本验证过的 ${verifiedVersion}`
@@ -62,6 +69,6 @@ export function describeCompatVerdict(verdict: CompatVerdict, verifiedVersion: s
     case 'older-than-verified':
       return `本机微信比本版本验证过的 ${verifiedVersion} 更旧——一般兼容，但没有专门验证过`
     default:
-      return `无法判定（微信没在运行或版本探测失败）；本版本验证过的是 ${verifiedVersion}`
+      return `无法判定（${reason || '微信没在运行或版本探测失败'}）；本版本验证过的是 ${verifiedVersion}`
   }
 }

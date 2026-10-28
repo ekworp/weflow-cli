@@ -189,7 +189,7 @@ export class NtCore {
       ...secrets,
     }
     try {
-      const { stdout } = await execFileAsync(getPythonCommand(), [this.scriptPath, ...args], {
+      const { stdout, stderr } = await execFileAsync(getPythonCommand(), [this.scriptPath, ...args], {
         timeout: 120_000,
         maxBuffer: 50 * 1024 * 1024,
         env: createPythonProcessEnv({

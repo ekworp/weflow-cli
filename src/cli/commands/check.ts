@@ -224,7 +224,15 @@ program
       const verdict = compareWechatVersions(client.version, WECHAT_VERIFIED.version)
       const mark = verdict === 'verified' ? chalk.green('✓') : verdict === 'newer-than-verified' ? chalk.yellow('⚠') : chalk.gray('·')
       console.log(chalk.white('\n微信版本兼容:'))
-      console.log(`  ${mark} ${client.version ?? '未知（微信没在运行）'} · ${describeCompatVerdict(verdict, WECHAT_VERIFIED.version)}`)
+      // **别把"看不见"讲成"没在运行"**：沙箱/容器里本进程可能连系统进程都看不到，
+      // 这时版本未知的原因是"判断不了"，不是"微信没开"（2026-10-28 实测踩过）。
+      const unknownReason = client.viewFiltered
+        ? '未知（进程视图被隔离，判断不了）'
+        : '未知（微信没在运行）'
+      const compatReason = client.viewFiltered
+        ? '本进程的进程视图被隔离，看不到主程序'
+        : ''
+      console.log(`  ${mark} ${client.version ?? unknownReason} · ${describeCompatVerdict(verdict, WECHAT_VERIFIED.version, compatReason)}`)
     }
 
     // 4. Config

@@ -50,8 +50,20 @@ export interface WechatClientProcess {
 
 /** 版本的判据与结论 —— 只跟"哪个进程加载了哪个目录"有关，读不到**别的来源**。 */
 export interface WechatVersionFacts {
-  /** 本机有没有在跑的 `Weixin.exe`（没跑 ⇒ 版本未知，不是"没问题"）。 */
+  /**
+   * 本机有没有在跑的 `Weixin.exe`（没跑 ⇒ 版本未知，不是"没问题"）。
+   *
+   * **进程视图被隔离时这里是 `false`，但那只代表"看不见"**（见 `note` 与 `viewFiltered`）。
+   * 这一支能确定的只有"无法判断"，不要把它读成"客户端没在运行"。
+   */
   running: boolean
+  /**
+   * 本进程的进程视图被隔离（连 `System`/`lsass` 都看不到）。
+   *
+   * 为 `true` 时 `running: false` **不能**当作"客户端没在运行"的证据 —— 2026-10-28 实测：
+   * 微信在跑（库正在被写），而本进程一个系统进程都看不到。
+   */
+  viewFiltered: boolean
   /** 去重后的实际加载目录，按出现顺序。 */
   loadedDirs: string[]
   /** 版本号 = 加载目录的名字；**恰好一个**目录时才给，否则 null。 */
@@ -91,6 +103,30 @@ const VERSION_DIR = /^\d+(\.\d+)+$/
 // `WeixinDll` 是**同一件事的第二观测**：Win32_Process 只有命令行，模块表要问进程本身。
 // 每条都单独 try —— 一个进程读不到模块不该让整张表为空（那会把"读不到"讲成"客户端没在跑"）。
 export const PS_LIST = "$rows = Get-CimInstance Win32_Process -Filter (\"Name='Weixin.exe' or Name='WeChatAppEx.exe'\") | ForEach-Object { $dll = $null; try { $dll = (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules | Where-Object { $_.ModuleName -eq 'Weixin.dll' } | Select-Object -First 1 -ExpandProperty FileName } catch {}; [pscustomobject]@{ ProcessId = $_.ProcessId; ExecutablePath = $_.ExecutablePath; CommandLine = $_.CommandLine; WeixinDll = $dll } }; if ($rows) { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(($rows | ConvertTo-Json -Compress))) }"
+
+/**
+ * 本进程的**进程视图是否被隔离**。
+ *
+ * 为什么要问这个：在某些受限环境里（沙箱/AppContainer/容器），
+ * `Get-CimInstance Win32_Process` 只返回一小撮进程，**连 `System`/`lsass`/`svchost`
+ * 都看不到**。此时"进程表里没有 `Weixin.exe`"完全不能推出"微信没在运行"。
+ * 2026-10-28 实测就踩了：`check` 报"主程序 Weixin.exe 没在运行"，而同一时刻
+ * `general.db` / `contact.db` 正在被写（微信显然在跑），本进程可见的进程名只有 16 个、
+ * 系统进程一个不剩。
+ *
+/**
+ * 判据刻意用"系统进程一个都看不到"——那不是普通权限不足能造成的：
+ * 普通用户照样看得见这些进程的名字。
+ *
+ * **输出必须走 base64**（与 `PS_LIST` 同一条理由，而且是踩过的）：`defaultRunner` 对
+ * 非 JSON 的输出一律按 base64(UTF-16LE) 解码，裸字符串 `filtered` 会被解成乱码、
+ * 于是这条探针**永远返回"没被隔离"** —— 单元测试照样绿，因为测试注入的 runner 不解码。
+ */
+export const PS_VIEW_FILTERED = "$n = @('System','lsass','svchost','csrss') | Where-Object { Get-Process -Name $_ -ErrorAction SilentlyContinue } | Measure-Object | Select-Object -ExpandProperty Count; $v = if ($n -eq 0) { 'filtered' } else { '' }; if ($v) { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($v)) }"
+
+export function parseViewFiltered(raw: string): boolean {
+  return String(raw || '').trim() === 'filtered'
+}
 
 export function parseProcessRows(raw: string): WechatClientProcess[] {
   const text = String(raw || '').trim()
@@ -267,7 +303,8 @@ export function versionDirsUnder(installRoot: string): ReturnType<typeof classif
 }
 
 export function summarize(processes: WechatClientProcess[],
-                          unusable: Array<{ dir: string; files: number }>): WechatVersionFacts {
+                          unusable: Array<{ dir: string; files: number }>,
+                          viewFiltered = false): WechatVersionFacts {
   // 去重按**规范形**（去掉尾部分隔符、大小写折叠 —— Windows 路径大小写不敏感）：
   // 同一个目录写成 `D:\WeiXin\4.1.15.13` 与 `…\4.1.15.13\` 是**一个**目录，
   // 不折算的话会被当成"两个进程指向不同目录"从而拒绝给出版本号。
@@ -311,9 +348,16 @@ export function summarize(processes: WechatClientProcess[],
     // 而 note 看的是"有没有 Weixin.exe"，于是"只有 WeChatAppEx（小程序容器）在跑"时
     // 输出会是"运行中: 是 / 客户端没在运行" —— 两句话互相打脸（2026-10-19 在 `check --report`
     // 的实跑里一眼看到）。对用户来说"客户端在跑"就是主程序在跑，所以两个判据统一到 launchers。
-    note = processes.length
-      ? `只看到 ${processes.length} 个辅助进程（WeChatAppEx 等），主程序 Weixin.exe 没在运行 ⇒ 版本未知`
-      : '客户端没在运行 ⇒ 版本未知（`--user-lib-dir` 只有进程知道）'
+    // **视图被隔离时不许下结论。** 这时"进程表里没有 Weixin.exe"只说明本进程看不到，
+    // 不说明客户端没在跑（2026-10-28 实测：库正在被写，而这句会报"没在运行"）。
+    // 用"可能"而不是"没在运行"：能确定的只有"看不见"。
+    note = viewFiltered
+      ? (processes.length
+        ? `本进程的进程视图被隔离（连 System/lsass 都看不到），只看到 ${processes.length} 个 WeChatAppEx 辅助进程；主程序在不在无法判断 ⇒ 版本未知（这不代表客户端没在运行）`
+        : '本进程的进程视图被隔离（连 System/lsass 都看不到）⇒ 无法判断客户端是否在运行，版本未知（这不代表客户端没在运行）')
+      : processes.length
+        ? `只看到 ${processes.length} 个辅助进程（WeChatAppEx 等），主程序 Weixin.exe 没在运行 ⇒ 版本未知`
+        : '客户端没在运行 ⇒ 版本未知（`--user-lib-dir` 只有进程知道）'
   } else if (!loadedDirs.length) {
     note = `在跑 ${launchers.length} 个进程，但命令行里都没有 --user-lib-dir（也读不到已加载的 Weixin.dll）`
   } else if (loadedDirs.length > 1) {
@@ -330,6 +374,8 @@ export function summarize(processes: WechatClientProcess[],
   return {
     // 主程序在不在（与上面的 note 同一判据）。辅助进程不算"客户端在运行"：读库、取版本都靠 Weixin.exe。
     running: launchers.length > 0,
+    // 视图被隔离时 `running: false` 只是"看不见"，调用方别再自己推出"客户端没在运行"
+    viewFiltered,
     loadedDirs,
     version,
     note,
@@ -383,7 +429,8 @@ const defaultRunner: PowershellRunner = async (command) => {
 export async function detectWechatClient(run: PowershellRunner = defaultRunner): Promise<WechatClientFacts> {
   const root = xwechatRoot()
   const nothing: WechatClientFacts = {
-    running: false, loadedDirs: [], version: null, note: '', unusableVersionDirs: [],
+    running: false, viewFiltered: false,
+    loadedDirs: [], version: null, note: '', unusableVersionDirs: [],
     versionTokens: [],
     dataDirs: [], updateData: { path: root ? join(root, 'update', 'update.data') : '', present: false },
     crashRecords: { dir: root ? join(root, 'crashinfo') : '', reports: 0, records: 0, newest: null },
@@ -399,6 +446,16 @@ export async function detectWechatClient(run: PowershellRunner = defaultRunner):
     raw = ''
   }
   const processes = parseProcessRows(raw)
+  // 只在"进程表里没有主程序"时才多问一次"这个视图本身可不可信"：
+  // 那一支正是会把"看不见"讲成"没在运行"的地方，而它本来就不常见，多一次 PowerShell 不值一提。
+  let viewFiltered = false
+  if (!processes.some(p => win32.basename(p.exe).toLowerCase() === 'weixin.exe')) {
+    try {
+      viewFiltered = parseViewFiltered(await run(PS_VIEW_FILTERED))
+    } catch {
+      viewFiltered = false
+    }
+  }
   // 安装根从**启动器**的可执行路径推（**别去猜**：注册表与常见路径都不可靠 ——
   // 注册表那条空的是**我们自己**的旧结论，出处是 `docs/DECISIONS.md` 里那句"`WeChat Files`
   // 与注册表 InstallPath 都为空"（讲的是 3.x）；**别把它记成那份逆向报告的结论**，
@@ -409,7 +466,7 @@ export async function detectWechatClient(run: PowershellRunner = defaultRunner):
     .map(p => win32.dirname(p.exe))
     .filter(dir => dir && existsSync(dir)))]
   const unusable = roots.flatMap(r => versionDirsUnder(r).unusable)
-  const version = summarize(processes, unusable)
+  const version = summarize(processes, unusable, viewFiltered)
 
   // `update.data` 在场 ⇒ **它可能才是决定加载路径的那个**，命令行给的版本就未必是加载的那个。
   // 报告把这条明确留成未解（"两条路谁优先 —— 【未知】"），所以这里**不猜**：只说存在，

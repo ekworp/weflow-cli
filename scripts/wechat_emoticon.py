@@ -19,6 +19,7 @@ Reference: CN-Grace/Wechat-Emoticon-Parser (v4.0-plus branch).
 import glob
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -158,18 +159,120 @@ def find_seed_candidates():
         k32.CloseHandle(h)
 
 
+def _sample_head(sample_file, n=64):
+    """样本文件的前 `n` 字节。以前每处各写一遍 `open(...).read()`（句柄不关）。"""
+    if not sample_file:
+        return b''
+    try:
+        with open(sample_file, 'rb') as fh:
+            return fh.read(n)
+    except OSError:
+        return b''
+
+
 def find_seed(wxid, sample_file, candidates=None):
     """The seed that decrypts `sample_file`, or None.
 
     Proven per candidate by decrypting the sample and looking for a known
     image magic - so a false positive is essentially impossible.
+
+    `candidates` 给了就只试这些；**空列表等同于没给**（会退回扫内存）。
     """
-    raw = open(sample_file, 'rb').read(64) if sample_file else b''
+    raw = _sample_head(sample_file)
     if not raw:
         return None
-    for seed in (candidates or find_seed_candidates()):
+    for seed in (candidates if candidates else find_seed_candidates()):
         if sniff(decrypt(raw, derive_key(seed, wxid)))[0]:
             return seed
+    return None
+
+
+#: 种子候选的最大数量。实测（2026-10-28）101 个日志 5.1 MB 里只有 **3479** 个唯一
+#: 数字串，测试阶段 <0.1 s；这个上限是给"日志被灌爆"的异常情况兜底的。
+SEED_LOG_MAX_CANDIDATES = 200_000
+#: 单个日志文件的读取上限（再大就不是日志了）。
+SEED_LOG_MAX_BYTES = 4 * 1024 * 1024
+
+_SEED_DIGITS = re.compile(r'\d{5,20}')
+
+
+def emoticon_log_roots():
+    """微信写日志的目录（seed 会出现在里面）。
+
+    实测位置（2026-10-28）：
+    `%APPDATA%\\Tencent\\xwechat\\radium\\users\\<hash>\\applet\\local\\<appid>\\usr\\miniprogramLog\\log1..5`
+
+    也就是说 **seed 会落在一个小程序的日志里**。这不好看，但比扫内存好：
+    不需要微信正在运行。日志会被轮转/清理，所以这只是**一条**来源，不是保证。
+    """
+    roots = []
+    appdata = os.environ.get('APPDATA') or ''
+    if appdata:
+        base = os.path.join(appdata, 'Tencent', 'xwechat')
+        if os.path.isdir(base):
+            roots.append(base)
+    # 让测试与别的安装布局能覆盖它（冒号分隔）
+    extra = os.environ.get('WEFLOW_EMOTICON_LOG_DIRS') or ''
+    for piece in extra.split(os.pathsep):
+        piece = piece.strip()
+        if piece and os.path.isdir(piece):
+            roots.append(piece)
+    return roots
+
+
+def _iter_log_files(roots):
+    """`roots` 下所有看起来是日志的文件（按名字像 `log`，且不太大）。"""
+    for root in roots:
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                lower = name.lower()
+                if not lower.startswith('log'):
+                    continue
+                path = os.path.join(dirpath, name)
+                try:
+                    if os.path.getsize(path) > SEED_LOG_MAX_BYTES:
+                        continue
+                except OSError:
+                    continue
+                yield path
+
+
+def seed_from_logs(wxid, sample_file, roots=None,
+                   max_candidates=SEED_LOG_MAX_CANDIDATES):
+    """从微信的**日志文件**里找 seed。找到返回 seed，否则 None。
+
+    为什么这条路值得有：内存扫描要求微信**正在运行**，而日志一直在磁盘上。
+    判据与 `find_seed` 完全相同（拿候选去解样本、看能否解出图片 magic），
+    所以**命中即真 seed**，代价只是把日志里的数字串过一遍。
+
+    实测（2026-10-28，本机）：101 个日志 / 5.1 MB / 3479 个唯一候选，
+    提取 0.1 s、测试 <0.1 s 就命中；跨样本验证 359/359 全部解开，
+    而把 seed 改一位的 26 个变体一个都解不出。
+
+    **限界**：日志会被轮转/清理，`log1..5` 之后老的可能被删——所以它不是永久来源；
+    找到之后应当存进 `emoticonSeed`（`resolve_seed` 会提示）。
+    """
+    raw = _sample_head(sample_file)
+    if not raw:
+        return None
+    seen = set()
+    for path in _iter_log_files(roots if roots is not None else emoticon_log_roots()):
+        try:
+            with open(path, 'rb') as fh:
+                blob = fh.read()
+        except OSError:
+            continue
+        # 日志不保证是纯 UTF-8（可能混了截断的多字节），所以要 errors='ignore'：
+        # 用严格解码会整份跳过，而 seed 可能就在这一份里
+        for match in _SEED_DIGITS.finditer(blob.decode('utf-8', 'ignore')):
+            candidate = match.group(0)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if sniff(decrypt(raw, derive_key(candidate, wxid)))[0]:
+                return candidate
+            if len(seen) >= max_candidates:
+                return None
     return None
 
 
@@ -314,8 +417,18 @@ def load_sticker(cache_dirs, md5_hex, key, decode_cache_dir=''):
 
     Decoding wxgf needs ffmpeg and is slow, so results are cached under
     `decode_cache_dir` keyed by md5.
+
+    **`sniff(raw)` 先跑，认得出就不解密。** 这是**防御性**的一步，本机实测它不改变
+    任何结果——2026-10-27 数过：`sticker_cache_dirs()` 那 5 个目录里 202 个文件
+    **没有一个是明文**（全是解不开的 `<other>`）；1,974 张明文图（JPEG 1220 / PNG 727 /
+    HEIC 15 / GIF 11 / WebP 1）都在表情缓存**之外**（`cache/<月>/` 的消息媒体、
+    `WeAppIcon` 的小程序图标）。
+    留着它的理由不是"修好了什么"，而是：本函数的 `decode_cache_dir` 那一支已经
+    把"磁盘上直接 sniff 出图"当成合法状态，源文件这一支跟它保持一致；而且别的
+    版本/账号把明文放在这儿时不必先有 seed。
+    **别把这段注释读成"这里曾经读不到明文表情"——那句话是错的，我一度写错过。**
     """
-    if not md5_hex or not key:
+    if not md5_hex:
         return b'', ''
     if decode_cache_dir:
         cached = os.path.join(decode_cache_dir, md5_hex)
@@ -343,14 +456,26 @@ def load_sticker(cache_dirs, md5_hex, key, decode_cache_dir=''):
             raw = fh.read()
     except OSError:
         return b'', ''
-    data = decrypt(raw, key)
-    mime, _ = sniff(data)
+
+    # ① 原文就是图（或本来就是 wxgf 容器）→ 不解密
+    mime, _ = sniff(raw)
     if mime == 'image/hevc':
-        # Re-sniff rather than assuming PNG: an animated stream decodes to a
-        # GIF, and labelling that `image/png` sent it down the JPEG path
-        # downstream, flattening the animation this was meant to preserve.
-        data = decode_wxgf(data)
+        data = decode_wxgf(raw)
         mime = sniff(data)[0] or ''
+    elif mime:
+        data = raw
+    else:
+        # ② 认不出才解密（需要 key）
+        if not key:
+            return b'', ''
+        data = decrypt(raw, key)
+        mime, _ = sniff(data)
+        if mime == 'image/hevc':
+            # Re-sniff rather than assuming PNG: an animated stream decodes to a
+            # GIF, and labelling that `image/png` sent it down the JPEG path
+            # downstream, flattening the animation this was meant to preserve.
+            data = decode_wxgf(data)
+            mime = sniff(data)[0] or ''
     if not mime:
         return b'', ''
 
@@ -401,6 +526,56 @@ def any_sticker_file(dirs):
     return ''
 
 
+def seed_from_config():
+    """`config set emoticonSeed <值>` 存下来的 seed；没配返回 `''`。
+
+    这个配置键**一直在 `configurableKeys` 里、可以设置**，但以前**没有任何读取方**——
+    用户设了它，程序照样每次扫内存，等于静默无效（和已删掉的 `cacheDbEnabled`
+    是同一类问题）。这里把它接回候选链的第一位。
+
+    **读出来不等于信它**：调用方必须仍用 `find_seed` 去证明（解密样本看 magic），
+    因为配置里可能是个过期的/别人的值。`emoticonSeed` 不在 `ENCRYPTED_KEYS` 里，
+    所以磁盘上是明文。
+    """
+    try:
+        from _utils import load_config
+        cfg = load_config() or {}
+        return str(cfg.get('emoticonSeed') or '').strip()
+    except Exception:
+        # 读不到配置不该让整条路崩；返回空串 = 退回扫内存
+        return ''
+
+
+def resolve_seed(wxid, sample_file, configured=None, log_roots=None):
+    """按 **配置 → 日志 → 内存** 的顺序找 seed。返回 `(seed, source)`。
+
+    `source` ∈ `'config'` / `'logs'` / `'memory'` / `'config-invalid'` / `None`。
+    把来源说出来是为了让调用方能给出**不同的下一步**：
+      · `config` —— 什么都没扫，可以直接用；
+      · `logs` —— 没扫内存，但这个值**该存进配置**（日志会被轮转）；
+      · `memory` —— 扫了内存才拿到，同样该存配置；
+      · `config-invalid` —— 配置里那个值是错的，**要清掉**，否则每次都会白试一遍。
+
+    三条来源都用同一个判据证明（解密样本、看能否解出图片 magic），
+    所以配置里的过期值不会静默生效，日志里的数字也不会被误当 seed。
+    """
+    candidate = configured if configured is not None else seed_from_config()
+    invalid_configured = False
+    if candidate:
+        if find_seed(wxid, sample_file, candidates=[candidate]):
+            return candidate, 'config'
+        invalid_configured = True
+
+    from_logs = seed_from_logs(wxid, sample_file, roots=log_roots)
+    if from_logs:
+        return from_logs, 'logs'
+
+    found = find_seed(wxid, sample_file)
+    if found:
+        return found, 'memory'
+    return None, ('config-invalid' if invalid_configured else None)
+
+
 def _main():
     import argparse
     ap = argparse.ArgumentParser(description='WeChat sticker cache helper')
@@ -421,18 +596,38 @@ def _main():
         print('未找到可用的表情缓存文件，请先在微信里查看几个表情包')
         return
 
-    seed = find_seed(wxid, sample)
+    seed, source = resolve_seed(wxid, sample)
     if not seed:
-        print('未找到 seed。请确认微信正在运行，且曾在微信中查看过表情包。')
+        if source == 'config-invalid':
+            print('配置里的 emoticonSeed 解不开样本，且内存里也没扫到。'
+                  '请确认微信正在运行、并曾在微信里查看过表情包；'
+                  '或清掉它：weflow-cli config set emoticonSeed ""')
+        else:
+            print('未找到 seed：日志里没扫到、内存也没扫到。')
+            print('  若微信确实在运行，本进程的**进程视图可能被隔离**'
+                  '（沙箱/容器里常常连 System/lsass 都看不到）——')
+            print('  这时内存扫描必然失败，而"扫不到"并不代表微信没在运行。')
+            print('  两条替代：① 让微信里打开一次表情包，日志里会带上 seed；'
+                  '② 从别处拿到 seed 后 weflow-cli config set emoticonSeed <值>')
         return
 
     import json as _json
     if args.json:
-        print(_json.dumps({'success': True, 'seed': seed, 'wxid': wxid, 'sample': sample}))
+        print(_json.dumps({'success': True, 'seed': seed, 'wxid': wxid,
+                           'sample': sample, 'seedSource': source}))
     else:
         print(f'✓ seed = {seed}')
         print(f'  账号: {wxid}')
         print(f'  样本: {sample}')
+        # 说出 seed 是哪来的：这条决定用户的下一步（要不要存起来 / 要不要清掉）
+        if source == 'config':
+            print('  来源: 配置 emoticonSeed（本次**没有**扫内存、也没读日志）')
+        elif source == 'logs':
+            print('  来源: 微信日志（本次**没有**扫内存，微信不必在运行）')
+            print(f'  日志会被轮转，建议存下来：weflow-cli config set emoticonSeed {seed}')
+        else:
+            print('  来源: 内存扫描')
+            print(f'  想省掉以后每次的内存扫描：weflow-cli config set emoticonSeed {seed}')
 
 
 if __name__ == '__main__':

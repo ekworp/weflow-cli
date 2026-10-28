@@ -67,3 +67,11 @@ qq-idx-*/
 # 测试在 %TEMP% 不可写时把临时文件丢到仓库根（名字随机，只能按前缀挡）
 /tmp[0-9a-z_]*
 /tmp[0-9a-z_]*/
+
+# npm 本地缓存目录：`npm_config_cache` 指到仓库内是为了绕开全局缓存的权限问题
+# （`D:\dev-cache\npm` 在某些环境不可写）。2026-10-27 它没被忽略，于是 `git add -A`
+# 把 340 多个 cacache 文件一起提交了 —— 挡在这里，以后 publish 前 `git add -A` 是安全的。
+.npm-cache/
+
+# 数据库缓存的产物目录（`WEFLOW_CACHE_DIR` 缺省落在 %TEMP%，不可写时才回退到仓库根）
+weflow-cli-cache/

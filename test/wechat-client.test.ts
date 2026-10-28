@@ -19,7 +19,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  classifyVersionDirs, clientVersionToken, crashSummary, detectWechatClient, parseProcessRows, PS_LIST, summarize,
+  classifyVersionDirs, clientVersionToken, crashSummary, detectWechatClient,
+  parseProcessRows, parseViewFiltered, PS_LIST, PS_VIEW_FILTERED, summarize,
   updateDataCaveats, userLibDir, versionDirsUnder, wechatFilesPath, xwechatRoot,
 } from '../src/services/wechatClient.js'
 
@@ -114,6 +115,46 @@ test('多个进程指向不同目录：列出来，但不给一个"版本号"', 
   assert.equal(facts.version, null)
   assert.deepEqual(facts.loadedDirs, ['D:\\WeiXin\\4.1.15.13', 'C:\\微信\\Weixin\\4.1.13.12'])
   assert.match(facts.note, /不挑一个报/)
+})
+
+test('进程视图被隔离时不许说"没在运行"（2026-10-28 实测踩过）', () => {
+  // 现场：`check` 报"主程序 Weixin.exe 没在运行"，而同一时刻 `general.db` / `contact.db`
+  // 正在被写 —— 微信明明在跑。原因是本进程的进程视图被沙箱隔离：可见进程名只有 16 个，
+  // `System`/`lsass`/`svchost`/`csrss` 一个都看不到。
+  // 判据：这时能确定的只有"看不见"，所以话只能说到"无法判断"。
+  const appex = [{
+    pid: 1, exe: 'C:\\...\\WeChatAppEx.exe', loadedDir: null, dataDir: null,
+    versionToken: null, dllPath: null,
+  }]
+
+  const onlyHelpers = summarize(appex as never, [], true)
+  assert.equal(onlyHelpers.version, null)
+  assert.match(onlyHelpers.note, /视图被隔离/)
+  assert.match(onlyHelpers.note, /无法判断/)
+  assert.match(onlyHelpers.note, /不代表客户端没在运行/)
+  assert.doesNotMatch(onlyHelpers.note, /没在运行 ⇒/, '隔离视图下不能断言客户端没在运行')
+
+  const nothing = summarize([], [], true)
+  assert.match(nothing.note, /视图被隔离/)
+  assert.match(nothing.note, /无法判断/)
+  assert.doesNotMatch(nothing.note, /没在运行 ⇒/)
+
+  // 没被隔离时，原来的说法不变（这条是上面两条的对照，不能被顺手放宽）
+  assert.match(summarize([], [], false).note, /没在运行/)
+  assert.match(summarize(appex as never, [], false).note, /主程序 Weixin.exe 没在运行/)
+})
+
+test('parseViewFiltered 只认探针那一行', () => {
+  assert.equal(parseViewFiltered('filtered'), true)
+  assert.equal(parseViewFiltered('  filtered\r\n'), true)
+  assert.equal(parseViewFiltered(''), false)
+  assert.equal(parseViewFiltered('1'), false)
+  // 探针没输出（比如 PowerShell 不可用）不能当成"视图被隔离"
+  assert.equal(parseViewFiltered('随便什么'), false)
+  // **必须 base64 输出**：`defaultRunner` 对非 JSON 输出一律 base64 解码，
+  // 裸字符串会被解成乱码 → 探针永远返回"没被隔离"，而单元测试照样绿
+  // （2026-10-28 实测踩过：dist 里代码是新的，check 还是旧话）。
+  assert.match(PS_VIEW_FILTERED, /ToBase64String/, 'PS_VIEW_FILTERED 必须 base64 输出')
 })
 
 test('没在跑 / 都没带参数：版本是 null 且说清为什么（不是"没问题"）', () => {

@@ -73,8 +73,8 @@ importers:
         specifier: ^4.19.0
         version: 4.23.15
       typescript:
-        specifier: ^5.7.0
-        version: 5.7.2
+        specifier: ^5.9.3
+        version: 5.9.3
     optionalDependencies:
       lz4:
         specifier: ^0.6.5
@@ -2014,8 +2014,8 @@ packages:
     resolution: {integrity: sha512-r+7YvGfM5TkTiDQ5EqWi/Z4L4KP3jUI+YCmTtWg1tmTHUw6xladLJqzR2heMaHBIM0TTFLZmn/EkIaEHYs/bIA==}
     engines: {node: '>= 0.4'}
 
-  typescript@5.7.2:
-    resolution: {integrity: sha512-i5t66RHxDvVN40HfDd1PsEThGNnlMCMT3jMUuoh9/0TaqWevNontacunWyN02LA9/fIbEWlcHZcgTKb9QoaLfg==}
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -4327,7 +4327,7 @@ snapshots:
       typed-array-buffer: 1.0.3
       typed-array-byte-offset: 1.0.5
 
-  typescript@5.7.2: {}
+  typescript@5.9.3: {}
 
   unbox-primitive@1.1.0:
     dependencies:

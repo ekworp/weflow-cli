@@ -12,10 +12,12 @@ import hmac
 import struct
 import hashlib
 import ctypes
+import sqlite3
 from ctypes import wintypes, c_void_p, c_size_t, create_string_buffer, byref, sizeof
 from pathlib import Path
 
 sqlcipher = None
+_db_cache = None  # 延迟初始化
 
 
 def require_sqlcipher():
@@ -29,6 +31,69 @@ def require_sqlcipher():
         raise RuntimeError("需要 sqlcipher3: pip install sqlcipher3") from error
     sqlcipher = sqlcipher_module
     return sqlcipher
+
+
+def _get_db_cache():
+    """延迟初始化数据库缓存（避免影响不用缓存的场景）。"""
+    global _db_cache
+    if _db_cache is None:
+        from database_cache import DatabaseCache
+        _db_cache = DatabaseCache()
+    return _db_cache
+
+
+def open_database_with_cache(db_path, key, use_cache=True):
+    """
+    打开数据库，支持产物缓存。
+
+    Args:
+        db_path: 加密数据库路径
+        key: 解密密钥
+        use_cache: 是否尝试使用缓存（默认 True，但受环境变量 WEFLOW_CACHE_ENABLED 控制）
+
+    Returns:
+        tuple: (conn, is_from_cache: bool)
+    """
+    from database_cache import DatabaseCache
+    cache_enabled = DatabaseCache.is_enabled()
+    
+    # 先检查环境变量
+    if not use_cache or not cache_enabled:
+        # 缓存关闭，走原路径
+        conn = require_sqlcipher().connect(db_path)
+        conn.execute(f'PRAGMA key = "x\'{key}\'";')
+        return conn, False
+
+    cache = _get_db_cache()
+    cached_path = cache.get(db_path, key)
+
+    if cached_path:
+        # 缓存命中，直接打开明文
+        return sqlite3.connect(cached_path), True
+
+    # 缓存 miss，打开加密数据库
+    conn_encrypted = require_sqlcipher().connect(db_path)
+    conn_encrypted.execute(f'PRAGMA key = "x\'{key}\'";')
+
+    # 导出明文到缓存
+    try:
+        cached_path = cache.export_and_cache(conn_encrypted, db_path, key)
+        conn_encrypted.close()
+        conn_cached = sqlite3.connect(cached_path)
+        # 验证缓存是否可读
+        conn_cached.execute('SELECT count(*) FROM sqlite_master').fetchone()
+        return conn_cached, False
+    except Exception as e:
+        # 导出失败，验证加密连接是否可用
+        try:
+            conn_encrypted.execute('SELECT count(*) FROM sqlite_master').fetchone()
+            # 连接可用，降级回加密连接
+            print(f"[WARN] Database cache export failed: {e}", file=sys.stderr)
+            return conn_encrypted, False
+        except Exception:
+            # 连接不可用（文件损坏），关闭并抛出原始异常
+            conn_encrypted.close()
+            raise
 
 # ========== Memory Scanner ==========
 PROCESS_VM_READ = 0x0010
@@ -426,10 +491,15 @@ def load_contact_names(contact_db_path, contact_key_hex, contact_salt_hex):
     name_map = {}
     conn = None
     try:
+        from database_cache import DatabaseCache
+        cache_enabled = DatabaseCache.is_enabled()
         raw_key = f"x'{contact_key_hex}{contact_salt_hex}'"
-        conn = require_sqlcipher().connect(contact_db_path)
-        c = conn.cursor()
-        c.execute(f'PRAGMA key = "{raw_key}";')
+        
+        if cache_enabled:
+            conn, _ = open_database_with_cache(contact_db_path, raw_key, use_cache=True)
+        else:
+            conn = require_sqlcipher().connect(contact_db_path)
+            conn.execute(f'PRAGMA key = "{raw_key}";')
 
         # contact.db schema: username, alias, remark, nick_name, ...
         c.execute("SELECT username, COALESCE(NULLIF(remark,''), NULLIF(nick_name,''), NULLIF(alias,''), username) FROM contact")
@@ -476,30 +546,102 @@ def apply_contact_names(sessions, name_map):
     return sessions
 
 
-def match_keys_to_databases(keys, databases):
-    """Match memory keys to databases by comparing salts."""
+def match_keys_to_databases(keys, databases, use_cache=True):
+    """Match memory keys to databases by comparing salts.
+
+    Args:
+        keys: list of {"key": str, "salt": str} from memory scan
+        databases: list of {"path": str, "salt": str, ...}
+        use_cache: if True, try cache first and store new keys
+
+    Returns:
+        list of matched databases with "key" field added
+    """
+    cache = get_key_cache() if use_cache else None
+
+    # Build salt -> key map from memory scan
     salt_to_key = {}
     for k in keys:
         salt_to_key[k["salt"]] = k["key"]
 
+    # Store newly scanned keys to cache
+    if cache and keys:
+        cache.put_batch(keys)
+
     matched = []
+    unmatched = []
+
     for db in databases:
-        if db["salt"] in salt_to_key:
-            db["key"] = salt_to_key[db["salt"]]
+        db_salt = db["salt"]
+
+        # Try cache first
+        if cache:
+            cached_key = cache.get(db_salt)
+            if cached_key:
+                db["key"] = cached_key
+                db["key_source"] = "cache"
+                matched.append(db)
+                continue
+
+        # Try memory scan result
+        if db_salt in salt_to_key:
+            db["key"] = salt_to_key[db_salt]
+            db["key_source"] = "memory"
             matched.append(db)
+        else:
+            unmatched.append(db)
 
     return matched
+
+
+def match_databases_from_cache_only(databases):
+    """Match databases using only cached keys (no memory scan).
+
+    用于微信未运行或不想扫内存的场景。
+
+    Args:
+        databases: list of {"path": str, "salt": str, ...}
+
+    Returns:
+        tuple: (matched, unmatched)
+            matched: list of databases with "key" field
+            unmatched: list of databases without key
+    """
+    cache = get_key_cache()
+    matched = []
+    unmatched = []
+
+    for db in databases:
+        db_salt = db["salt"]
+        cached_key = cache.get(db_salt)
+
+        if cached_key:
+            db["key"] = cached_key
+            db["key_source"] = "cache"
+            matched.append(db)
+        else:
+            unmatched.append(db)
+
+    return matched, unmatched
 
 
 # ========== Database Operations ==========
 
 def connect_nt_db(db_path, key_hex, salt_hex):
     """Connect to an NT database using sqlcipher3."""
+    from database_cache import DatabaseCache
+    cache_enabled = DatabaseCache.is_enabled()
     raw_key = f"x'{key_hex}{salt_hex}'"
-    conn = require_sqlcipher().connect(db_path)
-    c = conn.cursor()
-    c.execute(f'PRAGMA key = "{raw_key}";')
-    return conn, c
+    
+    if cache_enabled:
+        conn, _ = open_database_with_cache(db_path, raw_key, use_cache=True)
+        c = conn.cursor()
+        return conn, c
+    else:
+        conn = require_sqlcipher().connect(db_path)
+        c = conn.cursor()
+        c.execute(f'PRAGMA key = "{raw_key}";')
+        return conn, c
 
 
 # WeChat rolls a conversation into a new shard over time, and every shard is
@@ -519,6 +661,7 @@ def connect_nt_db(db_path, key_hex, salt_hex):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nt_common import (discover_message_shards, derive_database_key,
                        table_columns, MESSAGE_ANCHOR_COLUMNS)
+from key_cache import get_key_cache
 
 
 def verify_passphrase_native(passphrase_hex, db_path, internal_key_hex=''):
@@ -671,11 +814,19 @@ def msg_tables(conn):
 
 def get_fav_schema(db_path, key_hex):
     """Dump favorite.db schema + sample rows (key verification / exploration)."""
+    from database_cache import DatabaseCache
+    cache_enabled = DatabaseCache.is_enabled()
+    
     try:
         with open(db_path, 'rb') as fh:
             salt = fh.read(16).hex()
-        conn = require_sqlcipher().connect(db_path)
-        conn.execute(f'PRAGMA key = "x\'{key_hex}{salt}\'";')
+        
+        raw_key = f"x'{key_hex}{salt}'"
+        if cache_enabled:
+            conn, _ = open_database_with_cache(db_path, raw_key, use_cache=True)
+        else:
+            conn = require_sqlcipher().connect(db_path)
+            conn.execute(f'PRAGMA key = "{raw_key}";')
         tables = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
@@ -745,11 +896,20 @@ def parse_fav_content(content):
 
 def get_favorites(db_path, key_hex, limit=100, offset=0, keyword=None, fav_type=None):
     """List favorite items from favorite.db with parsed content."""
+    from database_cache import DatabaseCache
+    cache_enabled = DatabaseCache.is_enabled()
+    
     try:
         with open(db_path, 'rb') as fh:
             salt = fh.read(16).hex()
-        conn = require_sqlcipher().connect(db_path)
-        conn.execute(f'PRAGMA key = "x\'{key_hex}{salt}\'";')
+        
+        raw_key = f"x'{key_hex}{salt}'"
+        if cache_enabled:
+            conn, _ = open_database_with_cache(db_path, raw_key, use_cache=True)
+        else:
+            conn = require_sqlcipher().connect(db_path)
+            conn.execute(f'PRAGMA key = "{raw_key}";')
+        
         c = conn.cursor()
 
         tables = [t[0] for t in c.execute(

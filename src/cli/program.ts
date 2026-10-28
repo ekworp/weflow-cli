@@ -7,6 +7,10 @@ import { registerInit } from './commands/init.js'
 import { registerConfig } from './commands/config.js'
 import { registerChat } from './commands/chat.js'
 import { registerSync } from './commands/sync.js'
+import { registerLedger } from './commands/ledger.js'
+import { registerCache } from './commands/cache.js'
+import { registerAvatar } from './commands/avatar.js'
+import { registerExtras } from './commands/extras.js'
 import { registerContacts } from './commands/contacts.js'
 import { registerExport } from './commands/export.js'
 import { registerWechatDb } from './commands/wechat-db.js'
@@ -23,6 +27,7 @@ import { registerSearch } from './commands/search.js'
 import { registerAnnualReport } from './commands/annual-report.js'
 import { registerAssistant } from './commands/assistant.js'
 import { registerNotes } from './commands/notes.js'
+import { registerPdfNotes } from './commands/pdf-notes.js'
 import { registerTodos } from './commands/todos.js'
 import { registerDaily } from './commands/daily.js'
 import { registerSkill } from './commands/skill.js'
@@ -48,6 +53,10 @@ export function buildProgram(): Command {
   registerConfig(program)
   registerChat(program)
   registerSync(program)
+  registerLedger(program)
+  registerCache(program)
+  registerAvatar(program)
+  registerExtras(program)
   registerContacts(program)
   registerExport(program)
   registerWechatDb(program)
@@ -64,6 +73,7 @@ export function buildProgram(): Command {
   registerAnnualReport(program)
   registerAssistant(program)
   registerNotes(program)
+  registerPdfNotes(program)
   registerTodos(program)
   registerDaily(program)
   registerSkill(program)

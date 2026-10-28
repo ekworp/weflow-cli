@@ -73,8 +73,8 @@ back to the command.
 
 `test/cli-menu.test.ts` keeps those in sync: menu entries and `switch` cases must match **in both directions**, and
 every `runCmd('x')` / `runSubCmd('p','c')` the menu calls must name a command that actually exists (that test asks the
-CLI's own `--help`, because the source cannot tell top-level commands from subcommands - 129 `.command('...')` call sites
-across `src/cli/**` as of 2026-10-27, against however many real commands `--help` reports). This matters because both
+CLI's own `--help`, because the source cannot tell top-level commands from subcommands - 138 `.command('...')` call sites
+across `src/cli/**` as of 2026-10-28, against however many real commands `--help` reports). This matters because both
 failure modes are silent: a menu entry with no `case` does nothing when picked, and `runCmd` is written as
 `if (cmd) await ...`, so a renamed command makes the entry do nothing too.
 
@@ -263,6 +263,34 @@ like frontmatter), block scalars are supported (`description: >-` with indented 
 lowercase-with-hyphens if the skill is meant to travel to another agent - this project keeps and warns about
 non-conforming ids (`clz_docx_to_mp` is in use here) rather than refusing them. `weflow-cli skill check` reports
 unreadable frontmatter, cross-root collisions, non-conforming ids and disabled skills.
+
+## A trap: `cryptography` is unusable in the full-test process
+
+Writing a test that needs real AES (`cryptography`) has a failure mode that looks like success:
+
+```
+ImportError: PyO3 modules compiled for CPython 3.8 or older may only be
+initialized once per interpreter process
+```
+
+In a full `python -m unittest discover -s test` run, that is what **the first** attempt to import
+`cryptography` raises — so any module doing `try: import cryptography ... except ImportError: _HAVE_CRYPTO = False`
+at import time ends up with `_HAVE_CRYPTO = False` for the whole process. The same ImportError is why
+`_utils.decrypt_lock` prints a WARN about `typesafeApiKey` being undecryptable in those runs.
+
+The trap: if the test then does `self.skipTest('no cryptography')`, **those tests never run and the report
+says OK** (measured 2026-10-28: 13 silent skips). A green that skipped the assertions is worse than a red.
+
+What works: put the AES-requiring scenario in a **subprocess** (`sys.executable -c ...`), which is clean —
+and is also how these scripts actually run in production. `test/wechat_emoticon_test.py` is the worked
+example (`CryptoScenarioTests`): it hands the child a precomputed ciphertext via env, asserts on one JSON
+line, and additionally asserts `child['haveCrypto']` so the test cannot pass by verifying nothing.
+
+Two rules that follow:
+
+- **Fixtures should be precomputed constants, not built at runtime with the same library under test.**
+  Otherwise the fixture and the code share one implementation and can be wrong together.
+- **Assert the capability, not the absence of an error.** "No exception" is satisfied by a skip.
 
 ## What does not exist yet
 

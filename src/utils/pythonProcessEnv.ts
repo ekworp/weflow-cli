@@ -21,6 +21,7 @@ const INTERNAL_SECRET_KEYS = [
   'WEFLOW_EXPORT_CACHE_DIR',
   'WEFLOW_EXPORT_ACCOUNT_DIR',
   'WEFLOW_EXPORT_DATE',
+  'WEFLOW_EXTRAS_DB',
 ] as const
 
 export function createPythonProcessEnv(

@@ -1,3 +1,4 @@
+---
 # Changelog
 
 The npm package is published separately from GitHub. It may lag behind the `master` branch until a release is published.
@@ -38,11 +39,191 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 - **默认导出也能点击放大缩略图**：页面里加了 lightbox（点图片打开、点任意处或按 Esc 关闭）。
   没有原图时放大的是 `assets/thumbs/` 里的预览，所以这种情况下清晰度不会提高——要真清晰得加 `--save-originals`。
 
+## 1.21.4
+
+- **`check` 不再把"我看不见"讲成"微信没在运行"。** 2026-10-28 实测：`check` 报
+  「只看到 6 个辅助进程（WeChatAppEx 等），主程序 Weixin.exe 没在运行」，而**同一时刻**
+  `general.db` / `contact.db` / `message_fts.db` 正在被写（时间戳就在几秒前）——微信明明在跑。
+  原因：在沙箱/容器里本进程的**进程表被过滤**了，可见进程名只有 16 个，连
+  `System` / `lsass` / `svchost` / `csrss` / `explorer` 一个都看不到；这种视图下
+  "表里没有 Weixin.exe"只能说明**看不到**。
+  - 新增探针 `PS_VIEW_FILTERED`（判据就是"系统进程一个都不看不到"——普通权限不足不会造成这个）
+    与 `WechatClientFacts.viewFiltered`；
+  - `check` 的两句话都改成「未知（进程视图被隔离，判断不了）」/「…这不代表客户端没在运行」；
+  - `describeCompatVerdict` 增加可选 `reason`，让调用方把"为什么判不了"说准（默认措辞不变）。
+  - 探针输出**必须 base64**（`defaultRunner` 对非 JSON 输出一律 base64 解码）：第一版直接输出
+    字符串 `filtered`，被解成乱码，于是探针永远返回"没被隔离"而**单元测试照样绿**——是端到端
+    跑 `check` 才发现的。测试里现在有一条专门钉 `ToBase64String`。
+- **`wechat_emoticon.py --find-seed` 的失败提示改了。** 原来只说「请确认微信正在运行」，
+  在同样被隔离的环境里这是**误导**：内存扫描在这里必然失败。现在会说清"扫不到不等于没在运行"，
+  并给出两条真正可走的路（让微信打开一次表情包把 seed 写进日志 / 用 `config set emoticonSeed`）。
+- 记一笔：`vault search` 的两条 CLI 测试在全量并行跑时会因资源争用超时（单跑各 14 s 稳过），
+  与本次改动无关，没动。
+
+测试：`test/wechat-client.test.ts` +2 条（隔离视图下不许说"没在运行"、探针必须 base64），
+`test/wechat-compat.test.ts` +1 条（`reason` 覆盖）。Python 全量 1291 条通过。
+
+## 1.21.3
+
+- **表情解码不再需要微信在运行。** seed 找到了，它在磁盘上——位置很意外：一个**小程序日志**
+  `%APPDATA%\Tencent\xwechat\radium\users\<hash>\applet\local\<appid>\usr\miniprogramLog\log1..5`。
+  四条判据都过了（缺一条都不算）：
+  - 全文件解密 56,656 → **56,646** 字节（去掉 16 字节填充），明文开头 `77 78 67 66` = **`wxgf`**；
+  - **跨样本：同一把 key 解开 359 / 359 个表情文件，0 失败**；
+  - 正对照：把 seed 改一位的 26 个变体**一个都解不出**；
+  - 复现：重扫一遍仍命中同一值。
+
+  代价也量了：**101 个日志 / 5.1 MB / 3479 个唯一候选，提取 0.1 s、测试 <0.1 s** 命中。
+  `resolve_seed()` 因此变成 **配置 → 日志 → 内存** 三级，输出里会写明来源
+  （`config` / `logs` / `memory` / `config-invalid`），命中日志时会提示把它存进
+  `emoticonSeed`（日志会被轮转）。
+- **修掉一个会让测试"绿得没有内容"的陷阱。** 全量 `unittest discover` 进程里，
+  `cryptography` 的 Rust 扩展在**第一次** import 时就抛
+  `PyO3 modules ... may only be initialized once per interpreter process`
+  （同一个错也是 `_utils.decrypt_lock` 那条 `typesafeApiKey` WARN 的来源），于是
+  `wechat_emoticon._HAVE_CRYPTO` 为 `False`，任何 `skipTest('没有 cryptography')` 的用例
+  **一条都不跑，而报告显示 OK**。实测本仓当时有 **13 条**这样的静默跳过（含我上一版加的）。
+  改法：需要真 AES 的场景全部放进**干净子进程**（那也是这些脚本在生产里的真实运行方式），
+  子进程内再断言 `haveCrypto` 为真，防止"什么都没验"也能通过；加密夹具改成**预置密文**，
+  不再用被测库在运行时现造。现在全量 **skipped=0**。
+  这条坑写进了 `docs/EXTENDING.md`（"A trap: cryptography is unusable in the full-test process"）。
+- 顺带：`wechat_emoticon.find_seed()` 的文件句柄泄漏（`open(...).read()` 不关，每个候选调一次）
+  已修成 `with`。
+
+测试：`test/wechat_emoticon_test.py` 重组为 16 条（本进程测纯逻辑 + 子进程测加密场景），
+Python 全量 1291 条通过、**0 skip**。端到端：微信未运行的情况下
+`wechat_emoticon.py --find-seed <账号目录>` 现在返回 `seedSource: "logs"`。
+
+## 1.21.2
+
+- **`emoticonSeed` 这个配置键以前是死的，现在通了。** 它在 `configurableKeys` 里、
+  `config set emoticonSeed <值>` 能写进去，但 **`wechat_emoticon.py` 从来不读它** ——
+  设了等于没设，程序照样每次扫微信进程内存（和已删的 `cacheDbEnabled` 同一类问题）。
+  现在 `resolve_seed()` 把它当 seed 候选的**第一位**，但**仍然要解密一个真实样本、
+  看能不能解出图片 magic 才算数**：配置里的值可能是过期的或别人的，直接采信会让整条
+  路静默解不开，而用户以为自己配好了。
+  - 命中时输出 `来源: 配置 emoticonSeed（本次没有扫内存）`；
+  - 配置值无效时**不装没事**，明确报 `配置里的 emoticonSeed 解不开样本`（并给出清掉它的命令）；
+  - 扫内存才找到时，顺手打印 `config set emoticonSeed <seed>` 的提示，省掉以后每次扫内存。
+  - `emoticonSeed` 不在 `ENCRYPTED_KEYS` 里，磁盘上是明文；`--find-seed` 会打印 seed
+    （那是它的用途），**别的命令不该打印**，`seed` 属于账号派生密钥。
+- **修一个文件句柄泄漏**：`wechat_emoticon.find_seed()` 原来写 `open(sample,'rb').read(64)`，
+  句柄不关。它对**每个候选 seed** 调一次，扫描一轮能泄漏几十上百个句柄。改成 `with`。
+- `wechat_emoticon.load_sticker()` 现在先 `sniff(raw)`：文件本来就是一整张图（或本来就是
+  `wxgf` 容器）就直接用，不解密；认不出才走解密。**这是防御性的一步，本机实测不改变任何
+  结果**——`sticker_cache_dirs()` 那 5 个目录里 202 个文件全是解不开的 `<other>`，
+  没有一个是明文。留着它的理由是：本函数的 `decode_cache_dir` 那一支已经把"磁盘上直接
+  sniff 出图"当成合法状态，源文件这一支跟它保持一致。
+- **纠正上一版文档里的一句话。** 1.21.1 的 `docs/NT_DATABASES.md` 写过
+  「表情缓存里有一部分本来就是明文图（抽 2000 个：JPEG 502/PNG 141/…）」，**那是错的**：
+  当时我递归走了整个 `cache/`，把 `cache/<月>/` 的消息媒体和 `WeAppIcon` 的小程序图标
+  一起数进去了。真实分布：表情缓存目录内 **202 个、0 个明文**；明文图 1,974 张
+  （JPEG 1220 / PNG 727 / HEIC 15 / GIF 11 / WebP 1）全在表情缓存**之外**。
+  这条纠正同时写进了代码注释与测试的 docstring，防止下次有人把那段注释读成"这里曾经
+  读不到明文表情"。**递归一个父目录时先想清楚里面还有什么，是这次的实际教训。**
+
+测试：新增 `test/wechat_emoticon_test.py` 17 条（明文/加密两条路的对照、错 key 必须失败、
+`derive_key` 的形状、`account_wxid` 的后缀剥离、`seed_from_config` 读不到配置不崩、
+`resolve_seed` 不轻信配置值）。Python 全量 1292 条通过。
+
+## 1.21.1
+
+- **`extras biz-subscribe` 解出小程序资料卡**（`wacontact.contact_pack_data` 是 protobuf）。
+  470/470 全部可解析、0 失败，解出**名称 / 英文 id / logo / 简介**——订阅表本身只有
+  `biz_username` 和 `template_id`，这两张表合起来才有"我订阅的号叫什么"。
+  字段号 → 含义是按实测值反推的（2 名称 / 3 英文 id / 4·5 logo / 6 简介）；
+  没有证据的字段号进 `unknownFields`，只报号与次数、**不猜名字**。
+  解不出返回 `packDecoded: false`，不给空字典（空字典会让人以为"这个号没有资料"）。
+- **`extras biz-subscribe` 报出「订阅 ∩ 资料卡」的实际交集**：本机 41 条订阅里
+  **40 条**能在 `wacontact` 找到卡、**1 条没有**，另有 **451 个**有卡但没订阅。
+  以前只有一个 `miniPrograms=470`，读的人很容易把它当成"我订阅了 470 个"。
+- **`extras search-history` 解析 `pay_load_`**（实测 84/84 是 JSON）。它是**这次搜索的
+  请求上下文**，不是搜索结果。只保留**真的在变**的键：`requestId`、`scene`（6 档）、
+  `parentType`（6 档）、`extReqParams`（搜索过滤器）、`searchId`（仅非空时）。
+  实测**无新信息**因此丢掉的：`hotword`（与 `keyword` 84/84 完全相同）、
+  `optype`（84/84 恒为 1）、`businesstype`（83/84 为 0）、`timestamp`（与 `create_time`
+  只差 0～−2 秒）。`scene` / `parentType` 的语义**未验证**，原样给数字。
+  `searchId` 在 78/84 行是空串 → 空串不出现在输出里（写成 `""` 会让人以为"有 id 但为空"）。
+- **一个值得记下来的纠正**：1.21.0 的 `biz-subscribe` 把 `wacontact` 叫 `miniPrograms`
+  其实是**对的**。我在 1.21.1 开发中看到 `user_name` 全是 `gh_` 就断定"这些是公众号，
+  不是小程序"，改名成 `bizContacts` —— 等 protobuf 解出来才发现简介写的是
+  「下单免排队 外卖送上门」「快递查询、发货打单」「通过蓝牙技术连接蓝牙水控器」
+  「官方点餐、买单小程序」，**它们就是小程序**，只是 id 恰好也是 `gh_` 前缀。
+  已改回 `miniPrograms`。
+- **顺带查到的一个边界（不是 bug，但值得写下来）**：`gh_` 前缀**不专属于公众号**。
+  已验边界——那 470 个小程序与 `contact.db`（4228 个号）、`session.db.Name2Id`、
+  消息库 `Name2Id` 的交集**都是 0**，所以仓库里 9 处 `LIKE 'gh_%'` 的公众号过滤
+  **没有被污染**（小程序只住在 `general.db` 的 `wacontact` 里）。
+
+## 1.21.0
+
+- **`extras`：把此前没人读过的 NT 库读出来。** 2026-10-27 二次普查（`docs/NT_DATABASES.md`）
+  补齐最后一批读取方，共 9 个 kind + `overview`（每库每表的行数）：
+  `search-history` / `sessions` / `emoticons` / `fmessages` / `solitaire` /
+  `biz-subscribe` / `revoke` / `bizchat`。本机实测 8 个库 52 张表、33 张有数据。
+  - **`search-history`**：`websearch_record`（微信内置搜索历史）+ `SearchRecent`（点过谁）
+    + `brand_search_record`。三路**不合并**——实测前两张表的 query 交集为 0，是来源不同的
+    两件事，合成一张会丢一半。
+  - **`sessions`**：微信自己的 `SessionTable`（710 行：未读数、摘要、隐藏位、草稿有无）
+    + `SessionDeleteTable`（6 行，**唯一**记录"你删过哪个会话"的地方——实测这 6 条**都不在**
+    `SessionTable` 里了）。`--unread` 再带上 2.6 万行未读明细，`username_id → Name2Id.rowid`
+    实测 26816/26816 全部解出。**和 `weflow-cli sessions` 不是一回事**（那个是从消息分片推导的），
+    所以不合并、不互相覆盖。
+  - **`emoticons`**：只给**元数据**（76 个自定义表情的 md5/caption/CDN 地址、5 个表情包、
+    102 个包内文件偏移、494 条多语言 caption）。**图片本体解不开**：`aes_key` 是 32 位 hex
+    （=16 字节，长度上正好 AES-128）但实测 111 个本机缓存文件三种组合全 0 命中，且用错 key 的
+    对照也是 0——这个否定是可靠的，不是测试坏了。
+  - `fmessages`（好友申请）/ `solitaire`（群接龙，表名 md5 = `md5(会话 username)` 实测 2/2 命中）
+    / `biz-subscribe`（公众号订阅 + 470 个小程序）/ `revoke`（撤回）/ `bizchat`（企业微信）。
+  - **未验证的枚举原样给数字**，结果里带 `unverifiedEnums`。`SessionTable.type`、`FMessageTable.type_`、
+    `wacontact.type`、`biz_subscribe_status.is_subscribe`、`kNonStoreEmoticonTable.type`
+    在本机都是**常量**（710/710=0、11/11=37、470/470=0、41/41=1、76/76=3），拿它们当分类维度
+    只会得到"全中/全空"两种假象，所以脚本**不提供**按这些列过滤。
+  - 空表**如实报 0**：`chatbot_message.db` 四张表全 0 行、`revokemessage` 0 行但表存在——
+    "有表无记录"不等于"没这个功能"。
+- 修复：**`WeAppBizAttrSyncBufferTableV02.version` 存了非法 UTF-8**，直接 `SELECT` 会让**整条查询**
+  抛 `Could not decode to UTF-8`，于是那张 470 行的表被读成 0 行（"读不到"和"没有"变成同一个数字）。
+  现在所有文本列一律走 `hex()` + 解码兜底，输出里那一列叫 `versionHex`。
+  另外每个 reader 都带 `readErrors`：查询失败会被报出来，不再静默返回空列表。
+- 修复：删掉死键 `cacheDbEnabled`——它声明了接口/默认值/load/clear 四处但**没有任何读取方**，
+  用户照 `docs/CACHE.md` 去 `config set` 会毫无效果（而且它也不在 `configurableKeys` 里，
+  那条命令本身还会被拒）。开关只有环境变量一条路。
+- 修复：`cache enable` / `cache disable` 缺 `--json`，被 `test/json-surface.test.ts` 点名
+  （1.20.0 带着这个红发出的）。它们只打印环境变量设置说明、不改状态，已按该测试的约定写进
+  `ALLOWED_WITHOUT_JSON` 并说明机器路径是 `cache status --json`。
+- 修复：`docs/CACHE.md` 里写了一个不存在的 `config get` 命令，缓存目录也写成了
+  `~/.weflow-cli/cache/databases`（实际是 `%TEMP%/weflow-cli-cache/databases`，
+  不可写时回退到当前目录）；同时补上 `WEFLOW_CACHE_DIR`。
+
+## 1.20.0
+
+- **数据库缓存（默认关闭，需显式开启）**：`weflow-cli cache enable|disable|status|clear|list|prune`。
+  首次查询把库导出成明文缓存在本地，之后**不再付解密开销**。
+  - 缓存键是 `hash(路径, mtime, size, key)`：源文件或密钥一变就自动失效。
+  - 导出三级回退：`sqlcipher_export` → `VACUUM INTO` → `backup API`。
+  - 开关是环境变量 `WEFLOW_CACHE_ENABLED=1`；**没有配置键**（早先那个 `cacheDbEnabled`
+    没有任何读取方，写了不生效，1.21.0 已删）。
+  - ⚠️ 开启后本地存的是**明文聊天记录**，详见 `docs/CACHE.md` 的风险段。
+- 修复：测试之间的环境变量污染（`database_cache_test.py` 在模块级设了
+  `WEFLOW_CACHE_ENABLED`，让后面的 `nt_decrypt_shards_test` 也走了缓存路径）。
+
+## 1.19.1
+
+- **密钥缓存：第二次查询不再扫内存（~262x 加速）。** 参考 SIWX 的 keystore 设计，按 salt 索引缓存
+  已扫出的密钥。首次扫内存后，密钥自动存入 `~/.weflow-cli/keys/keys.enc`（Windows 用 DPAPI 加密，
+  其他平台 XOR + 0600 文件权限）；下次查询时先读文件头 salt、再查缓存，**命中时毫秒级返回**，
+  未命中才扫内存。微信重启后密钥不变，缓存持续有效。完全透明：用户无需修改任何命令，
+  所有读数据库的流程（`daily`/`search`/`export`/MCP 工具）自动受益。
+  测试实测 10 个密钥：存储 1.76 ms，读取 0.01 ms，**加速 262.8x**。
+  - 新增 `scripts/key_cache.py`：缓存层实现（`KeyCache` 类 + 平台相关加解密）
+  - 新增 `scripts/nt_decrypt.py` 的 `match_databases_from_cache_only()`：微信未运行时用缓存
+  - 新增 3 个测试文件：`test/key_cache_test.py`（单元）、`test/key_cache_integration_test.py`（集成）、
+    `test/key_cache_e2e_test.py`（端到端，实测加速比）
+  - **保持现有方案**：继续用 `sqlcipher3` C 扩展解密，不引入纯 Python 实现（安全稳妥）
 ## 1.19.0
 
 > 1.18.0（`ledger`）**没有单独发布**，它的改动包含在本版里。npm 上不存在 1.18.0 这个版本号，
 > 从 1.17.0 直接到 1.19.0 —— 看到这里少一个版本号不是发布失败。
-
 - **修复 issue #12：`local_type == 1` 的压缩正文导出为空，普通文本被截断到 200 字。**
   `message_content` 若是 zstd 压缩的 BLOB，旧代码只认 `str`，正文被置空后落进
   `non_text_display()`，最终输出 `[未识别的消息类型 1]`——**消息还在、正文没了**，
