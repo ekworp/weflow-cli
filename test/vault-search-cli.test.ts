@@ -28,6 +28,7 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
+import { readCliSource } from './cli-source.js'
 
 function runVaultSearch(args: string[]) {
   return spawnSync(process.execPath, [
@@ -124,7 +125,7 @@ function matchesOutsideComments(text: string, re: RegExp): string[] {
 }
 
 test('vault search：声明 ↔ 转发，两个方向都要对得上', () => {
-  const SRC = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const SRC = readCliSource()
   const block = vaultSearchBlock(SRC)
   assert.ok(block.length > 0, '定位不到 vault search 的命令块（注释被改了？）')
   assert.match(block, /vault_search\.py/, '定位到的不是 vault search（锚点失效了）')

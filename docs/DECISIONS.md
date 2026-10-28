@@ -4236,3 +4236,29 @@ txt / excel 的 `<前缀>_assets/` 布局与文件名不变。
 - **助手与 MCP 的 `export_chat` 不再自己包一层**：HTML 直接导出到 `output/exports/` 下，由导出器建
   `<联系人>_<时间戳>/`，回复里报的就是那个目录名；txt/json/excel 仍由工具建 `<名字>-<时间戳>` 目录。
   否则会得到 `甲-20261027/甲_20261027/index.html` 这种两层嵌套，而回复只能报其中一层。
+
+## D-134: CLI 命令注册从 `bin/weflow-cli.ts` 拆到 `src/cli/`
+
+**Status:** Active
+
+**Decision.** `bin/weflow-cli.ts` 只保留入口：`buildProgram()`，有参数时 `program.parse()`，无参数时进交互菜单。
+命令注册按功能组放在 `src/cli/commands/<feature>.ts`，每个模块导出一个 `registerXxx(program: Command)`；
+`src/cli/program.ts` 按固定顺序调用它们，`src/cli/menu.ts` 放 `showInteractiveMenu(program)`，跨组共用的
+helper 在 `src/cli/context.ts`（`runPython` / `runPythonCmd` / `parseCliInteger` 等），联系人解析在
+`src/cli/talker.ts`。注册顺序与拆分前逐条一致——`--help` 里的命令顺序属于用户可见行为。
+
+**Reason.** 单文件 8,934 行、126 处 `.command()`：改任何一处都要在近九千行里定位，读的成本远大于写的成本；
+静态测试又全部从这个文件里读命令块，文件越大越难确认"扫到的是不是全部"。拆成多个 npm package 不会减少
+代码，只会增加版本、路径与安装成本；同一个包内按功能分模块能达到同样的阅读收益。
+
+**Consequences.**
+- **`--help` 与子命令顺序不变**：模块按其第一个语句的原始位置注册；实测顶层 `--help` 与拆分前逐行一致，
+  `vault` / `wiki` / `daily` / `weread` / `assistant` / `todos` 的子命令帮助也一致。
+- **源码静态测试改成扫"整个命令面"**：`test/cli-source.ts` 拼 `bin/weflow-cli.ts` + `src/cli/**`，原先直接
+  读 `bin/weflow-cli.ts` 的测试改用它；否则会退化成"读一个 17 行入口，什么都没扫到"却照样通过。
+- **新增命令的位置**：在 `src/cli/commands/<feature>.ts` 里加 `program.command(...)`；要进菜单再改
+  `src/cli/menu.ts`。`docs/EXTENDING.md` 的配方 C 已同步。
+- **动态 `import('../src/...')` 的相对路径**：模块深了一层，改为 `'../../...'`；`resolvePackageRoot` 仍按
+  `import.meta.url` 向上找 `package.json` + `scripts/`，新层级在它的 6 层上限内。
+- **行为零变化**：只移动语句并补齐 import，未改逻辑；`pnpm run build`、`pnpm test`（975 通过 / 0 失败 /
+  7 跳过）与拆分前一致。

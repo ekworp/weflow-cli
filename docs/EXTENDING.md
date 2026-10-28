@@ -31,7 +31,7 @@ The most common extension. All of it is in `src/services/assistantTools.ts` unle
 | 1. Declare it | `TOOL_DEFS` | The model never sees it - dead code. A test fails. |
 | 2. Implement it | `executeTool`, one `case '<name>':` | The model sees it, calls it, and gets `(未知工具: <name>)`. A test fails. |
 | 3. Config prerequisite (only if it cannot run without a key) | `TOOL_REQUIREMENTS` - one entry, `{ key, why }` | The tool is offered on machines where it cannot work. That is the failure this project already measured once: a model tried both search tools, both errored, and the answer said "both search tools are broken". |
-| 4. Cloud egress (only if user data leaves the machine) | In the handler: `if (ctx.requiresConfirm && args.confirm !== true) return confirmPreview(...)`; then claim it in `bin/weflow-cli.ts` under `safety.mcpSurface.callsCloudModels` **and** `requiresConfirm` | An external MCP caller sends the user's data with no preview. Tests fail - the assertion counts `ctx.requiresConfirm` occurrences in the source, so it cannot drift from the field. |
+| 4. Cloud egress (only if user data leaves the machine) | In the handler: `if (ctx.requiresConfirm && args.confirm !== true) return confirmPreview(...)`; then claim it in `src/cli/commands/capabilities.ts` under `safety.mcpSurface.callsCloudModels` **and** `requiresConfirm` | An external MCP caller sends the user's data with no preview. Tests fail - the assertion counts `ctx.requiresConfirm` occurrences in the source, so it cannot drift from the field. |
 | 5. Keep it off MCP (only if it cannot do its job over that transport) | `MCP_EXCLUDED` - one entry whose **value is the reason** | It is advertised on a transport where it silently cannot work (`look_at_image` is the worked example). |
 | 6. Coverage note | The header of `test/assistant-tools-branches.test.ts` states how many tools are executed; update it | The coverage claim becomes false while still reading as true. |
 
@@ -56,7 +56,7 @@ A key must appear in **five** places, and each one fails differently:
 | same file - the default literal | - |
 | same file - the `load()` mapping | The value silently disappears on the next start. The user sees "I set that already". |
 | same file - the `clear()` reset | `config reset` **loses** the old value and `getAll()` then reports it as never set. |
-| `bin/weflow-cli.ts` - `configurableKeys` | `config set` refuses the key outright. This one happened: `dashscopeApiKey`. |
+| `src/cli/commands/config.ts` - `configurableKeys` | `config set` refuses the key outright. This one happened: `dashscopeApiKey`. |
 
 `test/config-keys.test.ts` reads all five and fails if a key is missing from any of them. It is a static text
 assertion, so changing the *format* of those literals turns it red - which is the intent, not a nuisance.
@@ -66,14 +66,17 @@ file shows ciphertext, not the value).
 
 ## Recipe C - a new CLI command
 
-Two places in `bin/weflow-cli.ts`: the `program.command('...')` registration, and - if it should appear in the
-interactive menu - `showInteractiveMenu()` plus the `switch (action)` that maps a menu choice back to the command.
+Two places: the `program.command('...')` registration in the feature module under `src/cli/commands/` (each module
+exports one `registerXxx(program)` and `src/cli/program.ts` calls them in a fixed order), and - if it should appear in
+the interactive menu - `showInteractiveMenu()` in `src/cli/menu.ts` plus the `switch (action)` that maps a menu choice
+back to the command.
 
 `test/cli-menu.test.ts` keeps those in sync: menu entries and `switch` cases must match **in both directions**, and
 every `runCmd('x')` / `runSubCmd('p','c')` the menu calls must name a command that actually exists (that test asks the
-CLI's own `--help`, because the source cannot tell top-level commands from subcommands - 114 `.command('...')` call sites
-as of 2026-10-07, against however many real commands `--help` reports). This matters because both failure modes are silent: a menu entry with no `case` does nothing
-when picked, and `runCmd` is written as `if (cmd) await ...`, so a renamed command makes the entry do nothing too.
+CLI's own `--help`, because the source cannot tell top-level commands from subcommands - 129 `.command('...')` call sites
+across `src/cli/**` as of 2026-10-27, against however many real commands `--help` reports). This matters because both
+failure modes are silent: a menu entry with no `case` does nothing when picked, and `runCmd` is written as
+`if (cmd) await ...`, so a renamed command makes the entry do nothing too.
 
 Two conventions that hold across the command surface: every command that a script or an AI might drive has a `--json`
 mode, and anything destructive is two-phase (`--dry-run` preview, then `--yes`).

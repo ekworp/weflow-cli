@@ -19,8 +19,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readCliSource } from './cli-source.js'
 
-const SRC = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+const SRC = readCliSource()
 
 /** `search` 那段源码：**顶层**那条（`program` 直接挂的），到下一个 `.command(` 之前。
  *

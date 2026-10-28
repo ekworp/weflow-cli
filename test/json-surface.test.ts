@@ -20,13 +20,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
+import { readCliSource } from './cli-source.js'
 
 const ALLOWED_WITHOUT_JSON: Record<string, string> = {
   whitelist: '不传参数的那个 action 只是给人看的一张表；机器路径是 `whitelist list --json`',
   blacklist: '同上：机器路径是 `blacklist list --json`',
 }
 
-const SOURCE = join(process.cwd(), 'bin', 'weflow-cli.ts')
+const SOURCE = readCliSource()
 
 /**
  * 块里有没有**真的**声明机器可读那一档的旗标（行内注释里提到的不算）。
@@ -67,7 +68,7 @@ function leafCommands(src: string): { name: string; line: number; hasJson: boole
 }
 
 test('每个叶子命令都声明了 --json（例外要写进白名单并给理由）', () => {
-  const src = readFileSync(SOURCE, 'utf8')
+  const src = SOURCE
   const leaves = leafCommands(src)
 
   // 反空扫：判据看漏了命令（切块规则被改、注册方式变了）不能让这条静默变绿。

@@ -9,7 +9,8 @@
  * 不碰真数据、不花钱：临时 HOME 下本机没配置也没库，脚本必然失败 —— 那正是"命令跑到了脚本"的证据。
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { readCliSource } from './cli-source.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -49,7 +50,7 @@ test('CLI 认得 --transcribe-voice，并且真的把命令交给了脚本', () 
 })
 
 test('接线：--transcribe-voice 既被声明、也被透传（少任一处，命令行与文档就对不上）', () => {
-  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const src = readCliSource()
   const at = src.indexOf(".command('chat-notes')")
   assert.ok(at > 0, '找不到 chat-notes 命令（改名了？那这条要跟着改）')
   const block = src.slice(at, src.indexOf('.action(', at))

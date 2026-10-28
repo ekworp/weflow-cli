@@ -16,13 +16,13 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { readCliSource } from './cli-source.js'
 
 const runFile = promisify(execFile)
-const SOURCE = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+const SOURCE = readCliSource()
 
 const MENU_START = SOURCE.indexOf('async function showInteractiveMenu')
 assert.ok(MENU_START > 0, '没找到 showInteractiveMenu —— 改名了就要同步这条测试')

@@ -18,9 +18,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readCliSource } from './cli-source.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const BIN = readFileSync(join(ROOT, 'bin/weflow-cli.ts'), 'utf8')
+const BIN = readCliSource()
 const SERVICE = readFileSync(join(ROOT, 'src/services/configService.ts'), 'utf8')
 
 function configurableKeys(): string[] {

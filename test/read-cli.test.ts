@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { readCliSource } from './cli-source.js'
 
 function runCli(home: string, args: string[]) {
   return spawnSync(process.execPath, [
@@ -44,7 +45,7 @@ test('message timestamp bounds are validated and wired to range queries', () => 
     assert.equal(invalid.status, 1, invalid.stderr || invalid.stdout)
     assert.equal(JSON.parse(invalid.stdout).code, 'INVALID_ARGUMENT')
 
-    const source = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+    const source = readCliSource()
     assert.match(source, /chatService\.getMessagesInRange\(talker, limit \+ offset, start, end\)/)
   } finally {
     rmSync(home, { recursive: true, force: true })

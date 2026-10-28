@@ -12,9 +12,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readCliSource } from './cli-source.js'
 
 const PIPELINE = readFileSync(join(process.cwd(), 'scripts', 'pipeline.py'), 'utf8')
-const CLI = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+const CLI = readCliSource()
 
 test('pipeline：写 Vault 的两个开关是 opt-in，默认不做', () => {
   assert.match(PIPELINE, /add_argument\('--with-vault'/, '要有 --with-vault')

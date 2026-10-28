@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { readCliSource } from './cli-source.js'
 
 const invalidVaultSearch = ['vault', 'search', 'synthetic', '--type', 'invalid']
 
@@ -75,7 +76,7 @@ test('The index window is adjustable, and a bad one is refused before anything i
 
   // CLI → 脚本那一段只有**静态断言**：真验它要跑一次索引（读真库 + 联网），在测试里又慢又越界。
   // 而这段断掉恰好是最坏的一种：预览报 3650 天、脚本实际按 90 天跑，用户被自己的工具误导。
-  const source = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const source = readCliSource()
   assert.match(source, /'--days', String\(chatDays\)/, '窗口要真的传给脚本，不能只印在预览里')
   assert.match(source, /'--article-days', String\(articleDays\)/)
 })

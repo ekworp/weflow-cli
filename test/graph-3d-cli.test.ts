@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { readCliSource } from './cli-source.js'
 
 const ROOT = process.cwd()
 const GRAPH_DIR = join(ROOT, 'resources', 'js', 'graph3d')
@@ -94,7 +95,7 @@ test('三张互链的概念页 → 3 点 3 边，且页面完全自包含（没�
 test('接线：--min-degree / --line 既被声明、也被透传（少了任一半，开关在命令行里就是死的）', () => {
   // 这条是吃过亏学的：`chat-notes --transcribe-voice` 曾经只有 python 侧支持、CLI 没透传，
   // 文档写着能用、命令行报 unknown option。`wiki graph` 的这两个开关这次一起加，也一起钉住。
-  const src = readFileSync(join(ROOT, 'bin', 'weflow-cli.ts'), 'utf8')
+  const src = readCliSource()
   const at = src.indexOf("new Command('graph')")
   assert.ok(at > 0, '找不到 wiki graph 命令（改名了？那这条要跟着改）')
   const declared = src.slice(at, src.indexOf('.action(', at))

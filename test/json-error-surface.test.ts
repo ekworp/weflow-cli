@@ -16,6 +16,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { readCliSource } from './cli-source.js'
 
 function runCli(args: string[]) {
   return spawnSync(process.execPath, [
@@ -167,7 +168,7 @@ test('mcp-config --json-result：stdout 只有那份 JSON，没有工具清单',
  * 空 HOME 的驱动扫描正好看不见）。所以这条判据是静态的：调用点必须带 `opts.json`。
  */
 test('resolveTalker 的每个调用点都把"机器模式"传进去', () => {
-  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const src = readCliSource()
   const calls = src.split('\n')
     .map((line, i) => ({ line, no: i + 1 }))
     .filter(x => x.line.includes('resolveTalker(') && !x.line.includes('async function resolveTalker'))
@@ -206,7 +207,7 @@ test('不再有"一行式、只打散文"的失败分支', () => {
   assert.equal(isProseOnlyFailureBranch('    // 例：{ console.log(chalk.red(x)); process.exit(1) }'), false)
   assert.equal(isProseOnlyFailureBranch("  console.log(chalk.red('只是一条日志'))"), false)
 
-  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const src = readCliSource()
   const bad = src.split('\n')
     .map((line, i) => ({ line, no: i + 1 }))
     .filter(x => isProseOnlyFailureBranch(x.line))
@@ -228,7 +229,7 @@ test('不再有"一行式、只打散文"的失败分支', () => {
  * 它们不受这条判据管，新写的应当改用 `requireCliChoice`（见 docs/EXTENDING.md）。
  */
 test('声明了 --json 的命令里，校验 helper 一律带上 opts.json', () => {
-  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const src = readCliSource()
   const marks = [...src.matchAll(/\.command\('([^']+)'\)|new Command\('([^']+)'\)/g)]
     .map(m => ({ at: m.index!, name: m[1] ?? m[2] }))
   marks.push({ at: src.length, name: '' })

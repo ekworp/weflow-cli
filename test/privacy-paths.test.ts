@@ -15,6 +15,7 @@ import { DbPathService } from '../src/core/dbPathService.js'
 import { WcdbCore } from '../src/core/wcdbCore.js'
 import { createWeFlowEnvelope } from '../src/services/messageContract.js'
 import { createPythonProcessEnv, safeSubprocessError } from '../src/utils/pythonProcessEnv.js'
+import { readCliSource } from './cli-source.js'
 
 test('expands home directory prefixes without changing other paths', () => {
   assert.equal(expandHomePath('~'), homedir())
@@ -105,7 +106,9 @@ test('discovers NT databases from a custom xwechat_files root', () => {
 })
 
 test('does not forward API keys in Python child-process arguments', () => {
-  const cliSource = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const cliSource = readCliSource()
+  // 正对照：拼起来的源码里必须真有命令定义，否则下面这些 doesNotMatch 只是“没扫到”
+  assert.match(cliSource, /\.option\('--api-key/)
   const pipelineSource = readFileSync(join(process.cwd(), 'scripts', 'pipeline.py'), 'utf8')
   const ntCoreSource = readFileSync(join(process.cwd(), 'src', 'core', 'ntCore.ts'), 'utf8')
   const wcdbCoreSource = readFileSync(join(process.cwd(), 'src', 'core', 'wcdbCore.ts'), 'utf8')

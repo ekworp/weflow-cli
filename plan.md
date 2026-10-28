@@ -23,7 +23,7 @@
 ## 每次改动的交接步骤
 
 1. 阅读 `AGENTS.md`、`docs/PROJECT_STATE.md` 和 `docs/DECISIONS.md`。
-2. 对照 `bin/weflow-cli.ts`、相关 service/script 和现有测试确认行为。
+2. 对照 `src/cli/commands/`、相关 service/script 和现有测试确认行为。
 3. 修改代码后更新对应文档；安全、兼容性或数据流取舍追加决策记录。
 4. 运行 `npm run build`、`npm test`、相关 Python 测试和 `git diff --check`。
 5. 检查 diff 不含数据库、密钥、token、账号标识、聊天内容或本机私密路径。

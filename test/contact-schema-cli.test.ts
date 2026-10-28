@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { readCliSource } from './cli-source.js'
 
 function runCli(home: string, args: string[]) {
   return spawnSync(process.execPath, [
@@ -49,7 +50,7 @@ test('CLI 认得 contact-schema，并且真的把命令交给了脚本', () => {
 })
 
 test('这个命令不接受 --key/--salt：密钥只从配置读，不进 argv', () => {
-  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const src = readCliSource()
   const at = src.indexOf(".command('contact-schema')")
   assert.ok(at > 0, '找不到 contact-schema 命令（改名了？那这条要跟着改）')
   const block = src.slice(at, src.indexOf('.action(', at))
@@ -67,7 +68,7 @@ test('声明了的每个旗标都必须真的转发给脚本 —— 漏转发会
   // 这条守的是**跨语言那一步**：旗标在 TS 里声明、在 Python 里解析，中间的转发是手写的。
   // 少写一行 `--contacts`，命令行不报错、脚本也不会说"我没收到" —— 它会安安静静地去读群，
   // 而调用方以为拿到的是联系人。`--room` 当初也是这么手写转发的（同样的裸奔）。
-  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const src = readCliSource()
   const block = contactSchemaBlock(src)
   assert.ok(block.length > 0, '定位不到 contact-schema 的命令块（改名了？）')
   const declared = [...block.matchAll(/\.option\('([^']+)'/g)]

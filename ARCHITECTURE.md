@@ -1,6 +1,6 @@
 # WeFlow CLI 技术架构
 
-> 本文描述当前代码的边界和数据流。维护时先以 `bin/weflow-cli.ts`、`src/` 和 `scripts/` 为准，再更新本文。
+> 本文描述当前代码的边界和数据流。维护时先以 `bin/weflow-cli.ts`（入口）、`src/cli/`（命令注册与交互菜单）、`src/` 和 `scripts/` 为准，再更新本文。
 
 ## 定位
 
@@ -13,6 +13,7 @@ MCP 客户端 / 终端用户 / 本机面板（悬浮球，只读客户端）
         |            |                     |
         v            v                     v  两条入口连的是同一个大脑
 CLI 入口 bin/weflow-cli.ts     mcp-server/index.ts     助手守护进程
+（装配在 src/cli/program.ts）
         |            |         127.0.0.1:8766（token + 一次性配对码）
         +------------+                     |
                      v                     |

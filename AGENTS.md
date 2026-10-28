@@ -13,7 +13,7 @@ Read this file and [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) before changin
 
 ## Project Map
 
-- `bin/weflow-cli.ts`: CLI entry point and command wiring.
+- `bin/weflow-cli.ts`: CLI entry (17 lines: build the program, then parse or open the menu). Command registration lives in `src/cli/commands/<feature>.ts`; `src/cli/program.ts` orders them and `src/cli/menu.ts` holds the interactive menu.
 - `src/core/`: database, key, native-library, and WeChat-client integrations.
 - `src/services/`: configuration, chat access, exports, assistant, privacy, whitelist, and message workflows.
 - `scripts/`: Python workflows for NT databases, daily reading, HTML generation, knowledge processing, and reports.

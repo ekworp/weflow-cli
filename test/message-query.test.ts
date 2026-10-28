@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { collectMessagesInRange, emptyMessagesNote, looksLikeTalkerId } from '../src/services/messageQuery.js'
 import type { Message } from '../src/types.js'
+import { readCliSource } from './cli-source.js'
 
 function message(createTime: number): Message {
   return {
@@ -67,7 +68,7 @@ test('只在"看起来是 ID、名单里又没有"时补一句话', () => {
 })
 
 test('接线守卫：这句话真的接在 messages 命令上，且没有改动 success 语义', () => {
-  const src = readFileSync(new URL('../bin/weflow-cli.ts', import.meta.url), 'utf8')
+  const src = readCliSource()
   const start = src.indexOf(".command('messages <talker>')")
   assert.ok(start > 0, '找不到 messages 命令（命令改名了？那这条守卫要跟着改）')
   const block = src.slice(start, src.indexOf('.command(', start + 10))
