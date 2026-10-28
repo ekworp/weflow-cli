@@ -603,7 +603,12 @@ def _main():
                   '请确认微信正在运行、并曾在微信里查看过表情包；'
                   '或清掉它：weflow-cli config set emoticonSeed ""')
         else:
-            print('未找到 seed。请确认微信正在运行，且曾在微信中查看过表情包。')
+            print('未找到 seed：日志里没扫到、内存也没扫到。')
+            print('  若微信确实在运行，本进程的**进程视图可能被隔离**'
+                  '（沙箱/容器里常常连 System/lsass 都看不到）——')
+            print('  这时内存扫描必然失败，而"扫不到"并不代表微信没在运行。')
+            print('  两条替代：① 让微信里打开一次表情包，日志里会带上 seed；'
+                  '② 从别处拿到 seed 后 weflow-cli config set emoticonSeed <值>')
         return
 
     import json as _json

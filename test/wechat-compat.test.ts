@@ -10,7 +10,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
-import { WECHAT_VERIFIED, compareWechatVersions } from '../src/services/wechatCompat.js'
+import { WECHAT_VERIFIED, compareWechatVersions, describeCompatVerdict } from '../src/services/wechatCompat.js'
 
 test('compareWechatVersions：四种判定与边界', () => {
   assert.equal(compareWechatVersions('4.1.15.56', '4.1.15.56'), 'verified')
@@ -33,6 +33,18 @@ test('WECHAT_VERIFIED 的形状：四段数字 + ISO 日期（它是发布物的
     '版本号必须是四段数字——check 的报告、capabilities 都直接展示它')
   assert.match(WECHAT_VERIFIED.verifiedAt, /^\d{4}-\d{2}-\d{2}$/, '日期必须是 YYYY-MM-DD')
   assert.ok(WECHAT_VERIFIED.verifiedHow.length > 10, '验证方式必须写清（改这个常量的门槛就是真实验证）')
+})
+
+test('判不了的原因要能说准：进程视图被隔离时别说成"微信没在运行"', () => {
+  // 2026-10-28 实测：`check` 在沙箱里报"未知（微信没在运行）"，而那时微信正在写库。
+  // 默认措辞保留（老行为不变），但调用方知道更准的原因时必须能覆盖它。
+  assert.match(describeCompatVerdict('unknown', WECHAT_VERIFIED.version),
+               /微信没在运行或版本探测失败/, '不传 reason 时保持原措辞')
+  const masked = describeCompatVerdict('unknown', WECHAT_VERIFIED.version,
+                                       '本进程的进程视图被隔离，看不到主程序')
+  assert.match(masked, /进程视图被隔离/)
+  assert.doesNotMatch(masked, /微信没在运行/, '隔离视图下不能把原因说成没在运行')
+  assert.match(masked, /验证过的是/, '仍要带出验证过的版本')
 })
 
 test('capabilities --json 暴露 compatibility.wechat，与单一事实源一致', () => {

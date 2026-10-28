@@ -18,6 +18,30 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.21.4
+
+- **`check` 不再把"我看不见"讲成"微信没在运行"。** 2026-10-28 实测：`check` 报
+  「只看到 6 个辅助进程（WeChatAppEx 等），主程序 Weixin.exe 没在运行」，而**同一时刻**
+  `general.db` / `contact.db` / `message_fts.db` 正在被写（时间戳就在几秒前）——微信明明在跑。
+  原因：在沙箱/容器里本进程的**进程表被过滤**了，可见进程名只有 16 个，连
+  `System` / `lsass` / `svchost` / `csrss` / `explorer` 一个都看不到；这种视图下
+  "表里没有 Weixin.exe"只能说明**看不到**。
+  - 新增探针 `PS_VIEW_FILTERED`（判据就是"系统进程一个都不看不到"——普通权限不足不会造成这个）
+    与 `WechatClientFacts.viewFiltered`；
+  - `check` 的两句话都改成「未知（进程视图被隔离，判断不了）」/「…这不代表客户端没在运行」；
+  - `describeCompatVerdict` 增加可选 `reason`，让调用方把"为什么判不了"说准（默认措辞不变）。
+  - 探针输出**必须 base64**（`defaultRunner` 对非 JSON 输出一律 base64 解码）：第一版直接输出
+    字符串 `filtered`，被解成乱码，于是探针永远返回"没被隔离"而**单元测试照样绿**——是端到端
+    跑 `check` 才发现的。测试里现在有一条专门钉 `ToBase64String`。
+- **`wechat_emoticon.py --find-seed` 的失败提示改了。** 原来只说「请确认微信正在运行」，
+  在同样被隔离的环境里这是**误导**：内存扫描在这里必然失败。现在会说清"扫不到不等于没在运行"，
+  并给出两条真正可走的路（让微信打开一次表情包把 seed 写进日志 / 用 `config set emoticonSeed`）。
+- 记一笔：`vault search` 的两条 CLI 测试在全量并行跑时会因资源争用超时（单跑各 14 s 稳过），
+  与本次改动无关，没动。
+
+测试：`test/wechat-client.test.ts` +2 条（隔离视图下不许说"没在运行"、探针必须 base64），
+`test/wechat-compat.test.ts` +1 条（`reason` 覆盖）。Python 全量 1291 条通过。
+
 ## 1.21.3
 
 - **表情解码不再需要微信在运行。** seed 找到了，它在磁盘上——位置很意外：一个**小程序日志**
