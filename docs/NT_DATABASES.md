@@ -108,7 +108,7 @@
 所以 `extras emoticons` **只给元数据**（md5 / caption / CDN 地址 / 所属表情包 /
 包内文件偏移）。自定义表情的**解码**那条路仍未通。
 
-### 真正的加密链路（2026-10-27 读代码确认，未改动）
+### 真正的加密链路（2026-10-27 读代码确认；2026-10-28 打通到磁盘）
 
 `scripts/wechat_emoticon.py` 走的是**每账号**的 key，不是表里那个每表情的 `aes_key`：
 
@@ -117,22 +117,40 @@ key = md5(seed + wxid + "EMOTICON")[:16]      # derive_key()
 AES-128-CBC，key 同时当 IV                      # decrypt()
 ```
 
-`seed` 是**5–20 位的十进制数字**，`find_seed_candidates()` 从微信进程内存里刮。
-`find_seed()` 本身是可靠的：它拿候选去解一个样本文件、看能不能解出图片 magic ——
-**假阳性几乎不可能**，所以这条路唯一的成本是"每次都要扫内存"。
+`seed` 是**5–20 位的十进制数字**。判据一直是可靠的：拿候选去解一个样本、看能不能解出
+图片 magic —— 假阳性几乎不可能。
 
-两个改进里，**第 1 条已经在 1.21.2 接上了**：
+**2026-10-28：seed 找到了，它在磁盘上。** 位置很意外：
 
-1. **`emoticonSeed` 以前是死键**：它在 `configurableKeys` 里、`config set` 能写进去，
-   但**没有任何读取方**——设了等于没设，程序照样每次扫内存（和已删的 `cacheDbEnabled`
-   同一类问题）。现在 `resolve_seed()` 先把它当候选、**仍然要解密样本来证明**，
-   证明不了就退回扫内存，并明确报 `config-invalid`（不静默）。命中时输出
-   `来源: 配置 emoticonSeed（本次没有扫内存）`。
-2. 磁盘上仍未发现能替代内存扫描的 seed 来源（`emoticon.db` 的
-   `kExpressRecentUseEemoticonTable` 只有 1 行 KV，未验证是否含 seed）——**没做**。
+```
+%APPDATA%\Tencent\xwechat\radium\users\<hash>\applet\local\<appid>\usr\miniprogramLog\log1..5
+```
+
+也就是**一个小程序的日志**。四条判据（缺一条都不算）：
+
+| 判据 | 结果 |
+| --- | --- |
+| 全文件解密 | 56,656 → **56,646** 字节（去掉 16 字节填充），明文开头 `77 78 67 66` = **`wxgf`** |
+| **跨样本** | 同一把 key 解开 **359 / 359** 个表情文件，0 失败 |
+| 正对照（把 seed 改一位，同样 9 位） | 26 个变体**一个都解不出** |
+| 复现 | 重扫一遍仍命中同一值 |
+
+代价也量了：**101 个日志 / 5.1 MB / 3479 个唯一候选，提取 0.1 s、测试 <0.1 s** 命中。
+（之前我把"整个磁盘的 60,838 个候选"当基线是选错了范围——只走日志目录就够了。）
+
+所以 `resolve_seed()` 现在是 **配置 → 日志 → 内存** 三级：
+
+1. **`emoticonSeed` 配置**（1.21.2 接上的死键）：仍然要解密样本来证明，证明不了报
+   `config-invalid`，不静默生效。
+2. **微信日志**（1.21.3 新增）：**不需要微信在运行**。日志会被轮转/清理，所以命中后
+   程序会提示把它存进 `emoticonSeed`。
+3. **内存扫描**：兜底。
 
 > 关于打印：`--find-seed` **会**把 seed 打到 stdout，因为它存在的意义就是让你拿到这个值
 > 去 `config set`；别的命令不该打印它。`seed` 是账号派生密钥，别贴进 issue/日志。
+
+还在**没做**的：`emoticon.db` 的 `kExpressRecentUseEemoticonTable` 那 1 行 KV 是否含 seed
+—— 现在不需要它了（日志那条更短），但记在这里免得下次重复查。
 
 ## 六、`WeAppBizAttrSyncBufferTableV02.version` 存了非法 UTF-8
 

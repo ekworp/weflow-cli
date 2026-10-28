@@ -18,6 +18,37 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.21.3
+
+- **表情解码不再需要微信在运行。** seed 找到了，它在磁盘上——位置很意外：一个**小程序日志**
+  `%APPDATA%\Tencent\xwechat\radium\users\<hash>\applet\local\<appid>\usr\miniprogramLog\log1..5`。
+  四条判据都过了（缺一条都不算）：
+  - 全文件解密 56,656 → **56,646** 字节（去掉 16 字节填充），明文开头 `77 78 67 66` = **`wxgf`**；
+  - **跨样本：同一把 key 解开 359 / 359 个表情文件，0 失败**；
+  - 正对照：把 seed 改一位的 26 个变体**一个都解不出**；
+  - 复现：重扫一遍仍命中同一值。
+
+  代价也量了：**101 个日志 / 5.1 MB / 3479 个唯一候选，提取 0.1 s、测试 <0.1 s** 命中。
+  `resolve_seed()` 因此变成 **配置 → 日志 → 内存** 三级，输出里会写明来源
+  （`config` / `logs` / `memory` / `config-invalid`），命中日志时会提示把它存进
+  `emoticonSeed`（日志会被轮转）。
+- **修掉一个会让测试"绿得没有内容"的陷阱。** 全量 `unittest discover` 进程里，
+  `cryptography` 的 Rust 扩展在**第一次** import 时就抛
+  `PyO3 modules ... may only be initialized once per interpreter process`
+  （同一个错也是 `_utils.decrypt_lock` 那条 `typesafeApiKey` WARN 的来源），于是
+  `wechat_emoticon._HAVE_CRYPTO` 为 `False`，任何 `skipTest('没有 cryptography')` 的用例
+  **一条都不跑，而报告显示 OK**。实测本仓当时有 **13 条**这样的静默跳过（含我上一版加的）。
+  改法：需要真 AES 的场景全部放进**干净子进程**（那也是这些脚本在生产里的真实运行方式），
+  子进程内再断言 `haveCrypto` 为真，防止"什么都没验"也能通过；加密夹具改成**预置密文**，
+  不再用被测库在运行时现造。现在全量 **skipped=0**。
+  这条坑写进了 `docs/EXTENDING.md`（"A trap: cryptography is unusable in the full-test process"）。
+- 顺带：`wechat_emoticon.find_seed()` 的文件句柄泄漏（`open(...).read()` 不关，每个候选调一次）
+  已修成 `with`。
+
+测试：`test/wechat_emoticon_test.py` 重组为 16 条（本进程测纯逻辑 + 子进程测加密场景），
+Python 全量 1291 条通过、**0 skip**。端到端：微信未运行的情况下
+`wechat_emoticon.py --find-seed <账号目录>` 现在返回 `seedSource: "logs"`。
+
 ## 1.21.2
 
 - **`emoticonSeed` 这个配置键以前是死的，现在通了。** 它在 `configurableKeys` 里、

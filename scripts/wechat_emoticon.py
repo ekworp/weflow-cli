@@ -19,6 +19,7 @@ Reference: CN-Grace/Wechat-Emoticon-Parser (v4.0-plus branch).
 import glob
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -158,29 +159,120 @@ def find_seed_candidates():
         k32.CloseHandle(h)
 
 
+def _sample_head(sample_file, n=64):
+    """样本文件的前 `n` 字节。以前每处各写一遍 `open(...).read()`（句柄不关）。"""
+    if not sample_file:
+        return b''
+    try:
+        with open(sample_file, 'rb') as fh:
+            return fh.read(n)
+    except OSError:
+        return b''
+
+
 def find_seed(wxid, sample_file, candidates=None):
     """The seed that decrypts `sample_file`, or None.
 
     Proven per candidate by decrypting the sample and looking for a known
     image magic - so a false positive is essentially impossible.
 
-    `candidates` 给了就只试这些；**空列表等同于没给**（会退回扫内存）——
-    `resolve_seed` 依赖这个语义：它传进来的永远是至少一个元素。
+    `candidates` 给了就只试这些；**空列表等同于没给**（会退回扫内存）。
     """
-    raw = b''
-    if sample_file:
-        # 以前写成 `open(...).read(64)`：句柄不关。`find_seed` 每个候选调一次，
-        # 于是每轮泄漏一个。改成 with。
-        try:
-            with open(sample_file, 'rb') as fh:
-                raw = fh.read(64)
-        except OSError:
-            return None
+    raw = _sample_head(sample_file)
     if not raw:
         return None
     for seed in (candidates if candidates else find_seed_candidates()):
         if sniff(decrypt(raw, derive_key(seed, wxid)))[0]:
             return seed
+    return None
+
+
+#: 种子候选的最大数量。实测（2026-10-28）101 个日志 5.1 MB 里只有 **3479** 个唯一
+#: 数字串，测试阶段 <0.1 s；这个上限是给"日志被灌爆"的异常情况兜底的。
+SEED_LOG_MAX_CANDIDATES = 200_000
+#: 单个日志文件的读取上限（再大就不是日志了）。
+SEED_LOG_MAX_BYTES = 4 * 1024 * 1024
+
+_SEED_DIGITS = re.compile(r'\d{5,20}')
+
+
+def emoticon_log_roots():
+    """微信写日志的目录（seed 会出现在里面）。
+
+    实测位置（2026-10-28）：
+    `%APPDATA%\\Tencent\\xwechat\\radium\\users\\<hash>\\applet\\local\\<appid>\\usr\\miniprogramLog\\log1..5`
+
+    也就是说 **seed 会落在一个小程序的日志里**。这不好看，但比扫内存好：
+    不需要微信正在运行。日志会被轮转/清理，所以这只是**一条**来源，不是保证。
+    """
+    roots = []
+    appdata = os.environ.get('APPDATA') or ''
+    if appdata:
+        base = os.path.join(appdata, 'Tencent', 'xwechat')
+        if os.path.isdir(base):
+            roots.append(base)
+    # 让测试与别的安装布局能覆盖它（冒号分隔）
+    extra = os.environ.get('WEFLOW_EMOTICON_LOG_DIRS') or ''
+    for piece in extra.split(os.pathsep):
+        piece = piece.strip()
+        if piece and os.path.isdir(piece):
+            roots.append(piece)
+    return roots
+
+
+def _iter_log_files(roots):
+    """`roots` 下所有看起来是日志的文件（按名字像 `log`，且不太大）。"""
+    for root in roots:
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                lower = name.lower()
+                if not lower.startswith('log'):
+                    continue
+                path = os.path.join(dirpath, name)
+                try:
+                    if os.path.getsize(path) > SEED_LOG_MAX_BYTES:
+                        continue
+                except OSError:
+                    continue
+                yield path
+
+
+def seed_from_logs(wxid, sample_file, roots=None,
+                   max_candidates=SEED_LOG_MAX_CANDIDATES):
+    """从微信的**日志文件**里找 seed。找到返回 seed，否则 None。
+
+    为什么这条路值得有：内存扫描要求微信**正在运行**，而日志一直在磁盘上。
+    判据与 `find_seed` 完全相同（拿候选去解样本、看能否解出图片 magic），
+    所以**命中即真 seed**，代价只是把日志里的数字串过一遍。
+
+    实测（2026-10-28，本机）：101 个日志 / 5.1 MB / 3479 个唯一候选，
+    提取 0.1 s、测试 <0.1 s 就命中；跨样本验证 359/359 全部解开，
+    而把 seed 改一位的 26 个变体一个都解不出。
+
+    **限界**：日志会被轮转/清理，`log1..5` 之后老的可能被删——所以它不是永久来源；
+    找到之后应当存进 `emoticonSeed`（`resolve_seed` 会提示）。
+    """
+    raw = _sample_head(sample_file)
+    if not raw:
+        return None
+    seen = set()
+    for path in _iter_log_files(roots if roots is not None else emoticon_log_roots()):
+        try:
+            with open(path, 'rb') as fh:
+                blob = fh.read()
+        except OSError:
+            continue
+        # 日志不保证是纯 UTF-8（可能混了截断的多字节），所以要 errors='ignore'：
+        # 用严格解码会整份跳过，而 seed 可能就在这一份里
+        for match in _SEED_DIGITS.finditer(blob.decode('utf-8', 'ignore')):
+            candidate = match.group(0)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if sniff(decrypt(raw, derive_key(candidate, wxid)))[0]:
+                return candidate
+            if len(seen) >= max_candidates:
+                return None
     return None
 
 
@@ -454,22 +546,34 @@ def seed_from_config():
         return ''
 
 
-def resolve_seed(wxid, sample_file, configured=None):
-    """先试配置里的 seed（并证明），不行再扫内存。返回 `(seed, source)`。
+def resolve_seed(wxid, sample_file, configured=None, log_roots=None):
+    """按 **配置 → 日志 → 内存** 的顺序找 seed。返回 `(seed, source)`。
 
-    `source` 是 `'config'` / `'memory'` / `None`。把来源说出来是为了让调用方能提示
-    "这次没扫内存"或"配置里那个值不管用"——两者对用户的下一步完全不同。
+    `source` ∈ `'config'` / `'logs'` / `'memory'` / `'config-invalid'` / `None`。
+    把来源说出来是为了让调用方能给出**不同的下一步**：
+      · `config` —— 什么都没扫，可以直接用；
+      · `logs` —— 没扫内存，但这个值**该存进配置**（日志会被轮转）；
+      · `memory` —— 扫了内存才拿到，同样该存配置；
+      · `config-invalid` —— 配置里那个值是错的，**要清掉**，否则每次都会白试一遍。
+
+    三条来源都用同一个判据证明（解密样本、看能否解出图片 magic），
+    所以配置里的过期值不会静默生效，日志里的数字也不会被误当 seed。
     """
     candidate = configured if configured is not None else seed_from_config()
+    invalid_configured = False
     if candidate:
-        found = find_seed(wxid, sample_file, candidates=[candidate])
-        if found:
-            return found, 'config'
-        # 配置里的值没通过验证：继续扫内存，但**不要**把这件事咽掉
-        fallback = find_seed(wxid, sample_file)
-        return (fallback, 'memory') if fallback else (None, 'config-invalid')
+        if find_seed(wxid, sample_file, candidates=[candidate]):
+            return candidate, 'config'
+        invalid_configured = True
+
+    from_logs = seed_from_logs(wxid, sample_file, roots=log_roots)
+    if from_logs:
+        return from_logs, 'logs'
+
     found = find_seed(wxid, sample_file)
-    return (found, 'memory') if found else (None, None)
+    if found:
+        return found, 'memory'
+    return None, ('config-invalid' if invalid_configured else None)
 
 
 def _main():
@@ -510,9 +614,12 @@ def _main():
         print(f'✓ seed = {seed}')
         print(f'  账号: {wxid}')
         print(f'  样本: {sample}')
-        # 说出 seed 是哪来的：配置命中就别再关心内存扫描，扫出来的就顺手告诉怎么省掉它
+        # 说出 seed 是哪来的：这条决定用户的下一步（要不要存起来 / 要不要清掉）
         if source == 'config':
-            print('  来源: 配置 emoticonSeed（本次**没有**扫内存）')
+            print('  来源: 配置 emoticonSeed（本次**没有**扫内存、也没读日志）')
+        elif source == 'logs':
+            print('  来源: 微信日志（本次**没有**扫内存，微信不必在运行）')
+            print(f'  日志会被轮转，建议存下来：weflow-cli config set emoticonSeed {seed}')
         else:
             print('  来源: 内存扫描')
             print(f'  想省掉以后每次的内存扫描：weflow-cli config set emoticonSeed {seed}')
