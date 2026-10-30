@@ -2,10 +2,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import inquirer from 'inquirer'
-import { join } from 'path'
-import { getPythonCommand } from '../../utils/python.js'
-import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { pythonProcessEnv, resolvePackageRoot, parseCliInteger } from '../context.js'
+import { runPythonScript, parseCliInteger } from '../context.js'
 
 export function registerPdfNotes(program: Command): void {
 
@@ -31,11 +28,6 @@ program
   .option('--yes', '确认把 PDF 文字发给生成模型')
   .option('--json', '输出机器可读结果；执行仍需 --yes')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-    const script = join(pkgRoot, 'scripts', 'pdf_notes.py')
     const limit = parseCliInteger(opts.limit, 'limit', 1, 5000, opts.json)
     // 与其它几条线同一条纪律：**"确认过了"只用一个变量**，参数在确认之后才拼。
     // 这条线多一句提示：PDF 的**文字**会出境（PDF 本身不出境，本机 OCR）。
@@ -64,8 +56,7 @@ program
         return
       }
     }
-    const args = [script,
-                  ...(opts.pdf ? ['--pdf', String(opts.pdf)] : []),
+    const args = [...(opts.pdf ? ['--pdf', String(opts.pdf)] : []),
                   ...(opts.dir ? ['--dir', String(opts.dir)] : []),
                   ...(opts.fromChat ? ['--from-chat'] : []),
                   '--ocr-root', String(opts.ocrRoot),
@@ -81,29 +72,20 @@ program
                   ...(confirmed ? ['--yes'] : []),
                   ...(opts.json ? ['--json'] : []),
                   ...(opts.dryRun ? ['--dry-run'] : [])]
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 7_200_000, maxBuffer: 50 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      process.stdout.write(stdout)
-    } catch (error) {
-      // 脚本自己在 `--json` 下会打印一条**结构化**错误（没找到 PDF、OCR 引擎缺失…）。
-      // 直接透出它，比一句"子进程执行失败"有用得多——那正是这个命令最需要说清的两件事。
+    // 脚本自己在 `--json` 下会打印一条**结构化**错误（没找到 PDF、OCR 引擎缺失…）。
+    // 直接透出它，比一句"子进程执行失败"有用得多——那正是这个命令最需要说清的两件事。
+    const parseFailurePayload = (error: unknown): { success?: boolean; error?: string } | null => {
       const raw = String((error as { stdout?: unknown }).stdout ?? '').trim()
-      const parsed = (() => {
-        if (!raw) return null
-        try { return JSON.parse(raw) as { success?: boolean; error?: string } } catch { return null }
-      })()
-      if (opts.json) {
-        console.log(parsed
-          ? JSON.stringify({ ...parsed, code: 'PDF_NOTES_FAILED', action: 'pdf-notes' })
-          : JSON.stringify({ success: false, code: 'PDF_NOTES_FAILED', action: 'pdf-notes', error: safeSubprocessError(error) }))
-      } else {
-        const message = parsed?.error || safeSubprocessError(error)
-        console.error(chalk.red(`\n✗ ${message}`))
-      }
-      process.exit(1)
+      if (!raw) return null
+      try { return JSON.parse(raw) as { success?: boolean; error?: string } } catch { return null }
     }
+    const stdout = await runPythonScript('scripts/pdf_notes.py', args, {
+      json: opts.json,
+      code: 'PDF_NOTES_FAILED',
+      action: 'pdf-notes',
+      jsonExtra: (error) => parseFailurePayload(error) ?? {},
+      timeout: 7_200_000, maxBuffer: 50 * 1024 * 1024,
+    })
+    process.stdout.write(stdout)
   })
 }

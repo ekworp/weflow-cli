@@ -2,10 +2,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import inquirer from 'inquirer'
-import { join } from 'path'
-import { getPythonCommand } from '../../utils/python.js'
-import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, runPython } from '../context.js'
+import { parseCliInteger, runPythonScript } from '../context.js'
 
 export function registerAnnualReport(program: Command): void {
 
@@ -57,22 +54,14 @@ export function registerAnnualReport(program: Command): void {
       if (opts.share) a.push('--share')
       if (opts.skipAi) a.push('--skip-ai')
       if (opts.output) a.push('--output', opts.output)
-      if (opts.json) {
-        const { execFile } = await import('child_process')
-        const { promisify } = await import('util')
-        try {
-          await promisify(execFile)(getPythonCommand(), [join(resolvePackageRoot(), 'scripts/annual_report.py'), ...a], {
-            timeout: 120_000,
-            maxBuffer: 5 * 1024 * 1024,
-            env: pythonProcessEnv(opts.apiKey),
-          })
-          console.log(JSON.stringify({ success: true, action: 'annual-report.generate', year: reportYear }))
-        } catch (error) {
-          console.log(JSON.stringify({ success: false, code: 'ANNUAL_REPORT_FAILED', error: safeSubprocessError(error) }))
-          process.exit(1)
-        }
-      } else {
-        await runPython('scripts/annual_report.py', a, opts.apiKey)
-      }
+      const stdout = await runPythonScript('scripts/annual_report.py', a, {
+        json: opts.json,
+        code: 'ANNUAL_REPORT_FAILED',
+        timeout: 120_000,
+        maxBuffer: 5 * 1024 * 1024,
+        apiKey: opts.apiKey,
+      })
+      if (opts.json) console.log(JSON.stringify({ success: true, action: 'annual-report.generate', year: reportYear }))
+      else console.log(stdout)
     })
 }

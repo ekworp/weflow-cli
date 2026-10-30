@@ -103,7 +103,7 @@ test('接线：--min-degree / --line 既被声明、也被透传（少了任一�
     // commander 把 metavar 写在选项串里（`'--min-degree <n>'`），所以只匹配开关名本身
     assert.ok(declared.includes(opt), `命令要声明 ${opt}`)
   }
-  const argsAt = src.indexOf('const args = [script,', at)
+  const argsAt = src.indexOf('const args = [', at)
   const argsBlock = src.slice(argsAt, argsAt + 900)
   assert.ok(argsBlock.includes("['--min-degree', String(minDegree)]"), '参数数组要透传 --min-degree')
   assert.ok(argsBlock.includes("['--line', opts.line]"), '参数数组要透传 --line')

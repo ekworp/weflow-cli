@@ -6,8 +6,7 @@ import { join } from 'path'
 import { configService } from '../services/configService.js'
 import { chatService } from '../services/chatService.js'
 import { getPythonCommand } from '../utils/python.js'
-import { safeSubprocessError } from '../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, pythonProcessEnv, runPython } from './context.js'
+import { resolvePackageRoot, pythonProcessEnv } from './context.js'
 
 // ==================== Interactive Menu (no arguments) ====================
 export async function showInteractiveMenu(program: Command) {
@@ -129,23 +128,6 @@ export async function showInteractiveMenu(program: Command) {
     const cmd = program.commands.find(c => c.name() === parent) as any
     const sub = cmd?.commands?.find((c: any) => c.name() === child)
     if (sub) await sub.action(opts)
-  }
-  const runPython = async (scriptName: string, label: string) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-    const script = join(pkgRoot, 'scripts', scriptName)
-    console.log(chalk.cyan(`正在${label}...\n`))
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), [script], {
-        timeout: 600_000, maxBuffer: 50 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      console.error(chalk.red(safeSubprocessError(e, `${label}失败`)))
-    }
   }
 
   switch (action) {

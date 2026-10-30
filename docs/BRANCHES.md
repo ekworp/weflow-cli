@@ -38,7 +38,7 @@
 
 | 分支 | master 里没有的补丁 | 抽查到的实质内容 |
 | --- | --- | --- |
-| `origin/trae/solo-agent-Xl3Lhb` / `agent-9Lq0jD` | 各 4 条 | 暗色模式切换与 `:root`/`index.css` 修复**内容已在 master**（模板里相关 token 数一致、`generate_html.py` 里有 `:root`）；但 `plan.md` 的那条隐私规则**不在**（master 少一处） |
+| `origin/trae/solo-agent-Xl3Lhb` / `agent-9Lq0jD` | 各 4 条 | 暗色模式切换与 `:root`/`index.css` 修复**内容已在 master**（模板里相关 token 数一致、`generate_html.py` 里有 `:root`）；但那条隐私规则**不在**（master 少一处；分支里的 `plan.md` 已在 2026-10-29 从 master 删除） |
 | `origin/trae/agent-l9xgSw` | 19 条 | 未逐条核 |
 | `origin/feat/export-enhancements` | 17 条 | 内容对照显示它只是改写前的旧快照（master 比它多 2.1 万行），但**证不了**它独有的那 17 条都在 |
 | `origin/draft/weflow-cli-improvements` | 11 条 | 本文档早已记它是「未合并、已作废、独有功能已移植」，但它有 126 个独有提交 |

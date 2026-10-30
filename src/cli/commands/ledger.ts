@@ -1,10 +1,8 @@
 // 由 bin/weflow-cli.ts 拆分而来：命令注册逻辑，行为保持不变。
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { join } from 'path'
-import { getPythonCommand } from '../../utils/python.js'
-import { createPythonProcessEnv, safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, parseCliInteger } from '../context.js'
+import { createPythonProcessEnv } from '../../utils/pythonProcessEnv.js'
+import { runPythonScript, parseCliInteger } from '../context.js'
 
 export function registerLedger(program: Command): void {
 
@@ -19,40 +17,31 @@ program
   .option('--days <n>', '只看最近 N 天（按转账时间；红包无时间列不受此限）')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'wechat_ledger.py')
-    const args = [script, '--json']
+    const args = ['--json']
     if (opts.days !== undefined) {
       const days = parseCliInteger(opts.days, 'days', 1, 36_500, opts.json)
       args.push('--days', String(days))
     }
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
-        // D-020：会话标识走环境变量，不进 argv
-        env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
-      })
-      const payload = JSON.parse(stdout.slice(stdout.indexOf('{')))
-      if (opts.json) { console.log(JSON.stringify(payload)); if (!payload.success) process.exit(1); return }
-      if (!payload.success) { console.error(chalk.red(`✗ ${payload.error}`)); process.exit(1) }
-      console.log(chalk.cyan(`
+    const stdout = await runPythonScript('scripts/wechat_ledger.py', args, {
+      json: opts.json, code: 'LEDGER_FAILED', prefix: '✗ ',
+      timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
+      // D-020：会话标识走环境变量，不进 argv
+      env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
+    })
+    const payload = JSON.parse(stdout.slice(stdout.indexOf('{')))
+    if (opts.json) { console.log(JSON.stringify(payload)); if (!payload.success) process.exit(1); return }
+    if (!payload.success) { console.error(chalk.red(`✗ ${payload.error}`)); process.exit(1) }
+    console.log(chalk.cyan(`
 资金流水：红包 ${payload.redEnvelopes} 笔、转账 ${payload.transfers} 笔`))
-      console.log(chalk.gray('  （红包无时间/金额列——在消息正文里，按 messageServerId 看先后；状态枚举原样，语义未验证）'))
-      for (const r of payload.rows.slice(0, 40)) {
-        const when = r.time ? new Date(r.time * 1000).toLocaleString('zh-CN', { hour12: false }) : '（无时间列）'
-        const extra = r.kind === '红包'
-          ? `status=${r.hbStatus}/${r.receiveStatus}`
-          : `对方=${r.counterpartyDisplay || r.counterparty || '?'}${r.invalidTime ? ` invalid=${r.invalidTime}` : ''}`
-        console.log(`  [${when}] ${r.kind} · ${r.sessionDisplay} · ${r.direction} · ${extra}`)
-      }
-      if (payload.rows.length > 40) console.log(chalk.gray(`  …共 ${payload.rows.length} 行（--json 看全表）`))
-      console.log('')
-    } catch (e: any) {
-      if (opts.json) { console.log(JSON.stringify({ success: false, code: 'LEDGER_FAILED', error: safeSubprocessError(e) })); process.exit(1) }
-      console.error(chalk.red(`✗ ${safeSubprocessError(e)}`))
-      process.exit(1)
+    console.log(chalk.gray('  （红包无时间/金额列——在消息正文里，按 messageServerId 看先后；状态枚举原样，语义未验证）'))
+    for (const r of payload.rows.slice(0, 40)) {
+      const when = r.time ? new Date(r.time * 1000).toLocaleString('zh-CN', { hour12: false }) : '（无时间列）'
+      const extra = r.kind === '红包'
+        ? `status=${r.hbStatus}/${r.receiveStatus}`
+        : `对方=${r.counterpartyDisplay || r.counterparty || '?'}${r.invalidTime ? ` invalid=${r.invalidTime}` : ''}`
+      console.log(`  [${when}] ${r.kind} · ${r.sessionDisplay} · ${r.direction} · ${extra}`)
     }
+    if (payload.rows.length > 40) console.log(chalk.gray(`  …共 ${payload.rows.length} 行（--json 看全表）`))
+    console.log('')
   })
 }

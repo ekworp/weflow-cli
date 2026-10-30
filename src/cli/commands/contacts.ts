@@ -1,12 +1,9 @@
 // 由 bin/weflow-cli.ts 拆分而来：命令注册逻辑，行为保持不变。
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { join } from 'path'
 import { configService } from '../../services/configService.js'
 import { chatService } from '../../services/chatService.js'
-import { getPythonCommand } from '../../utils/python.js'
-import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { pythonProcessEnv, resolvePackageRoot, parseCliInteger } from '../context.js'
+import { capturePythonScript, parseCliInteger } from '../context.js'
 
 export function registerContacts(program: Command): void {
 
@@ -31,29 +28,19 @@ program
   .option('--contacts', '改读联系人的 extra_buffer，而不是群')
   .option('--json', '输出机器可读结果')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'contact_schema.py')
     const limit = parseCliInteger(opts.limit, 'limit', 1, 100000, !!opts.json)
-    const args = [script, '--limit', String(limit),
+    const args = ['--limit', String(limit),
                   ...(opts.room ? ['--room', opts.room] : []),
                   ...(opts.contacts ? ['--contacts'] : []),
                   ...(opts.json ? ['--json'] : [])]
-    try {
-      const { stdout, stderr } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000, maxBuffer: 64 * 1024 * 1024, env: pythonProcessEnv(),
-      })
-      process.stdout.write(stdout)
-      if (stderr && !opts.json) process.stderr.write(stderr)
-    } catch (error) {
-      if (opts.json) {
-        console.log(JSON.stringify({ success: false, code: 'CONTACT_SCHEMA_FAILED', action: 'contact-schema', error: safeSubprocessError(error) }))
-      } else {
-        console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
-      }
-      process.exit(1)
-    }
+    const { stdout, stderr } = await capturePythonScript('scripts/contact_schema.py', args, {
+      json: opts.json,
+      code: 'CONTACT_SCHEMA_FAILED',
+      action: 'contact-schema',
+      timeout: 300_000, maxBuffer: 64 * 1024 * 1024,
+    })
+    process.stdout.write(stdout)
+    if (stderr && !opts.json) process.stderr.write(stderr)
   })
 
 program

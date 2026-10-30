@@ -4,8 +4,7 @@ import chalk from 'chalk'
 import inquirer from 'inquirer'
 import { join } from 'path'
 import { getPythonCommand } from '../../utils/python.js'
-import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, requireCliChoice } from '../context.js'
+import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, requireCliChoice, runPythonScript } from '../context.js'
 
 export function registerSearch(program: Command): void {
 
@@ -30,11 +29,6 @@ export function registerSearch(program: Command): void {
     .option('--yes', '确认执行可能调用云端向量服务的搜索')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (query, opts) => {
-      const { execFile } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-      const script = join(pkgRoot, 'scripts', 'semantic_search.py')
       const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
       // 没传就**不转发**（默认值只在 Python 侧定义一处）：commander 对未提供的选项给 undefined，
       // 直接 parseCliInteger 会被自己的校验判成非法参数 —— 实测就是这么红的。
@@ -107,7 +101,7 @@ export function registerSearch(program: Command): void {
       // `--no-rerank` 是**旗标**（不是密钥）⇒ 可以走 argv；查询本身仍然只走 env（见 `privacy-paths` 那条规矩）。
       // 接这条通道之前，`OPERATIONS.md` 一直在教用户敲 `search --no-rerank`，而 CLI 会答 `unknown option`
       // —— 同一份文档里 `--line` 是通的，所以它看起来像"能用的旗标"（2026-10-11 由文档命令面那道检查发现）。
-      const args: string[] = [script, 'search', '--top-k', String(topK), '--line', opts.line,
+      const args: string[] = ['search', '--top-k', String(topK), '--line', opts.line,
         ...(phrase ? ['--phrase'] : []),
         ...(opts.rerank === false ? ['--no-rerank'] : []),
         ...(opts.hybrid === false ? ['--no-hybrid'] : []),
@@ -118,19 +112,15 @@ export function registerSearch(program: Command): void {
         ...(opts.fetchMissing ? ['--fetch-missing',
           opts.fetchMissing === true ? '3' : String(opts.fetchMissing)] : []),
         ...(opts.mmr ? ['--mmr'] : [])]
-      try {
-        const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          timeout: 60_000, maxBuffer: 10 * 1024 * 1024,
-          env: {
-            ...pythonProcessEnv(opts.apiKey, 'DASHSCOPE_API_KEY'),
-            WEFLOW_SEARCH_QUERY: query,
-          },
-        })
-        console.log(stdout)
-      } catch (e: any) {
-        console.error(chalk.red(`\n✗ ${safeSubprocessError(e, '搜索失败')}`))
-        process.exit(1)
-      }
+      const stdout = await runPythonScript('scripts/semantic_search.py', args, {
+        label: '搜索失败',
+        timeout: 60_000, maxBuffer: 10 * 1024 * 1024,
+        env: {
+          ...pythonProcessEnv(opts.apiKey, 'DASHSCOPE_API_KEY'),
+          WEFLOW_SEARCH_QUERY: query,
+        },
+      })
+      console.log(stdout)
     })
 
   program
@@ -161,20 +151,10 @@ export function registerSearch(program: Command): void {
           else console.log(chalk.cyan('短语索引预览：全量重建本地 FTS5 索引（含两条线），不联网、不花钱。'))
           return
         }
-        const { execFile } = await import('child_process')
-        const { promisify } = await import('util')
-        const execFileAsync = promisify(execFile)
-        const pkgRoot = resolvePackageRoot()
-        const script = join(pkgRoot, 'scripts', 'semantic_search.py')
-        try {
-          const { stdout } = await execFileAsync(getPythonCommand(),
-            [script, 'phrase-build', '--line', 'all'],
-            { timeout: 600_000, maxBuffer: 10 * 1024 * 1024, env: pythonProcessEnv() })
-          console.log(opts.json ? stdout.trim() : stdout)
-        } catch (e: any) {
-          console.error(chalk.red(`\n✗ ${safeSubprocessError(e, '建短语索引失败')}`))
-          process.exit(1)
-        }
+        const stdout = await runPythonScript('scripts/semantic_search.py',
+          ['phrase-build', '--line', 'all'],
+          { label: '建短语索引失败', timeout: 600_000, maxBuffer: 10 * 1024 * 1024 })
+        console.log(opts.json ? stdout.trim() : stdout)
         return
       }
       // 窗口的**运行值由这里说了算**：默认值 + 校验 + 透传都在这一处，预览报的就是真跑的那些
@@ -222,31 +202,21 @@ export function registerSearch(program: Command): void {
           return
         }
       }
-      const { execFile } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-      const script = join(pkgRoot, 'scripts', 'semantic_search.py')
-      const args: string[] = [script, 'build', '--days', String(chatDays),
+      const args: string[] = ['build', '--days', String(chatDays),
                               '--article-days', String(articleDays),
                     ...(opts.pdfChunks ? ['--pdf-chunks', String(opts.pdfChunks)] : []),
                     ...(opts.noPdf ? ['--no-pdf'] : [])]
       if (opts.full) args.push('--full')
       if (opts.includeImports) args.push('--include-imports')
-      try {
-        const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          // 30 分钟：全量重建实测要跑二十分钟以上（16k 条 / 1500+ 批），而这里原来给的是 5 分钟 --
-          // 那个值让 `--full` 在真实索引上**从来没跑完过**（超时被杀；且脚本改成了边嵌边落盘之前，
-          // 中途被杀等于连已经嵌好的那部分也一起丢）。
-          timeout: 1_800_000, maxBuffer: 10 * 1024 * 1024,
-          env: pythonProcessEnv(opts.apiKey, 'DASHSCOPE_API_KEY'),
-        })
-        if (opts.json) console.log(stdout.trim())
-        else console.log(stdout)
-      } catch (e: any) {
-        console.error(chalk.red(`\n✗ ${safeSubprocessError(e)}`))
-        process.exit(1)
-      }
+      const stdout = await runPythonScript('scripts/semantic_search.py', args, {
+        // 30 分钟：全量重建实测要跑二十分钟以上（16k 条 / 1500+ 批），而这里原来给的是 5 分钟 --
+        // 那个值让 `--full` 在真实索引上**从来没跑完过**（超时被杀；且脚本改成了边嵌边落盘之前，
+        // 中途被杀等于连已经嵌好的那部分也一起丢）。
+        timeout: 1_800_000, maxBuffer: 10 * 1024 * 1024,
+        apiKey: opts.apiKey, apiKeyVariable: 'DASHSCOPE_API_KEY',
+      })
+      if (opts.json) console.log(stdout.trim())
+      else console.log(stdout)
     })
 
   // chat
@@ -262,11 +232,8 @@ export function registerSearch(program: Command): void {
     .option('--yes', '确认读取本地知识并发送筛选后的上下文到 AI')
     .option('--json', 'JSON 输出；单次执行仍需 --yes，交互模式不可由机器启动')
     .action(async (question, opts) => {
-      const { execFile, spawn } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-      const script = join(pkgRoot, 'scripts', 'rag_chat.py')
+      const { spawn } = await import('child_process')
+      const script = join(resolvePackageRoot(), 'scripts', 'rag_chat.py')
       const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
       requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
       const preview = {
@@ -307,28 +274,24 @@ export function registerSearch(program: Command): void {
           return
         }
       }
-      const args: string[] = [script]
+      const args: string[] = []
       if (question) {
         args.push('--top-k', String(topK), '--line', opts.line)
         if (opts.json) args.push('--json')
-        try {
-          const { stdout } = await execFileAsync(getPythonCommand(), args, {
-            timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
-            env: {
-              ...pythonProcessEnv(opts.apiKey),
-              WEFLOW_RAG_QUESTION: question,
-              ...(opts.talker ? { WEFLOW_RAG_TALKER: opts.talker } : {}),
-            },
-          })
-          console.log(stdout)
-        } catch (e: any) {
-          console.error(chalk.red(`\n✗ ${safeSubprocessError(e, '对话失败')}`))
-          process.exit(1)
-        }
+        const stdout = await runPythonScript('scripts/rag_chat.py', args, {
+          label: '对话失败',
+          timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
+          env: {
+            ...pythonProcessEnv(opts.apiKey),
+            WEFLOW_RAG_QUESTION: question,
+            ...(opts.talker ? { WEFLOW_RAG_TALKER: opts.talker } : {}),
+          },
+        })
+        console.log(stdout)
       } else {
         // 交互模式：使用 spawn 保持终端交互
         args.push('--interactive', '--top-k', String(topK), '--line', opts.line)
-        const child = spawn(getPythonCommand(), args, {
+        const child = spawn(getPythonCommand(), [script, ...args], {
           windowsHide: true,
           stdio: 'inherit',
           env: {

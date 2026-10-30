@@ -1,10 +1,8 @@
 // 由 bin/weflow-cli.ts 拆分而来：命令注册逻辑，行为保持不变。
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { join } from 'path'
-import { getPythonCommand } from '../../utils/python.js'
-import { createPythonProcessEnv, safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, pythonProcessEnv, parseCliInteger } from '../context.js'
+import { createPythonProcessEnv } from '../../utils/pythonProcessEnv.js'
+import { runPythonScript, parseCliInteger } from '../context.js'
 
 export function registerPersonal(program: Command): void {
 
@@ -15,34 +13,21 @@ program
   .option('--limit <number>', '最多显示多少个公众号', '30')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'daily_stats.py')
     const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
     const limit = parseCliInteger(opts.limit, 'limit', 1, 1000, opts.json)
 
-    try {
-      const args = [script, '--days', String(days), '--limit', String(limit)]
-      if (opts.json) args.push('--json')
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'DAILY_STATS_FAILED',
-          error: '公众号统计不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '统计失败')}`))
-      process.exit(1)
-    }
+    const args = ['--days', String(days), '--limit', String(limit)]
+    if (opts.json) args.push('--json')
+    const stdout = await runPythonScript('scripts/daily_stats.py', args, {
+      json: opts.json,
+      code: 'DAILY_STATS_FAILED',
+      jsonErrorText: '公众号统计不可用，请运行 check --json 检查配置和依赖',
+      label: '统计失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    console.log(stdout)
   })
 
 // ==================== bonds ====================
@@ -58,36 +43,23 @@ program
   }, [] as string[])
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'bonds.py')
     const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
     const limit = parseCliInteger(opts.limit, 'limit', 1, 5000, opts.json)
     const top = parseCliInteger(opts.top, 'top', 1, 200, opts.json)
 
-    try {
-      const args = [script, '--days', String(days), '--limit', String(limit), '--top', String(top)]
-      for (const name of (opts.skip as string[]) || []) args.push('--skip', name)
-      if (opts.json) args.push('--json')
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'BONDS_FAILED',
-          error: '关系温度不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '统计失败')}`))
-      process.exit(1)
-    }
+    const args = ['--days', String(days), '--limit', String(limit), '--top', String(top)]
+    for (const name of (opts.skip as string[]) || []) args.push('--skip', name)
+    if (opts.json) args.push('--json')
+    const stdout = await runPythonScript('scripts/bonds.py', args, {
+      json: opts.json,
+      code: 'BONDS_FAILED',
+      jsonErrorText: '关系温度不可用，请运行 check --json 检查配置和依赖',
+      label: '统计失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    console.log(stdout)
   })
 
 // ==================== today（那年今日）====================
@@ -99,34 +71,22 @@ program
   .option('--limit <number>', '每天最多列几条', '6')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'on_this_day.py')
     const limit = parseCliInteger(opts.limit, 'limit', 1, 200, opts.json)
 
-    try {
-      const args = [script, '--years', String(opts.years || '1,3,5'), '--limit', String(limit)]
-      if (opts.json) args.push('--json')
-      // D-020：会话标识不进子进程 argv（进程列表里看得见），走 WEFLOW_TALKER。
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'TODAY_FAILED',
-          error: '那年今日不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '回溯失败')}`))
-      process.exit(1)
-    }
+    const args = ['--years', String(opts.years || '1,3,5'), '--limit', String(limit)]
+    if (opts.json) args.push('--json')
+    // D-020：会话标识不进子进程 argv（进程列表里看得见），走 WEFLOW_TALKER。
+    const stdout = await runPythonScript('scripts/on_this_day.py', args, {
+      json: opts.json,
+      code: 'TODAY_FAILED',
+      jsonErrorText: '那年今日不可用，请运行 check --json 检查配置和依赖',
+      label: '回溯失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
+    })
+    console.log(stdout)
   })
 
 // ==================== network（人脉图谱）====================
@@ -138,39 +98,25 @@ program
   .option('--intro <name>', '谁适合把我介绍给他')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'network.py')
-
-    try {
-      const args = [script]
-      if (opts.groups) args.push('--groups')
-      if (opts.with) args.push('--with', String(opts.with))
-      if (opts.intro) args.push('--intro', String(opts.intro))
-      if (opts.json) args.push('--json')
-      if (args.length === 1) {
-        console.error(chalk.yellow('\n用法：network --groups | --with <名字> | --intro <名字>'))
-        process.exit(1)
-      }
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'NETWORK_FAILED',
-          error: '人脉图谱不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '查询失败')}`))
+    const args: string[] = []
+    if (opts.groups) args.push('--groups')
+    if (opts.with) args.push('--with', String(opts.with))
+    if (opts.intro) args.push('--intro', String(opts.intro))
+    if (args.length === 0) {
+      console.error(chalk.yellow('\n用法：network --groups | --with <名字> | --intro <名字>'))
       process.exit(1)
     }
+    if (opts.json) args.push('--json')
+    const stdout = await runPythonScript('scripts/network.py', args, {
+      json: opts.json,
+      code: 'NETWORK_FAILED',
+      jsonErrorText: '人脉图谱不可用，请运行 check --json 检查配置和依赖',
+      label: '查询失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    console.log(stdout)
   })
 
 // ==================== promises（欠账清单）====================
@@ -182,35 +128,23 @@ program
   .option('--limit <number>', '最多列几条', '30')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'promises.py')
     const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
     const limit = parseCliInteger(opts.limit, 'limit', 1, 500, opts.json)
 
-    try {
-      const args = [script, '--days', String(days), '--limit', String(limit)]
-      if (opts.json) args.push('--json')
-      // D-020：同 today——会话标识走 WEFLOW_TALKER，不进 argv。
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'PROMISES_FAILED',
-          error: '欠账清单不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '统计失败')}`))
-      process.exit(1)
-    }
+    const args = ['--days', String(days), '--limit', String(limit)]
+    if (opts.json) args.push('--json')
+    // D-020：同 today——会话标识走 WEFLOW_TALKER，不进 argv。
+    const stdout = await runPythonScript('scripts/promises.py', args, {
+      json: opts.json,
+      code: 'PROMISES_FAILED',
+      jsonErrorText: '欠账清单不可用，请运行 check --json 检查配置和依赖',
+      label: '统计失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: createPythonProcessEnv(opts.talker ? { WEFLOW_TALKER: String(opts.talker) } : {}),
+    })
+    console.log(stdout)
   })
 
 // ==================== leads（线索雷达）====================
@@ -222,36 +156,23 @@ program
   .option('--limit <number>', '最多列几条', '20')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'leads.py')
     const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
     const minScore = parseCliInteger(opts.minScore, 'min-score', 1, 50, opts.json)
     const limit = parseCliInteger(opts.limit, 'limit', 1, 500, opts.json)
 
-    try {
-      const args = [script, '--days', String(days), '--min-score', String(minScore),
-                    '--limit', String(limit)]
-      if (opts.json) args.push('--json')
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'LEADS_FAILED',
-          error: '线索雷达不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '统计失败')}`))
-      process.exit(1)
-    }
+    const args = ['--days', String(days), '--min-score', String(minScore),
+                  '--limit', String(limit)]
+    if (opts.json) args.push('--json')
+    const stdout = await runPythonScript('scripts/leads.py', args, {
+      json: opts.json,
+      code: 'LEADS_FAILED',
+      jsonErrorText: '线索雷达不可用，请运行 check --json 检查配置和依赖',
+      label: '统计失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    console.log(stdout)
   })
 
 // ==================== media（媒体精确匹配）====================
@@ -264,35 +185,22 @@ program
   .option('--missing-only', '只列文件已不在本地的（微信会清理）')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'media_index.py')
     const limit = parseCliInteger(opts.limit, 'limit', 1, 5000, opts.json)
 
-    try {
-      const args = [script, '--type', String(opts.type || 'all'), '--limit', String(limit)]
-      if (opts.md5) args.push('--md5', String(opts.md5))
-      if (opts.missingOnly) args.push('--missing-only')
-      if (opts.json) args.push('--json')
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 16 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'MEDIA_FAILED',
-          error: '媒体索引不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '查询失败')}`))
-      process.exit(1)
-    }
+    const args = ['--type', String(opts.type || 'all'), '--limit', String(limit)]
+    if (opts.md5) args.push('--md5', String(opts.md5))
+    if (opts.missingOnly) args.push('--missing-only')
+    if (opts.json) args.push('--json')
+    const stdout = await runPythonScript('scripts/media_index.py', args, {
+      json: opts.json,
+      code: 'MEDIA_FAILED',
+      jsonErrorText: '媒体索引不可用，请运行 check --json 检查配置和依赖',
+      label: '查询失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 16 * 1024 * 1024,
+    })
+    console.log(stdout)
   })
 
 // ==================== replay（关系时间重放）====================
@@ -303,33 +211,20 @@ program
   .option('--min-weight <number>', '当月互动量门槛，低于此不计入', '10')
   .option('--json', '只输出聚合结果（验收用）')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'replay.py')
     const minWeight = parseCliInteger(opts.minWeight, 'min-weight', 1, 10000, opts.json)
 
-    try {
-      const args = [script, '--min-weight', String(minWeight), '--out', String(opts.out)]
-      if (opts.json) args.push('--json')
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 600_000,
-        maxBuffer: 64 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'REPLAY_FAILED',
-          error: '时间重放不可用，请运行 check --json 检查配置和依赖',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '生成失败')}`))
-      process.exit(1)
-    }
+    const args = ['--min-weight', String(minWeight), '--out', String(opts.out)]
+    if (opts.json) args.push('--json')
+    const stdout = await runPythonScript('scripts/replay.py', args, {
+      json: opts.json,
+      code: 'REPLAY_FAILED',
+      jsonErrorText: '时间重放不可用，请运行 check --json 检查配置和依赖',
+      label: '生成失败',
+      prefix: '\n',
+      timeout: 600_000,
+      maxBuffer: 64 * 1024 * 1024,
+    })
+    console.log(stdout)
   })
 
 // ==================== timeline（某号观点演变）====================
@@ -342,39 +237,26 @@ program
   .option('--ai', '让模型总结观点变化（需要 API key）')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'opinion_timeline.py')
     const limit = parseCliInteger(opts.limit, 'limit', 1, 2000, opts.json)
 
-    try {
-      const args = [script, '--limit', String(limit)]
-      if (opts.list) args.push('--list')
-      if (opts.source) args.push('--source', String(opts.source))
-      if (opts.ai) args.push('--ai')
-      if (opts.json) args.push('--json')
-      if (!opts.list && !opts.source) {
-        console.error(chalk.yellow('\n用法：timeline --list | --source <公众号名>'))
-        process.exit(1)
-      }
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: pythonProcessEnv(),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          success: false,
-          code: 'TIMELINE_FAILED',
-          error: '观点时间线不可用，请先运行 daily 生成日报',
-        }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`\n${safeSubprocessError(e, '读取失败')}`))
+    if (!opts.list && !opts.source) {
+      console.error(chalk.yellow('\n用法：timeline --list | --source <公众号名>'))
       process.exit(1)
     }
+    const args = ['--limit', String(limit)]
+    if (opts.list) args.push('--list')
+    if (opts.source) args.push('--source', String(opts.source))
+    if (opts.ai) args.push('--ai')
+    if (opts.json) args.push('--json')
+    const stdout = await runPythonScript('scripts/opinion_timeline.py', args, {
+      json: opts.json,
+      code: 'TIMELINE_FAILED',
+      jsonErrorText: '观点时间线不可用，请先运行 daily 生成日报',
+      label: '读取失败',
+      prefix: '\n',
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    console.log(stdout)
   })
 }

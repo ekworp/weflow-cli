@@ -74,6 +74,105 @@ export function requireCliDate(value: string, json = false): string {
   }
 }
 
+/**
+ * 跑 Python 脚本时的共同约定。每一条命令只声明"和别的命令不一样"的那部分：
+ * 失败码、失败文案、前缀、超时/缓冲、环境变量。
+ *
+ * 抽出来的理由：同一段 `promisify(execFile)` + `try/catch` + `process.exit(1)` 在 CLI 里
+ * 写了四十来遍，而 `--json` 分支、错误码、前缀每处都手抄一遍——漏一处就是"机器拿不到 JSON"
+ * 或"人看不到错误原因"。默认值集中在这里，命令侧只剩参数拼装和成功输出。
+ */
+export interface PythonRunOptions {
+  /** 失败时往 stdout 打一份 JSON（`success: false` 加上 code/action/error）。 */
+  json?: boolean
+  /** JSON 失败时的错误码；Human 模式不用它。 */
+  code?: string
+  action?: string
+  /** JSON 失败时的固定文案；人类模式仍走 `safeSubprocessError` + label。 */
+  jsonErrorText?: string
+  /** 传给 `safeSubprocessError` 的标签，默认"子进程执行失败"。 */
+  label?: string
+  /** 人类可读错误行的前缀，默认 `\n✗ `。 */
+  prefix?: string
+  /** 失败时先把脚本自己写出的 stdout 原样透传（脚本已给结构化失败时比自己编一个更有用）。 */
+  passthroughStdoutOnError?: boolean
+  /** JSON 失败时追加的字段（例如把脚本 stdout 的片段当 detail）。 */
+  jsonExtra?: (error: unknown) => Record<string, unknown>
+  timeout?: number
+  maxBuffer?: number
+  /** 完整的子进程环境；给了它就不再叠加 apiKey。 */
+  env?: NodeJS.ProcessEnv
+  apiKey?: string
+  apiKeyVariable?: string
+  /** 脚本路径是否相对包根目录；默认 true。少数调用方自己拼绝对路径时置 false。 */
+  relativeToPackageRoot?: boolean
+}
+
+interface PythonResult {
+  stdout: string
+  stderr: string
+}
+
+async function execPython(args: string[], options: PythonRunOptions): Promise<PythonResult> {
+  const { execFile } = await import('child_process')
+  const { promisify } = await import('util')
+  return await promisify(execFile)(getPythonCommand(), args, {
+    timeout: options.timeout ?? 120_000,
+    maxBuffer: options.maxBuffer ?? 5 * 1024 * 1024,
+    env: options.env ?? pythonProcessEnv(options.apiKey, options.apiKeyVariable || 'DEEPSEEK_API_KEY'),
+  })
+}
+
+/** 统一呈现失败并退出：`--json` 一份 JSON，否则一行红字。 */
+function reportPythonFailure(error: unknown, options: PythonRunOptions): never {
+  if (options.passthroughStdoutOnError) {
+    const payload = (error as { stdout?: string }).stdout
+    if (payload && payload.trim()) {
+      process.stdout.write(payload)
+      process.exit(1)
+    }
+  }
+  // 脚本自己给出的结构化失败优先：它比"子进程执行失败"更接近真正的原因。
+  const extra = options.jsonExtra?.(error)
+  const detail = (typeof extra?.error === 'string' && extra.error)
+    || (options.json && options.jsonErrorText ? options.jsonErrorText : safeSubprocessError(error, options.label))
+  if (options.json) {
+    console.log(JSON.stringify({
+      success: false,
+      ...(options.code ? { code: options.code } : {}),
+      ...(options.action ? { action: options.action } : {}),
+      error: detail,
+      ...(extra ?? {}),
+    }))
+  } else {
+    console.error(chalk.red(`${options.prefix ?? '\n✗ '}${detail}`))
+  }
+  process.exit(1)
+}
+
+function resolveScriptPath(script: string, options: PythonRunOptions): string {
+  return options.relativeToPackageRoot === false ? script : join(resolvePackageRoot(), script)
+}
+
+/** 跑脚本并返回 stdout；失败按 options 呈现后退出。 */
+export async function runPythonScript(script: string, args: string[], options: PythonRunOptions = {}): Promise<string> {
+  try {
+    const { stdout } = await execPython([resolveScriptPath(script, options), ...args], options)
+    return stdout
+  } catch (error) {
+    return reportPythonFailure(error, options)
+  }
+}
+
+/** 同 `runPythonScript`，但成功时也把 stderr 交回调用方（脚本的告警走 stderr）。 */
+export async function capturePythonScript(script: string, args: string[], options: PythonRunOptions = {}): Promise<PythonResult> {
+  try {
+    return await execPython([resolveScriptPath(script, options), ...args], options)
+  } catch (error) {
+    return reportPythonFailure(error, options)
+  }
+}
+
 export async function runConfirmedPythonMutation(options: {
   action: string
   script: string
@@ -108,24 +207,17 @@ export async function runConfirmedPythonMutation(options: {
     }
   }
 
-  const { execFile } = await import('child_process')
-  const { promisify } = await import('util')
-  try {
-    const { stdout } = await promisify(execFile)(getPythonCommand(), [options.script, ...options.args], {
-      timeout: options.timeout || 120_000,
-      maxBuffer: 50 * 1024 * 1024,
-      env: pythonProcessEnv(options.apiKey, options.apiKeyVariable || 'DEEPSEEK_API_KEY'),
-    })
-    if (options.cliOptions.json) console.log(JSON.stringify({ success: true, action: options.action }))
-    else console.log(stdout)
-  } catch (error) {
-    if (options.cliOptions.json) {
-      console.log(JSON.stringify({ success: false, code: 'PYTHON_MUTATION_FAILED', action: options.action, error: safeSubprocessError(error) }))
-    } else {
-      console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
-    }
-    process.exit(1)
-  }
+  const stdout = await runPythonScript(options.script, options.args, {
+    json: options.cliOptions.json,
+    code: 'PYTHON_MUTATION_FAILED',
+    action: options.action,
+    timeout: options.timeout || 120_000,
+    maxBuffer: 50 * 1024 * 1024,
+    apiKey: options.apiKey,
+    apiKeyVariable: options.apiKeyVariable || 'DEEPSEEK_API_KEY',
+  })
+  if (options.cliOptions.json) console.log(JSON.stringify({ success: true, action: options.action }))
+  else console.log(stdout)
 }
 
 export async function openLocalUrl(url: string): Promise<void> {
@@ -234,38 +326,18 @@ export function tryReadWeFlowKey(): string | null {
 
   // 辅助函数
   export async function runPythonCmd(script: string, args: string[], apiKey?: string, apiKeyVariable = 'DEEPSEEK_API_KEY') {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), [script, ...args], {
-        timeout: 120_000, maxBuffer: 5 * 1024 * 1024,
-        env: pythonProcessEnv(apiKey, apiKeyVariable),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      console.error(chalk.red(`\n✗ ${safeSubprocessError(e)}`))
-      process.exit(1)
-    }
+    // 这一条的历史语义：脚本路径由调用方给（可能是绝对路径），不拼包根目录。
+    const stdout = await runPythonScript(script, args, {
+      relativeToPackageRoot: false,
+      apiKey,
+      apiKeyVariable,
+    })
+    console.log(stdout)
   }
 
   // Helper: run a Python script
   export async function runPython(script: string, args: string[], apiKey?: string): Promise<void> {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-    const pyArgs = [join(pkgRoot, script), ...args]
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), pyArgs, {
-        timeout: 120_000, maxBuffer: 5 * 1024 * 1024,
-        env: pythonProcessEnv(apiKey),
-      })
-      console.log(stdout)
-    } catch (e: any) {
-      console.error(chalk.red(`\n✗ ${safeSubprocessError(e)}`))
-      process.exit(1)
-    }
+    console.log(await runPythonScript(script, args, { apiKey }))
   }
 
 export const defaultDailyDate = () => {

@@ -4,9 +4,8 @@ import chalk from 'chalk'
 import inquirer from 'inquirer'
 import { join } from 'path'
 import { getPythonCommand } from '../../utils/python.js'
-import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
 import { DateRangeError, parseLocalDateOrIso } from '../../utils/dateRange.js'
-import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, requireCliDate, runConfirmedPythonMutation, openLocalUrl, startDetachedDailyReader } from '../context.js'
+import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, requireCliDate, runConfirmedPythonMutation, runPythonScript, openLocalUrl, startDetachedDailyReader } from '../context.js'
 
 export function registerInsights(program: Command): void {
 
@@ -105,25 +104,16 @@ export function registerInsights(program: Command): void {
           return
         }
       }
-      const { execFile } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-      const script = join(pkgRoot, 'scripts', 'generate_review.py')
-      const args: string[] = [script, '--engine', opts.engine, '--source', opts.source, '--output', opts.output]
+      const args: string[] = ['--engine', opts.engine, '--source', opts.source, '--output', opts.output]
       if (opts.date) args.push('--date', opts.date)
-      try {
-        const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
-          env: pythonProcessEnv(opts.apiKey),
-        })
-        if (opts.json) console.log(JSON.stringify({ success: true, action: 'review.generate' }))
-        else console.log(stdout)
-      } catch (e: any) {
-        if (opts.json) console.log(JSON.stringify({ success: false, code: 'REVIEW_FAILED', error: safeSubprocessError(e) }))
-        else console.error(chalk.red(`\n✗ ${safeSubprocessError(e)}`))
-        process.exit(1)
-      }
+      const stdout = await runPythonScript('scripts/generate_review.py', args, {
+        json: opts.json,
+        code: 'REVIEW_FAILED',
+        timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
+        apiKey: opts.apiKey,
+      })
+      if (opts.json) console.log(JSON.stringify({ success: true, action: 'review.generate' }))
+      else console.log(stdout)
     })
 
   // fav-server

@@ -2,10 +2,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import inquirer from 'inquirer'
-import { join } from 'path'
-import { getPythonCommand } from '../../utils/python.js'
-import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, requireCliChoice } from '../context.js'
+import { runPythonScript, parseCliInteger, requireCliChoice } from '../context.js'
 
 export function registerNotes(program: Command): void {
 
@@ -22,11 +19,6 @@ export function registerNotes(program: Command): void {
             '把缺转写的语音**本机**识别掉再产卡（本地 whisper，慢、吃 CPU、不出网；配合 --dry-run 就是只补转写、不调模型）')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (opts) => {
-      const { execFile } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-      const pkgRoot = resolvePackageRoot()
-      const script = join(pkgRoot, 'scripts', 'chat_notes.py')
       const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
       const limit = parseCliInteger(opts.limit, 'limit', 1, 200, opts.json)
       requireCliChoice(opts.source, ['wechat', 'qq', 'all'], 'source', opts.json)
@@ -54,26 +46,19 @@ export function registerNotes(program: Command): void {
           return
         }
       }
-      const args = [script, '--days', String(days), '--limit', String(limit),
+      const args = ['--days', String(days), '--limit', String(limit),
                     '--source', String(opts.source),
                     ...(confirmed ? ['--yes'] : []),
                     ...(opts.transcribeVoice ? ['--transcribe-voice'] : []),
                     ...(opts.json ? ['--json'] : []),
                     ...(opts.dryRun ? ['--dry-run'] : [])]
-      try {
-        const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          timeout: 900_000, maxBuffer: 50 * 1024 * 1024,
-          env: pythonProcessEnv(),
-        })
-        process.stdout.write(stdout)
-      } catch (error) {
-        if (opts.json) {
-          console.log(JSON.stringify({ success: false, code: 'CHAT_NOTES_FAILED', action: 'chat-notes', error: safeSubprocessError(error) }))
-        } else {
-          console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
-        }
-        process.exit(1)
-      }
+      const stdout = await runPythonScript('scripts/chat_notes.py', args, {
+        json: opts.json,
+        code: 'CHAT_NOTES_FAILED',
+        action: 'chat-notes',
+        timeout: 900_000, maxBuffer: 50 * 1024 * 1024,
+      })
+      process.stdout.write(stdout)
     })
 
   // user-notes：读你自己写的笔记（第四条来源，也是唯一读"人写的东西"的一条）
@@ -87,10 +72,6 @@ export function registerNotes(program: Command): void {
     .option('--yes', '确认把笔记发给生成模型')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (opts) => {
-      const { execFile } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-      const script = join(resolvePackageRoot(), 'scripts', 'user_notes.py')
       const limit = parseCliInteger(opts.limit, 'limit', 1, 500, opts.json)
       let confirmed = !!opts.yes
       if (!opts.dryRun && !confirmed) {
@@ -116,26 +97,19 @@ export function registerNotes(program: Command): void {
           return
         }
       }
-      const args = [script, '--limit', String(limit), '--vault', String(opts.vault),
+      const args = ['--limit', String(limit), '--vault', String(opts.vault),
                     ...(opts.refresh ? ['--refresh'] : []),
                     ...(confirmed ? ['--yes'] : []),
                     ...(opts.json ? ['--json'] : []),
                     ...(opts.dryRun ? ['--dry-run'] : [])]
-      try {
-        const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024,
-          env: pythonProcessEnv(),
-        })
-        process.stdout.write(stdout)
-      } catch (error) {
-        if (opts.json) {
-          console.log(JSON.stringify({ success: false, code: 'USER_NOTES_FAILED', action: 'user-notes',
-            error: safeSubprocessError(error), detail: String((error as any)?.stdout || '').slice(0, 2000) }))
-        } else {
-          console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
-        }
-        process.exit(1)
-      }
+      const stdout = await runPythonScript('scripts/user_notes.py', args, {
+        json: opts.json,
+        code: 'USER_NOTES_FAILED',
+        action: 'user-notes',
+        jsonExtra: (error) => ({ detail: String((error as any)?.stdout || '').slice(0, 2000) }),
+        timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024,
+      })
+      process.stdout.write(stdout)
     })
 
   // fav-notes：把微信收藏里的文章变成知识卡（第三条来源）
@@ -148,10 +122,6 @@ export function registerNotes(program: Command): void {
     .option('--yes', '确认把收藏的正文发给生成模型')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (opts) => {
-      const { execFile } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-      const script = join(resolvePackageRoot(), 'scripts', 'fav_notes.py')
       const limit = parseCliInteger(opts.limit, 'limit', 1, 500, opts.json)
       // 与另外两条线同一条纪律：**「确认过了」只用一个变量**，参数在确认之后才拼
       let confirmed = !!opts.yes
@@ -178,26 +148,19 @@ export function registerNotes(program: Command): void {
           return
         }
       }
-      const args = [script, '--limit', String(limit),
+      const args = ['--limit', String(limit),
                     ...(opts.refresh ? ['--refresh'] : []),
                     ...(confirmed ? ['--yes'] : []),
                     ...(opts.json ? ['--json'] : []),
                     ...(opts.dryRun ? ['--dry-run'] : [])]
-      try {
-        const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024,
-          env: pythonProcessEnv(),
-        })
-        process.stdout.write(stdout)
-      } catch (error) {
-        if (opts.json) {
-          console.log(JSON.stringify({ success: false, code: 'FAV_NOTES_FAILED', action: 'fav-notes',
-            error: safeSubprocessError(error), detail: String((error as any)?.stdout || '').slice(0, 2000) }))
-        } else {
-          console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
-        }
-        process.exit(1)
-      }
+      const stdout = await runPythonScript('scripts/fav_notes.py', args, {
+        json: opts.json,
+        code: 'FAV_NOTES_FAILED',
+        action: 'fav-notes',
+        jsonExtra: (error) => ({ detail: String((error as any)?.stdout || '').slice(0, 2000) }),
+        timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024,
+      })
+      process.stdout.write(stdout)
     })
 
   // article-notes：从文章笔记里提炼概念，喂给 wiki compile
@@ -216,11 +179,6 @@ export function registerNotes(program: Command): void {
     .option('--yes', '确认把文章发给生成模型')
     .option('--json', '输出机器可读结果；执行仍需 --yes')
     .action(async (opts) => {
-      const { execFile } = await import('child_process')
-      const { promisify } = await import('util')
-      const execFileAsync = promisify(execFile)
-      const pkgRoot = resolvePackageRoot()
-      const script = join(pkgRoot, 'scripts', 'article_notes.py')
       const limit = parseCliInteger(opts.limit, 'limit', 1, 5000, opts.json)
       // 主题筛选：这一步是**纯花钱的**（一篇一次调用），而实测主题分布是新闻 57% /
       // AI 28% / 学术 13%，所以"只做 AI"是省掉一半以上花费的那个开关。它必须出现在
@@ -254,7 +212,7 @@ export function registerNotes(program: Command): void {
           return
         }
       }
-      const args = [script, '--source', String(opts.source), '--limit', String(limit),
+      const args = ['--source', String(opts.source), '--limit', String(limit),
                     ...(opts.since ? ['--since', String(opts.since)] : []),
                     ...(opts.until ? ['--until', String(opts.until)] : []),
                     ...(topics.length ? ['--topic', topics.join(',')] : []),
@@ -263,19 +221,12 @@ export function registerNotes(program: Command): void {
                     ...(confirmed ? ['--yes'] : []),
                     ...(opts.json ? ['--json'] : []),
                     ...(opts.dryRun ? ['--dry-run'] : [])]
-      try {
-        const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024,
-          env: pythonProcessEnv(),
-        })
-        process.stdout.write(stdout)
-      } catch (error) {
-        if (opts.json) {
-          console.log(JSON.stringify({ success: false, code: 'ARTICLE_NOTES_FAILED', action: 'article-notes', error: safeSubprocessError(error) }))
-        } else {
-          console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
-        }
-        process.exit(1)
-      }
+      const stdout = await runPythonScript('scripts/article_notes.py', args, {
+        json: opts.json,
+        code: 'ARTICLE_NOTES_FAILED',
+        action: 'article-notes',
+        timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024,
+      })
+      process.stdout.write(stdout)
     })
 }

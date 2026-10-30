@@ -5,10 +5,9 @@ import inquirer from 'inquirer'
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
 import { configService } from '../../services/configService.js'
-import { getPythonCommand } from '../../utils/python.js'
 import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
 import { DateRangeError, parseLocalDateOrIso } from '../../utils/dateRange.js'
-import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, requireCliChoice, requireCliDate, runConfirmedPythonMutation, runPythonCmd } from '../context.js'
+import { resolvePackageRoot, pythonProcessEnv, parseCliInteger, requireCliChoice, requireCliDate, runConfirmedPythonMutation, runPythonCmd, runPythonScript } from '../context.js'
 
 export function registerKnowledge(program: Command): void {
 
@@ -386,14 +385,7 @@ export function registerKnowledge(program: Command): void {
               return
             }
           }
-          const { execFile } = await import('child_process')
-          const { promisify } = await import('util')
-          const execFileAsync = promisify(execFile)
-          const pkgRoot = resolvePackageRoot()
-          const script = join(pkgRoot, 'scripts', 'pipeline.py')
-
           const args: string[] = [
-            script,
             '--engine', opts.engine,
             '--interest', opts.interest,
             '--wiki-limit', String(wikiLimit),
@@ -409,20 +401,17 @@ export function registerKnowledge(program: Command): void {
           if (noAi) args.push('--no-ai')
           if (opts.noSummary && !noAi) args.push('--no-summary')
 
-          try {
-            if (!opts.json) console.log(chalk.cyan('\n启动端到端流水线...\n'))
-            const { stdout } = await execFileAsync(getPythonCommand(), args, {
-              timeout: 600_000,
-              maxBuffer: 50 * 1024 * 1024,
-              env: pythonProcessEnv(opts.apiKey),
-            })
-            if (opts.json) console.log(JSON.stringify({ success: true, action: 'pipeline.run' }))
-            else console.log(stdout)
-          } catch (e: any) {
-            if (opts.json) console.log(JSON.stringify({ success: false, code: 'PIPELINE_FAILED', error: safeSubprocessError(e, '流水线失败') }))
-            else console.error(chalk.red(`\n✗ ${safeSubprocessError(e, '流水线失败')}`))
-            process.exit(1)
-          }
+          if (!opts.json) console.log(chalk.cyan('\n启动端到端流水线...\n'))
+          const stdout = await runPythonScript('scripts/pipeline.py', args, {
+            json: opts.json,
+            code: 'PIPELINE_FAILED',
+            label: '流水线失败',
+            timeout: 600_000,
+            maxBuffer: 50 * 1024 * 1024,
+            apiKey: opts.apiKey,
+          })
+          if (opts.json) console.log(JSON.stringify({ success: true, action: 'pipeline.run' }))
+          else console.log(stdout)
         })
     )
 
@@ -680,8 +669,6 @@ export function registerKnowledge(program: Command): void {
         .option('--yes', '确认读取本地知识并发送筛选后的上下文到 AI')
         .option('--json', '输出机器可读结果；执行仍需 --yes')
         .action(async (question, opts) => {
-          const pkgRoot = resolvePackageRoot()
-          const script = join(pkgRoot, 'scripts', 'vault_rag.py')
           const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
           requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
           const preview = {
@@ -717,23 +704,17 @@ export function registerKnowledge(program: Command): void {
           }
           const args = ['--top-k', String(topK), '--line', opts.line]
           if (opts.json) args.push('--json')
-          const { execFile } = await import('child_process')
-          const { promisify } = await import('util')
-          try {
-            const { stdout } = await promisify(execFile)(getPythonCommand(), [script, ...args], {
-              timeout: 120_000,
-              maxBuffer: 5 * 1024 * 1024,
-              env: {
-                ...pythonProcessEnv(opts.apiKey),
-                WEFLOW_VAULT_QUESTION: question,
-              },
-            })
-            console.log(stdout)
-          } catch (error) {
-            if (opts.json) console.log(JSON.stringify({ success: false, code: 'VAULT_RAG_FAILED', error: safeSubprocessError(error) }))
-            else console.error(chalk.red(`\n✗ ${safeSubprocessError(error)}`))
-            process.exit(1)
-          }
+          const stdout = await runPythonScript('scripts/vault_rag.py', args, {
+            json: opts.json,
+            code: 'VAULT_RAG_FAILED',
+            timeout: 120_000,
+            maxBuffer: 5 * 1024 * 1024,
+            env: {
+              ...pythonProcessEnv(opts.apiKey),
+              WEFLOW_VAULT_QUESTION: question,
+            },
+          })
+          console.log(stdout)
         })
     )
 

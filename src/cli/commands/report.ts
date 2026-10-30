@@ -2,11 +2,8 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import inquirer from 'inquirer'
-import { join } from 'path'
 import { configService } from '../../services/configService.js'
-import { getPythonCommand } from '../../utils/python.js'
-import { safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, pythonProcessEnv } from '../context.js'
+import { pythonProcessEnv, runPythonScript } from '../context.js'
 
 export function registerReport(program: Command): void {
 
@@ -67,34 +64,25 @@ program
       process.exit(1)
     }
 
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const pkgRoot = resolvePackageRoot()
-    const script = join(pkgRoot, 'scripts', 'chat_report.py')
-
-    const args: string[] = [script]
+    const args: string[] = []
     if (opts.month) args.push('--month', opts.month)
     if (opts.fromWhitelist) args.push('--from-whitelist')
     if (noAi) args.push('--no-ai')
     if (opts.output) args.push('--output', opts.output)
 
-    try {
-      if (!opts.json) console.log(chalk.cyan('正在生成月报...\n'))
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 600_000,
-        maxBuffer: 50 * 1024 * 1024,
-        env: {
-          ...pythonProcessEnv(opts.apiKey),
-          ...(talkers.length > 0 ? { WEFLOW_REPORT_TALKERS: JSON.stringify(talkers) } : {}),
-        },
-      })
-      if (opts.json) console.log(JSON.stringify({ success: true, action: 'report.generate' }))
-      else console.log(stdout)
-    } catch (e: any) {
-      if (opts.json) console.log(JSON.stringify({ success: false, code: 'REPORT_FAILED', error: safeSubprocessError(e, '生成失败') }))
-      else console.error(chalk.red(`\n✗ ${safeSubprocessError(e, '生成失败')}`))
-      process.exit(1)
-    }
+    if (!opts.json) console.log(chalk.cyan('正在生成月报...\n'))
+    const stdout = await runPythonScript('scripts/chat_report.py', args, {
+      json: opts.json,
+      code: 'REPORT_FAILED',
+      label: '生成失败',
+      timeout: 600_000,
+      maxBuffer: 50 * 1024 * 1024,
+      env: {
+        ...pythonProcessEnv(opts.apiKey),
+        ...(talkers.length > 0 ? { WEFLOW_REPORT_TALKERS: JSON.stringify(talkers) } : {}),
+      },
+    })
+    if (opts.json) console.log(JSON.stringify({ success: true, action: 'report.generate' }))
+    else console.log(stdout)
   })
 }

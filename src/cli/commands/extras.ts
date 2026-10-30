@@ -1,10 +1,8 @@
 // 由 bin/weflow-cli.ts 拆分而来：命令注册逻辑，行为保持不变。
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { join } from 'path'
-import { getPythonCommand } from '../../utils/python.js'
-import { createPythonProcessEnv, safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot } from '../context.js'
+import { createPythonProcessEnv } from '../../utils/pythonProcessEnv.js'
+import { runPythonScript } from '../context.js'
 
 export function registerExtras(program: Command): void {
 
@@ -40,33 +38,24 @@ program
       console.error(chalk.red(`✗ kind 必须是 ${kindsList}`))
       process.exit(1)
     }
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'wechat_extras.py')
-    const args = [script, kind, ...(opts.unread ? ['--unread'] : [])]
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), args, {
-        timeout: 180_000, maxBuffer: 64 * 1024 * 1024,
-        // 库路径走环境变量（D-020 的规矩：不给 argv）
-        env: createPythonProcessEnv(opts.db ? { WEFLOW_EXTRAS_DB: String(opts.db) } : {}),
-      })
-      const payload = JSON.parse(stdout.slice(stdout.indexOf('{')))
-      if (opts.json) { console.log(JSON.stringify(payload)); if (!payload.success) process.exit(1); return }
-      if (!payload.success && !Object.keys(payload.results || {}).length) {
-        console.error(chalk.red(`✗ ${Object.values(payload.errors || {}).join('；') || '读取失败'}`))
-        process.exit(1)
-      }
-      for (const [name, data] of Object.entries<any>(payload.results || {})) {
-        printExtrasBlock(name, data)
-      }
-      for (const [name, error] of Object.entries<any>(payload.errors || {})) {
-        console.error(chalk.yellow(`⚠ ${name}: ${error}`))
-      }
-    } catch (e: any) {
-      if (opts.json) { console.log(JSON.stringify({ success: false, code: 'EXTRAS_FAILED', error: safeSubprocessError(e) })); process.exit(1) }
-      console.error(chalk.red(`✗ ${safeSubprocessError(e)}`))
+    const args = [kind, ...(opts.unread ? ['--unread'] : [])]
+    const stdout = await runPythonScript('scripts/wechat_extras.py', args, {
+      json: opts.json, code: 'EXTRAS_FAILED', prefix: '✗ ',
+      timeout: 180_000, maxBuffer: 64 * 1024 * 1024,
+      // 库路径走环境变量（D-020 的规矩：不给 argv）
+      env: createPythonProcessEnv(opts.db ? { WEFLOW_EXTRAS_DB: String(opts.db) } : {}),
+    })
+    const payload = JSON.parse(stdout.slice(stdout.indexOf('{')))
+    if (opts.json) { console.log(JSON.stringify(payload)); if (!payload.success) process.exit(1); return }
+    if (!payload.success && !Object.keys(payload.results || {}).length) {
+      console.error(chalk.red(`✗ ${Object.values(payload.errors || {}).join('；') || '读取失败'}`))
       process.exit(1)
+    }
+    for (const [name, data] of Object.entries<any>(payload.results || {})) {
+      printExtrasBlock(name, data)
+    }
+    for (const [name, error] of Object.entries<any>(payload.errors || {})) {
+      console.error(chalk.yellow(`⚠ ${name}: ${error}`))
     }
   })
 

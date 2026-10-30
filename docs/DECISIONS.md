@@ -1782,7 +1782,7 @@ which is what the gate is for.
 **Reason: 薄的正文不该逼用户自己放弃，但也不该默认去打扰上游。** 实测那条的日报 md 只有 201 字
 （好文回顾类文章 md 本身就短），抓回来是完整摘要与结论（2013—2022 年陕西 PM2.5 年均浓度从 56.02 µg/m³ 降下来、
 主控因子按高程/相对湿度/温度/人口密度排序）。三条边界是**故意的**：
-- **默认关**：检索不该默认产生对上游的请求（`docs/NEXT_ACTIONS.md` 点过名的规矩）；
+- **默认关**：检索不该默认产生对上游的请求（项目早期行动建议里点过名的规矩，现由本决策承载）；
 - **有上限**：一次最多抓 3 条，避免"一次检索打十个请求"。与日报的 8–12 秒批量节流不同 ——
   那是几百篇的礼貌，这是几条的按需，**这个差异是刻意的**，不是漏了节流；
 - **只抓薄的**：本地已经 3,020 字的那条在这趟里没被碰（实测验过）。
@@ -2043,12 +2043,12 @@ region`，于是"重排"只在 stderr 打一行 WARN（CLI 还不转发子进程
 省下的是那 145 篇。反向那一半是成立的：日报跑过的天，回填重跑时不再打扰上游。
 
 想让它真的全命中，得让回填**也**去取那些本不需要取的正文——那是**增加对上游的请求**，而
-`docs/NEXT_ACTIONS.md` 明确说过不要"通过改变默认行为造成额外请求"，所以默认不这么做；要做就做一个显式开关
+项目早期的行动建议明确说过不要"通过改变默认行为造成额外请求"，所以默认不这么做；要做就做一个显式开关
 （例如 `--prefetch-all`），由使用者决定。**这项没做**，留在这里当已知边界。
 
 **Consequences.**
 - 缓存只代表"曾经成功抓到过"，**不代表正文是最新的**：源站改稿不会反映到缓存里。要刷新只能显式
-  `--no-fetch-cache`；默认行为不为"可能过期"付费（这是 `docs/NEXT_ACTIONS.md` 点名的取舍）。
+  `--no-fetch-cache`；默认行为不为"可能过期"付费（这是项目早期行动建议里点名的取舍，现由本决策承载）。
 - `output/.cache/fetch/` 从此是两条线共用的状态。删掉它只影响耗时（各自退回"要重新抓"），不影响产出内容。
 - **抓取失败与"正文本来就短"从此分开记**：`.articles.json` 多一个可选键 `fetchFailed`（该轮抓取失败的篇数），
   `day_done` 据此判那天**没做完** ⇒ 下次重跑只重试失败的篇，成功的那批走缓存。它与另两个标记
@@ -4455,3 +4455,41 @@ Markdown；**只有 OCR 后的文字**（截断到 3000 字，与文章线同量
 - 上游仍是"npm 锁 + 单文件入口"，本 fork 仍是"pnpm + 分模块"。下次同步会在同一批文件上
   再冲突一次，按这四条重演即可：`bin/weflow-cli.ts` 取 fork 的入口，上游新增的块落到模块。
 - 合并前的状态留在分支 `backup/pre-upstream-sync-20261028`，出问题可整支回退。
+
+## D-138: CLI 的 Python 子进程收敛到一处，冗余文件与零引用依赖一并清掉
+
+**Status:** Active
+
+**Context.** `src/cli/` 拆分（D-134）之后，14 个命令文件里各自抄了一遍
+`promisify(execFile)` + `try/catch` + `process.exit(1)` + `console.error`，失败呈现已经出现细微
+差别：有的带 `✗ ` 前缀，有的换行，有的在 `--json` 下仍打散行。这不是风格问题 ——
+`test/json-error-surface.test.ts` 专门盯“`--json` 时 stdout 只有一份 JSON”，任何一处手抄都会让
+机器模式坏掉，而坏掉时测试是唯一会喊的东西。
+
+**Decision.** 三个方向，各自有边界：
+
+- **Python 子进程统一走 `src/cli/context.ts`**：`execPython` 负责进程与环境，`runPythonScript` /
+  `capturePythonScript` 负责读结果的两种形状，失败呈现统一由 `reportPythonFailure` 决定
+  （`safeSubprocessError` 打底，`--json` 下再给一份对象）。每个命令的 `code` / `label` / 前缀通过
+  `PythonRunOptions` 传入而**不共享** —— 共用一套失败文案会把“这个命令的失败”讲成“那个命令的失败”。
+- **`runPythonCmd` / `runPython` 只做薄封装，不合并**：`knowledge.ts` 的 vault search 仍需字面调用
+  （`test/vault-search-cli.test.ts` 静态断言这一行），且两者 cwd 语义不同（一个把包根拼进脚本路径，
+  一个用调用方给的相对路径），合并就会改行为。
+- **非 Python 的 `execFile` 不动**：`knowledge.ts` 里 git vault sync 调的是 git，不是 Python，共用
+  Python 的失败措辞只会更难读。
+- **依赖只删零引用**：`@wenyan-md/core`、`css-tree`、`form-data-encoder`、`formdata-node`、
+  `front-matter`、`highlight.js`、`marked`、`marked-highlight`；`jsdom` 移到 `devDependencies`
+  （只有测试用）。删之前先用三个确实在用的图标做正向对照，确认“零引用”不是搜索落空造成的。
+
+**Consequences.**
+- `pnpm run build` 通过；`pnpm test` 985 条（978 通过 / 0 失败 / 7 跳过）。顶层 `--help` 与改动前
+  一致：`src/cli/program.ts` 未改，diff 里也没有 `.command(` / `.option(` / `.action(` / `.alias(`
+  的增删，所以命令顺序与选项集合是结构上相同的，不只是输出看起来像。
+- 删掉 `scripts/_batch_link_sources.py`、`scripts/inspection_records.py`、根目录与 `docs/images/`
+  的两张架构 PNG、`plan.md`、`IMPLEMENTATION_PLAN.md`、`docs/NEXT_ACTIONS.md`。文档里指向后三者
+  的句子改成“项目早期的行动建议”，`.gitignore` 里那条已删文件的白名单一并去掉；架构图保留 SVG
+  一份 —— 当前没有引用，留着是因为它还能改，PNG 是生成物。
+- 一条测试跟着改：`test/graph-3d-cli.test.ts` 的源码形状断言从 `const args = [script,` 改成
+  `const args = [`，断言意图（`--min-degree` / `--line` 真的被透传）没有变。
+- 以后新增 Python 子进程调用不要手抄 `execFile`：加一组 `PythonRunOptions` 就够。要重新引入上面
+  那批依赖，先说明它被谁用。

@@ -56,21 +56,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@wenyan-md/core": "^3.0.10",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
-    "css-tree": "^3.2.1",
     "exceljs": "^4.4.0",
-    "form-data-encoder": "^4.1.0",
-    "formdata-node": "^6.0.3",
-    "front-matter": "^4.0.2",
     "fzstd": "^0.1.1",
-    "highlight.js": "^11.11.1",
     "inquirer": "^13.4.3",
-    "jsdom": "^27.4.0",
     "koffi": "^2.9.0",
-    "marked": "^18.0.4",
-    "marked-highlight": "^2.2.4",
     "qrcode-terminal": "^0.12.0"
   },
   "optionalDependencies": {
@@ -80,6 +71,7 @@
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
     "electron": "^42.0.1",
+    "jsdom": "^27.4.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
   },

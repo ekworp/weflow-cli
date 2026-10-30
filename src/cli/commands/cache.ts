@@ -1,10 +1,7 @@
 // 由 bin/weflow-cli.ts 拆分而来：命令注册逻辑，行为保持不变。
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { join } from 'path'
-import { getPythonCommand } from '../../utils/python.js'
-import { createPythonProcessEnv, safeSubprocessError } from '../../utils/pythonProcessEnv.js'
-import { resolvePackageRoot, parseCliInteger } from '../context.js'
+import { runPythonScript, parseCliInteger } from '../context.js'
 
 export function registerCache(program: Command): void {
 
@@ -21,28 +18,15 @@ cacheProgram
   .description('查看缓存状态')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'manage_cache.py')
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), [script, 'status', ...(opts.json ? ['--json'] : [])], {
-        timeout: 30_000, maxBuffer: 1024 * 1024,
-        env: createPythonProcessEnv(),
-      })
-      if (opts.json) {
-        const result = JSON.parse(stdout)
-        console.log(JSON.stringify(result))
-      } else {
-        console.log(stdout.trim())
-      }
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({ success: false, error: safeSubprocessError(e) }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`✗ ${safeSubprocessError(e)}`))
-      process.exit(1)
+    const stdout = await runPythonScript('scripts/manage_cache.py', ['status', ...(opts.json ? ['--json'] : [])], {
+      json: opts.json, prefix: '✗ ',
+      timeout: 30_000, maxBuffer: 1024 * 1024,
+    })
+    if (opts.json) {
+      const result = JSON.parse(stdout)
+      console.log(JSON.stringify(result))
+    } else {
+      console.log(stdout.trim())
     }
   })
 
@@ -109,28 +93,15 @@ cacheProgram
   .description('清空所有缓存')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'manage_cache.py')
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), [script, 'clear', ...(opts.json ? ['--json'] : [])], {
-        timeout: 30_000, maxBuffer: 1024 * 1024,
-        env: createPythonProcessEnv(),
-      })
-      if (opts.json) {
-        const result = JSON.parse(stdout)
-        console.log(JSON.stringify(result))
-      } else {
-        console.log(stdout.trim())
-      }
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({ success: false, error: safeSubprocessError(e) }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`✗ ${safeSubprocessError(e)}`))
-      process.exit(1)
+    const stdout = await runPythonScript('scripts/manage_cache.py', ['clear', ...(opts.json ? ['--json'] : [])], {
+      json: opts.json, prefix: '✗ ',
+      timeout: 30_000, maxBuffer: 1024 * 1024,
+    })
+    if (opts.json) {
+      const result = JSON.parse(stdout)
+      console.log(JSON.stringify(result))
+    } else {
+      console.log(stdout.trim())
     }
   })
 
@@ -139,24 +110,11 @@ cacheProgram
   .description('列出所有缓存文件')
   .option('--json', '输出 JSON 格式')
   .action(async (opts) => {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'manage_cache.py')
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), [script, 'list', ...(opts.json ? ['--json'] : [])], {
-        timeout: 30_000, maxBuffer: 1024 * 1024,
-        env: createPythonProcessEnv(),
-      })
-      console.log(stdout.trim())
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({ success: false, error: safeSubprocessError(e) }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`✗ ${safeSubprocessError(e)}`))
-      process.exit(1)
-    }
+    const stdout = await runPythonScript('scripts/manage_cache.py', ['list', ...(opts.json ? ['--json'] : [])], {
+      json: opts.json, prefix: '✗ ',
+      timeout: 30_000, maxBuffer: 1024 * 1024,
+    })
+    console.log(stdout.trim())
   })
 
 cacheProgram
@@ -165,28 +123,15 @@ cacheProgram
   .option('--json', '输出 JSON 格式')
   .action(async (days: string, opts) => {
     const daysNum = parseCliInteger(days, 'days', 1, 36_500, opts.json)
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const script = join(resolvePackageRoot(), 'scripts', 'manage_cache.py')
-    try {
-      const { stdout } = await execFileAsync(getPythonCommand(), [script, 'prune', String(daysNum), ...(opts.json ? ['--json'] : [])], {
-        timeout: 30_000, maxBuffer: 1024 * 1024,
-        env: createPythonProcessEnv(),
-      })
-      if (opts.json) {
-        const result = JSON.parse(stdout)
-        console.log(JSON.stringify(result))
-      } else {
-        console.log(stdout.trim())
-      }
-    } catch (e: any) {
-      if (opts.json) {
-        console.log(JSON.stringify({ success: false, error: safeSubprocessError(e) }))
-        process.exit(1)
-      }
-      console.error(chalk.red(`✗ ${safeSubprocessError(e)}`))
-      process.exit(1)
+    const stdout = await runPythonScript('scripts/manage_cache.py', ['prune', String(daysNum), ...(opts.json ? ['--json'] : [])], {
+      json: opts.json, prefix: '✗ ',
+      timeout: 30_000, maxBuffer: 1024 * 1024,
+    })
+    if (opts.json) {
+      const result = JSON.parse(stdout)
+      console.log(JSON.stringify(result))
+    } else {
+      console.log(stdout.trim())
     }
   })
 }
