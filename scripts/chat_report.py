@@ -18,11 +18,12 @@ from pathlib import Path
 from collections import defaultdict, Counter
 
 try:
-    from sqlcipher3 import dbapi2 as sqlcipher
+    import sqlcipher3  # noqa: F401  — 只做"装没装"的快速判断，真正连接在 _db.open_db 里
 except ImportError:
     print("请安装: pip install sqlcipher3"); sys.exit(1)
 
 from _utils import load_config, decrypt_lock, get_db_config, call_deepseek
+from _db import open_db, get_name_map
 
 OUTPUT_ROOT = 'output'
 AI_DELAY = (2, 4)  # AI 调用间隔 (min, max) 秒
@@ -34,15 +35,6 @@ TASK_KEYWORDS = ['帮忙', '做一下', '问个', '帮我', '麻烦', '有空吗
                  '?', '？']
 
 # ====== Database ======
-
-def open_db(db_path, key_hex, salt_hex):
-    raw_key = f"x'{key_hex}{salt_hex}'"
-    conn = sqlcipher.connect(db_path)
-    c = conn.cursor()
-    c.execute(f'PRAGMA key = "{raw_key}";')
-    c.execute("SELECT count(*) FROM sqlite_master")
-    return conn
-
 
 def get_sessions(conn):
     """Get active chat sessions from Name2Id (NT format)."""
@@ -56,20 +48,6 @@ def get_sessions(conn):
     # Fallback: scan Msg_ tables
     c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'")
     return [{'username': t, 'table': t} for t in [r[0] for r in c.fetchall()]]
-
-
-def get_name_map(contact_db, contact_key, contact_salt):
-    name_map = {}
-    if not contact_db or not contact_key or not os.path.exists(contact_db):
-        return name_map
-    try:
-        conn = open_db(contact_db, contact_key, contact_salt)
-        c = conn.cursor()
-        c.execute("SELECT username, COALESCE(NULLIF(remark,''), NULLIF(nick_name,''), username) FROM contact")
-        for r in c.fetchall(): name_map[r[0]] = r[1]
-        conn.close()
-    except: pass
-    return name_map
 
 
 def get_messages(conn, talker, start_ts, end_ts, sender_map, name_map, own_wxid):

@@ -10,10 +10,6 @@ const require = createRequire(import.meta.url)
 //数据服务初始化错误信息，用于帮助用户诊断问题
 let lastDllInitError: string | null = null
 
-export function getLastDllInitError(): string | null {
-  return lastDllInitError
-}
-
 export class WcdbCore {
   private resourcesPath: string | null = null
   private userDataPath: string | null = null

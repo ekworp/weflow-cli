@@ -103,11 +103,6 @@ export function listThemes(): { id: string; name: string; description: string }[
   }));
 }
 
-/** 获取单个主题配置 */
-export function getTheme(id: string): ThemeConfig | undefined {
-  return THEMES[id];
-}
-
 /** HTML 实体转义 */
 function escapeHtml(text: string): string {
   const map: Record<string, string> = {

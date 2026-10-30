@@ -4533,3 +4533,50 @@ Markdown；**只有 OCR 后的文字**（截断到 3000 字，与文章线同量
 - 没有拆 `src/core/wcdbCore.ts`（4553 行是**一个类**，`this.lib` / `this.handle` 是原生 DLL 的
   状态，拆文件等于拆类）与 Python 入口脚本（TS 侧 58 处按路径调用，只能做“薄入口 + 包”，
   这是另一件事）。
+## D-140: 日报页面模板移到 `resources/biz-daily/article.html`
+
+**Status:** Active
+
+**Context.** `generate_html.py` 生成 `article.html` 时从 `output/biz-daily/.template/article.html` 复制页面骨架，
+模板缺失就走 `generate_article_viewer()` 现拼一份。这个位置有两个问题叠在一起：`output/` 在 `.gitignore` 里
+（当时靠一行 `!output/biz-daily/.template/` 例外把它留在仓库），而发布用的 `package.json` 的 `files` 列了
+`resources/`、`dist/`、`scripts/**/*.py`，**没有 `output/`**。所以从 npm 装出来的包从来不带模板，每次都静默
+走兜底分支；本机因为归档目录一直在，看不出来。
+
+**Decision.** 模板移到 `resources/biz-daily/article.html`（`resources/` 已在 `files` 里），`generate_html.py`
+改成读 `PROJECT_ROOT/resources/biz-daily/article.html`；`.gitignore` 里的例外删掉，`output/` 恢复整目录忽略。
+
+**Consequences.** 模板随包发布，干净安装不再落到兜底分支；兜底分支保留（模板真丢了也不至于崩，只是页面变简版）。
+`OPERATIONS.md` 里"372 个日期目录里还有 1 个 `.template`"那句跟着改成模板的新位置。仓库里因此少一条
+`output/` 例外——`output/` 是归档，不该再有任何被跟踪的文件。
+
+## D-141: 微信库连接收敛到 `scripts/_db.py`（懒加载 sqlcipher）
+
+**Status:** Active
+
+**Context.** `open_db`（`PRAGMA key = "x'<key><salt>'"` 加一次 `sqlite_master` 探测）与
+`get_name_map`（contact 库 → `{username: 备注名/昵称/username}`）在 `annual_report` / `chat_report` /
+`chat_stats` / `extract_todos` / `mcp_bridge` 里各有一份。改一处漏四处的风险，正是这个仓库反复吃过的亏
+（同名函数、同一份清单写在两个文件里，见 `docs/PROJECT_STATE.md` 里那次 `scripts/*.py` 扫描）。
+
+**Decision.** 两份函数搬进 `scripts/_db.py`，五个脚本改成 `from _db import open_db, get_name_map`。
+
+- **不放进 `_utils.py`**：`_utils` 被 50 多个脚本 import，而它本身不依赖 sqlcipher。把连接函数放进去，等于让
+  所有脚本在 import 时都要求装 sqlcipher3——那会把"根本不需要数据库的命令"也一起拖下水。
+- **`from sqlcipher3 import dbapi2` 放在 `open_db` 内部**（`extract_todos` 一直是这么写的），缺依赖时抛
+  `RuntimeError('请安装: pip install sqlcipher3')`，与原来逐字相同。
+- 四个脚本保留模块级的"装没装"快速判断（`import sqlcipher3  # noqa: F401`），失败时照旧给出 JSON 或一行
+  提示后 `sys.exit(1)`——那是给人看的，和 `open_db` 的懒加载不冲突。
+- `semantic_search.py` **不并入**：它的同名函数多一个 `use_cache=False` 参数、背后有另一套缓存，签名不同就
+  不是同一件事。
+
+**Consequences.**
+
+- `scripts/` 里 `get_name_map` 只剩两份（`_db.py` 与 `semantic_search.py`，签名不同），`open_db` 三份
+  （多一个 `media_index.py` 的 `open_db(cfg)`，语义完全不同）。
+- 之前把这件事记成"暂缓"的理由是：测试在 **import 时**给 `sqlcipher3` 打桩，懒加载会把它推到 **调用时**、
+  跑出补丁范围，从而用真驱动去开纯 SQLite 夹具。实测这条担心不成立：`_db.py` 模块级只 import `os`，桩在
+  调用时照样解析得到；把 `sqlcipher3` 桩成 `sqlite3` 后 `open_db` / `get_name_map` 都能读完一个纯 SQLite
+  夹具。`biz_message_db_test`（读 `chat_stats` / `mcp_bridge` 源码）、`extract_todos_list_test`（无桩加载）、
+  `topic_taxonomy_test`（import 时打桩）全部通过。
+- 新增脚本要连微信库时不要再抄：`from _db import open_db, get_name_map`。

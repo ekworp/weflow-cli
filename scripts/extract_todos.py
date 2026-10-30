@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import load_config, decrypt_lock, call_deepseek, get_api_key
+from _db import open_db, get_name_map
 from nt_common import decode_content
 
 TODOS_FILE = os.path.join(os.path.expanduser('~'), '.weflow-cli', 'todos.json')
@@ -40,37 +41,6 @@ TODO_EXTRACT_PROMPT = """你是一个任务提取助手。分析微信聊天记�
 {messages}
 
 请只返回 JSON 数组，不要其他内容。"""
-
-
-# ====== Database ======
-
-def open_db(db_path, key_hex, salt_hex):
-    try:
-        from sqlcipher3 import dbapi2 as sqlcipher
-    except ImportError as exc:
-        raise RuntimeError('请安装: pip install sqlcipher3') from exc
-    raw_key = f"x'{key_hex}{salt_hex}'"
-    conn = sqlcipher.connect(db_path)
-    c = conn.cursor()
-    c.execute(f'PRAGMA key = "{raw_key}";')
-    c.execute("SELECT count(*) FROM sqlite_master")
-    return conn
-
-
-def get_name_map(contact_db, contact_key, contact_salt):
-    name_map = {}
-    if not contact_db or not contact_key or not os.path.exists(contact_db):
-        return name_map
-    try:
-        conn = open_db(contact_db, contact_key, contact_salt)
-        c = conn.cursor()
-        c.execute("SELECT username, COALESCE(NULLIF(remark,''), NULLIF(nick_name,''), username) FROM contact")
-        for r in c.fetchall():
-            name_map[r[0]] = r[1]
-        conn.close()
-    except:
-        pass
-    return name_map
 
 
 def collect_recent_messages(conn, start_ts, end_ts, name_map, limit_per_session=50):

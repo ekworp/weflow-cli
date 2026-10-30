@@ -4,7 +4,6 @@
  */
 import inquirer from 'inquirer'
 import { chatService } from '../services/chatService.js'
-import type { ChatSession } from '../types.js'
 
 /**
  * 将用户输入解析为 talker (wxid)。
@@ -75,22 +74,4 @@ export async function resolveTalker(input: string, options: ResolveTalkerOptions
   }])
 
   return selected
-}
-
-/**
- * 批量为 wxid 列表查找 displayName。
- * 调用 chatService.listSessions 获取带昵称的会话列表。
- */
-export async function lookupDisplayNames(wxids: string[]): Promise<Map<string, string>> {
-  const sessions = await chatService.listSessions()
-  const nameMap = new Map<string, string>()
-  const sessionMap = new Map<string, ChatSession>()
-  for (const s of sessions) {
-    sessionMap.set(s.username, s)
-  }
-  for (const wxid of wxids) {
-    const s = sessionMap.get(wxid)
-    nameMap.set(wxid, s?.displayName || wxid)
-  }
-  return nameMap
 }

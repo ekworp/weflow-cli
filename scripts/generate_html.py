@@ -1673,9 +1673,9 @@ def main():
         generate_action_html(date_str, action_md_path, action_html_path)
         print(f'✓ 行动建议 HTML 生成完成: {action_html_path}')
 
-    # 生成 article.html — 从永久模板复制
+    # 生成 article.html — 从永久模板复制（模板随包发布，放在 resources/ 下，见 D-140）
     article_html_path = os.path.join(date_dir, 'article.html')
-    template = os.path.join(SOURCE_ROOT, '.template', 'article.html')
+    template = os.path.join(PROJECT_ROOT, 'resources', 'biz-daily', 'article.html')
     if os.path.exists(template):
         shutil.copy2(template, article_html_path)
     else:

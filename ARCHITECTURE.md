@@ -51,7 +51,7 @@ Node 原生层 src/core/                    Python 工作流 scripts/
 | `scripts/` | 59 个 Python 工作流（约 2.8 万行）：NT 数据读取与解密、知识卡（文章 / 聊天 / 收藏 / 自写笔记）、概念页编译与体检、日报与报告、搜索与 RAG、图谱页面、判断层与评测。 |
 | `mcp-server/` | 用**两种传输**暴露受控工具：stdio（默认）与 Streamable HTTP（`--http`，回环 `127.0.0.1:8790`，强制 Bearer token，含 DNS-rebinding 防护）。两种传输的工具表相同。 |
 | `test/` | Node 和 Python 回归测试（118 个文件：80 TS / 38 Python），优先使用合成数据。 |
-| `resources/` | 随包发布的只读资源：Electron 面板应用与吉祥物素材、`wcdb` / `wx_key` 原生 DLL、`js/graph3d`（2D/3D 图谱页面用的库，版本与许可记在同目录 `NOTICE.txt`）。 |
+| `resources/` | 随包发布的只读资源：Electron 面板应用与吉祥物素材、`wcdb` / `wx_key` 原生 DLL、`js/graph3d`（2D/3D 图谱页面用的库，版本与许可记在同目录 `NOTICE.txt`），以及日报页面骨架 `biz-daily/article.html`（D-140）。 |
 
 ## 主要数据流
 

@@ -38,6 +38,9 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   （CLI 会提示而不是静默忽略）。D-132。
 - **默认导出也能点击放大缩略图**：页面里加了 lightbox（点图片打开、点任意处或按 Esc 关闭）。
   没有原图时放大的是 `assets/thumbs/` 里的预览，所以这种情况下清晰度不会提高——要真清晰得加 `--save-originals`。
+- **修好"从 npm 装出来的包，日报网页总是简化版"**：页面模板原来放在归档目录
+  `output/biz-daily/.template/` 下，而发布的包里不含 `output/`，于是干净安装每次生成都走了兜底分支。
+  模板现在随包发布，位置是 `resources/biz-daily/article.html`。D-140。
 
 ## 1.21.4
 

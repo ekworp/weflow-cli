@@ -96,8 +96,6 @@ export function writeEvidencePackage(outputRoot: string, talker: string, message
   return { path: packagePath, manifest }
 }
 
-export const evidenceLegalNotice = LEGAL_NOTICE
-
 export function buildEvidenceReviewInput(talker: string, messages: Message[], mode: PrivacyMode, localInference: boolean): EvidenceReviewInput {
   let redactions = 0
   const safeMetadata = (value: string, fallback: string): string => {

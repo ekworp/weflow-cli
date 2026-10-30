@@ -17,13 +17,14 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 try:
-    from sqlcipher3 import dbapi2 as sqlcipher
+    import sqlcipher3  # noqa: F401  — 只做"装没装"的快速判断，真正连接在 _db.open_db 里
 except ImportError:
     print(json.dumps({"error": "请安装: pip install sqlcipher3"}))
     sys.exit(1)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import load_config, decrypt_lock, parse_frontmatter
+from _db import open_db, get_name_map
 from nt_common import decode_content
 
 OUTPUT_ROOT = 'output'
@@ -36,31 +37,6 @@ def json_output(data):
 
 
 # ====== Database ======
-
-def open_db(db_path, key_hex, salt_hex):
-    raw_key = f"x'{key_hex}{salt_hex}'"
-    conn = sqlcipher.connect(db_path)
-    c = conn.cursor()
-    c.execute(f'PRAGMA key = "{raw_key}";')
-    c.execute("SELECT count(*) FROM sqlite_master")
-    return conn
-
-
-def get_name_map(contact_db, contact_key, contact_salt):
-    name_map = {}
-    if not contact_db or not contact_key or not os.path.exists(contact_db):
-        return name_map
-    try:
-        conn = open_db(contact_db, contact_key, contact_salt)
-        c = conn.cursor()
-        c.execute("SELECT username, COALESCE(NULLIF(remark,''), NULLIF(nick_name,''), username) FROM contact")
-        for r in c.fetchall():
-            name_map[r[0]] = r[1]
-        conn.close()
-    except:
-        pass
-    return name_map
-
 
 def get_biz_keys(config):
     nt_db = config.get('ntDbPath', '')
