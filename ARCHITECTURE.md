@@ -20,7 +20,7 @@ CLI 入口 bin/weflow-cli.ts     mcp-server/index.ts     助手守护进程
 业务服务层  src/services/  <---------------+
   chat / contact / export / evidence / favorites / sns
   daily / vault / weread / assistant / config / privacy
-  assistantTools.ts ==== **助手与 MCP 共用同一张工具表**
+  assistantTools.ts（门面）→ services/tools/ ==== **助手与 MCP 共用同一张工具表**
                      |
           +----------+---------------------------+
           |                                      |
@@ -46,7 +46,7 @@ Node 原生层 src/core/                    Python 工作流 scripts/
 | --- | --- |
 | `bin/` | Commander 命令定义、参数校验和交互式菜单（113 处 `.command(`，含子命令）。 |
 | `src/core/` | 数据目录发现、数据库连接、密钥配置适配和客户端底层集成。 |
-| `src/services/` | 聊天、导出、证据包、日报、助手、白名单和隐私策略。`assistantTools.ts` 是助手与 MCP **共用**的工具表（31 个工具）。 |
+| `src/services/` | 聊天、导出、证据包、日报、助手、白名单和隐私策略。`src/services/tools/` 是助手与 MCP **共用**的工具表（31 个工具；`assistantTools.ts` 只做 re-export 门面，D-139）。 |
 | `src/panel/` | 本机面板的入口：回环 HTTP 服务（`127.0.0.1:8766`，每进程一个随机 token，写 `~/.weflow-cli/assistant_endpoint.json`）、Electron/Edge 启动决策、CLI 侧客户端。 |
 | `scripts/` | 59 个 Python 工作流（约 2.8 万行）：NT 数据读取与解密、知识卡（文章 / 聊天 / 收藏 / 自写笔记）、概念页编译与体检、日报与报告、搜索与 RAG、图谱页面、判断层与评测。 |
 | `mcp-server/` | 用**两种传输**暴露受控工具：stdio（默认）与 Streamable HTTP（`--http`，回环 `127.0.0.1:8790`，强制 Bearer token，含 DNS-rebinding 防护）。两种传输的工具表相同。 |
@@ -105,7 +105,7 @@ Vault promotion 默认不调用 AI；只有显式使用 `--with-ai` 并提供凭
 ```text
 MCP（stdio 或回环 HTTP） / 本机面板 / 官方 Bot 通道
   -> 白名单与隐私策略
-  -> 受控工具调用（助手与 MCP 共用 assistantTools.ts 那张表）
+  -> 受控工具调用（助手与 MCP 共用 `src/services/tools/` 那张表）
   -> 本地数据查询 / 可选云端模型
   -> 脱敏后的回复或工具结果
 ```

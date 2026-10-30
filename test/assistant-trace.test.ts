@@ -7,12 +7,12 @@
  * 1. 参数摘要**过脱敏、有截断**——它是唯一可能把聊天边角带进日志的地方；
  * 2. 微信里那条 `轨迹` **不许出现 userId**（账号标识没必要进聊天）；
  * 3. `producedContent` 那个约定（括号起头 = 没能给出内容）**边界是诚实的**：唯一的例外
- *    写在一张白名单里，而白名单里每一条都必须在 `assistantTools.ts` 里真的出现过——
+ *    写在一张白名单里，而白名单里每一条都必须在工具源码（`src/services/tools/`）里真的出现过——
  *    改措辞忘了同步就红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,7 +24,7 @@ mkdirSync(join(HOME, '.weflow-cli'), { recursive: true })
 const trace = await import('../src/services/assistantTrace.js')
 const tools = await import('../src/services/assistantTools.js')
 
-const SPEC_PATH = join(import.meta.dirname, '..', 'src', 'services', 'assistantTools.ts')
+const SPEC_DIR = join(import.meta.dirname, '..', 'src', 'services', 'tools')
 
 function turn(patch: Record<string, unknown> = {}) {
   return {
@@ -75,10 +75,16 @@ test('括号起头 = 工具没能给出内容；白名单里的成功消息不�
     '成功的句子也可以是括号起头，所以它得在白名单里')
 })
 
-test('白名单里每一条都必须在 assistantTools.ts 里真的出现过', () => {
+test('白名单里每一条都必须在工具源码里真的出现过', () => {
   // 这条是这个约定唯一的护栏：白名单是手写的，模型改了措辞而白名单没跟上，
   // 就会静默地多标一个/少标一个「无内容」。测试扫源码，让那种漂移当场变红。
-  const source = readFileSync(SPEC_PATH, 'utf8')
+  // 2026-10-30 起工具实现拆在 `src/services/tools/`：扫整个目录，而不是某一个文件。
+  const source = readdirSync(SPEC_DIR)
+    .filter(name => name.endsWith('.ts'))
+    .map(name => readFileSync(join(SPEC_DIR, name), 'utf8'))
+    .join('\n')
+  // 读不到文件时 `includes` 会全假 ⇒ 上面那条会红；但空目录会先在这里红，说明原因。
+  assert.ok(source.length > 1000, `工具源码没读到（${SPEC_DIR}）`)
   for (const prefix of tools.PAREN_SUCCESS_PREFIXES) {
     const literal = prefix.slice(1).split('${')[0]     // 去掉开括号、去掉插值
     assert.ok(source.includes(literal), `白名单里的「${prefix}」在工具源码里找不到对应写法`)

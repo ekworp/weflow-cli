@@ -24,14 +24,14 @@ not read configuration, databases or arbitrary files directly, and must be disab
 
 ## Recipe A - a new assistant tool
 
-The most common extension. All of it is in `src/services/assistantTools.ts` unless noted.
+The most common extension. All of it is in `src/services/tools/` unless noted.
 
 | Step | Where | If you skip it |
 | --- | --- | --- |
-| 1. Declare it | `TOOL_DEFS` | The model never sees it - dead code. A test fails. |
-| 2. Implement it | `executeTool`, one `case '<name>':` | The model sees it, calls it, and gets `(未知工具: <name>)`. A test fails. |
+| 1. Declare it | `TOOL_DEFS` in `registry.ts` | The model never sees it - dead code. A test fails. |
+| 2. Implement it | A `handle<Name>(args, ctx)` function in the matching domain file (e.g. `sessions.ts`), then register it in `TOOL_HANDLERS` (`dispatch.ts`) | The model sees it, calls it, and gets `(未知工具: <name>)`. A test fails. |
 | 3. Config prerequisite (only if it cannot run without a key) | `TOOL_REQUIREMENTS` - one entry, `{ key, why }` | The tool is offered on machines where it cannot work. That is the failure this project already measured once: a model tried both search tools, both errored, and the answer said "both search tools are broken". |
-| 4. Cloud egress (only if user data leaves the machine) | In the handler: `if (ctx.requiresConfirm && args.confirm !== true) return confirmPreview(...)`; then claim it in `src/cli/commands/capabilities.ts` under `safety.mcpSurface.callsCloudModels` **and** `requiresConfirm` | An external MCP caller sends the user's data with no preview. Tests fail - the assertion counts `ctx.requiresConfirm` occurrences in the source, so it cannot drift from the field. |
+| 4. Cloud egress (only if user data leaves the machine) | In the handler: `if (ctx.requiresConfirm && args.confirm !== true) return confirmPreview(...)`; then claim it in `src/cli/commands/capabilities.ts` under `safety.mcpSurface.callsCloudModels` **and** `requiresConfirm` | An external MCP caller sends the user's data with no preview. Tests fail - the assertion counts `ctx.requiresConfirm` occurrences in the handler bodies, so it cannot drift from the field. |
 | 5. Keep it off MCP (only if it cannot do its job over that transport) | `MCP_EXCLUDED` - one entry whose **value is the reason** | It is advertised on a transport where it silently cannot work (`look_at_image` is the worked example). |
 | 6. Coverage note | The header of `test/assistant-tools-branches.test.ts` states how many tools are executed; update it | The coverage claim becomes false while still reading as true. |
 
@@ -40,7 +40,7 @@ Notes that are easy to get wrong:
 - **The description is the interface.** The model decides whether to call the tool from the description alone - keep it
   a sentence about *when* to use it, not a restatement of the name.
 - **`parameters` must be a JSON-schema `object`.** An empty `properties` is fine for a no-argument tool.
-- **Failures are `(...)`**, successes are not. `producedContent()` in the same file reads that convention, and the
+- **Failures are `(...)`**, successes are not. `producedContent()` in `runtime.ts` reads that convention, and the
   trace uses it. A success message that starts with a bracket has to be added to `PAREN_SUCCESS_PREFIXES` or it will be
   reported as "no content".
 - **MCP needs no change.** The MCP surface is *derived* from `TOOL_DEFS` (`MCP_TOOL_DEFS`) - adding a tool adds it to

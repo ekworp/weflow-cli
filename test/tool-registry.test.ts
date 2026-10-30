@@ -9,24 +9,24 @@
  * 这个文件就是照这个仓库吃过的亏写的（2026-09-25：`capabilities` 里的 `requiresConfirm` 少报了
  * 三个工具，而它的断言是照着字段的值抄的，于是字段和测试一起错、谁都不响）。所以这里的做法一律是
  * **从源码里数**，不是把当前的值再抄一遍。
+ *
+ * 2026-10-30：`executeTool` 那个 1100 行的 switch 拆成了 `src/services/tools/` 下的 handler 表，
+ * 所以"实现了哪些工具"改成直接读 `TOOL_HANDLERS` 的键 —— 同一件事，但不再依赖某个文件的形状。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { MCP_EXCLUDED, MCP_TOOL_DEFS, TOOL_DEFS, TOOL_REQUIREMENTS } from '../src/services/assistantTools.js'
+import { MCP_EXCLUDED, MCP_TOOL_DEFS, TOOL_DEFS, TOOL_HANDLERS, TOOL_REQUIREMENTS } from '../src/services/assistantTools.js'
 
 const read = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts), 'utf8')
-const toolsSource = read('src', 'services', 'assistantTools.ts')
 const mcpSource = read('mcp-server', 'index.ts')
 const mcpDoc = read('docs', 'MCP.md')
 
 const declared = TOOL_DEFS.map(tool => tool.function.name)
 
-/** `executeTool` 里出现的工具名。只取那个函数体内的 `case 'x':`，别把文件里其它 switch 算进来。 */
-const handled = [...toolsSource
-  .slice(toolsSource.indexOf('export async function executeTool'))
-  .matchAll(/^\s+case '([a-z_]+)':/gm)].map(match => match[1])
+/** 实现了的工具名。以前是扫 `assistantTools.ts` 里 `case 'x':` 的文本；现在是这张表的键。 */
+const handled = Object.keys(TOOL_HANDLERS)
 
 /** `mcp-server` 里手写的那批（`wechat.` 前缀） */
 const handWritten = [...mcpSource.matchAll(/name: '(wechat\.[a-z_]+)'/g)].map(match => match[1])

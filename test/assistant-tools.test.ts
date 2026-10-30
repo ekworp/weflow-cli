@@ -7,8 +7,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import {
   boundedToolInteger,
+  MCP_EXCLUDED,
   MCP_TOOL_DEFS,
   resolveUniqueTalker,
+  TOOL_HANDLERS,
 } from '../src/services/assistantTools.js'
 
 test('MCP assistant-tool subset contains no write operation', () => {
@@ -70,12 +72,11 @@ test('capability discovery tells the truth about the MCP surface', () => {
   // 逐个读 handler 才发现四个出境工具里写的是同一句 `if (ctx.requiresConfirm && args.confirm !== true)`
   // （1010 / 1041 / 1094 / 1170 行），而字段只列了其中一个：一个漏报的机器可读安全字段，
   // 和撒谎是同一件事。所以这条改成**从源码里数出来**，字段与代码不同步就红。
-  const toolSource = readFileSync(join(process.cwd(), 'src', 'services', 'assistantTools.ts'), 'utf8')
-  const chunks = toolSource.split(/case '([a-z_]+)': \{/).slice(1)
-  const gated: string[] = []
-  for (let i = 0; i < chunks.length; i += 2) {
-    if (chunks[i + 1].includes('ctx.requiresConfirm')) gated.push(chunks[i])
-  }
+  // 2026-10-30 拆文件之后，"每个 case 的函数体"= `TOOL_HANDLERS` 里那个 handler 自己的
+  // `toString()`：仍然是在数代码，只是不再依赖 `case 'x':` 这种写法。
+  const gated = Object.entries(TOOL_HANDLERS)
+    .filter(([, handler]) => handler.toString().includes('ctx.requiresConfirm'))
+    .map(([name]) => name)
   assert.deepEqual([...gated].sort(),
     [...capabilities.safety.mcpSurface.requiresConfirm].sort(),
     '机器调用默认只给预览的那些工具，字段必须与代码里真上了闸门的那几个一致')
@@ -88,9 +89,7 @@ test('capability discovery tells the truth about the MCP surface', () => {
   // `look_at_image`，第三次加 `set_todo_status` 时又漏了（2026-10-03 核对文档时才发现）。
   // 每次都是"表变了、这句话没变"，且没有任何东西会红。所以这里也从源码数 `MCP_EXCLUDED`
   // 的键，与那句话点名的名字**双向比对** —— 那张表再加一项而说明没跟上，这条就红。
-  const excludedBlock = /export const MCP_EXCLUDED[^{]*\{([\s\S]*?)\n\}/.exec(toolSource)
-  assert.ok(excludedBlock, '找不到 MCP_EXCLUDED 的定义')
-  const excluded = [...excludedBlock[1].matchAll(/^\s{2}([a-z_]+):/gm)].map((m) => m[1])
+  const excluded = Object.keys(MCP_EXCLUDED)
   // 解析本身的哨兵：数不出东西时下面那条 deepEqual 会因为两边都空而"通过"
   assert.ok(excluded.length >= 3, `MCP_EXCLUDED 只数出 ${excluded.length} 个键，解析可能失效`)
   const named = capabilities.safety.mcpSurface.derivedFrom
@@ -192,7 +191,7 @@ test('live MCP: 不带 confirm 调 draft_reply 绝不会产出草稿（边界走
     const text = String((result.content[0] as { text?: string }).text ?? '')
     assert.doesNotMatch(text, /建议这样回/, '没确认就不许产出草稿')
     // 隐私模式是**机器状态**：干净检出里默认就是 strict，起草那一步会先回一句"正文不出境"
-    // （`assistantTools.ts:1845`），走不到"预览"那一支。所以这里认的是"**一句事前拒绝**"，
+    // （`src/services/tools/draft.ts` 的隐私闸门），走不到"预览"那一支。所以这里认的是"**一句事前拒绝**"，
     // 而不是某一句话——上面那条才是真正的边界：走哪一支都不许产出草稿。
     assert.match(text, /预览|没找到|起草预览失败|隐私模式是 strict/, `既不是预览也不是本地查不到：${text.slice(0, 120)}`)
   } finally {

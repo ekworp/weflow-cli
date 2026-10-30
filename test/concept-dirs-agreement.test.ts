@@ -73,8 +73,8 @@ test('六个声明处对「概念页目录」的清单完全一致', () => {
     ['scripts/_utils.py（源头）', fromUtils],
     ['scripts/create_reading_notes.py（init 建的目录）', () => conceptsOnly(quoted(
       block(read('scripts', 'create_reading_notes.py'), 'VAULT_DIRS = [', ']', 'scripts/create_reading_notes.py')))],
-    ['src/services/assistantTools.ts（助手检索与概念邻居）', () => conceptsOnly(quoted(
-      block(read('src', 'services', 'assistantTools.ts'), 'const vaultDirs = (): string[] => {', '}', 'src/services/assistantTools.ts')))],
+    ['src/services/tools/paths.ts（助手检索与概念邻居）', () => conceptsOnly(quoted(
+      block(read('src', 'services', 'tools', 'paths.ts'), 'const vaultDirs = (): string[] => {', '}', 'src/services/tools/paths.ts')))],
     ['mcp-server/index.ts（MCP 的概念工具）', () => conceptsOnly(quoted(
       block(read('mcp-server', 'index.ts'), 'const VAULT_WIKI_DIRS = [', ']', 'mcp-server/index.ts')))],
     ['src/cli/commands/knowledge.ts（init 预览里建的目录）', () => conceptsOnly(quoted(
@@ -110,8 +110,8 @@ test('两条线的展示名：Python 一份、TS 一份，字必须一样', () =
   const py = pairs(block(read('scripts', '_utils.py'), 'LINE_LABELS = {', '}', 'scripts/_utils.py'))
   assert.deepEqual(py, { wiki: '文章线', chat: '聊天线' }, '_utils.LINE_LABELS 是这份清单的源头')
 
-  const ts = pairs(block(read('src', 'services', 'assistantTools.ts'),
-    'export const VAULT_LINE_LABELS', '}', 'src/services/assistantTools.ts'))
+  const ts = pairs(block(read('src', 'services', 'tools', 'paths.ts'),
+    'export const VAULT_LINE_LABELS', '}', 'src/services/tools/paths.ts'))
   // TS 那边用路径段做键（`Wiki`/`Chat`），Python 用线 id（`wiki`/`chat`）—— 小写之后必须一致，
   // 这样连"哪条线对应哪个名字"也一起钉住了，而不只是"名字出现的集合一样"。
   assert.deepEqual(ts, py, 'assistantTools.VAULT_LINE_LABELS 与 Python 那份不一致')

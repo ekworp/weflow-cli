@@ -4493,3 +4493,43 @@ Markdown；**只有 OCR 后的文字**（截断到 3000 字，与文章线同量
   `const args = [`，断言意图（`--min-degree` / `--line` 真的被透传）没有变。
 - 以后新增 Python 子进程调用不要手抄 `execFile`：加一组 `PythonRunOptions` 就够。要重新引入上面
   那批依赖，先说明它被谁用。
+
+## D-139: 工具层按领域拆到 `src/services/tools/`，`assistantTools.ts` 只留门面
+
+**Status:** Active
+
+**Context.** `assistantTools.ts` 有 2544 行，其中 `executeTool` 一个函数 1118 行、31 个 `case`。
+工具声明、MCP 可见面、可用性前置条件、抓网页、转录格式、概念图谱、运行时助手全挤在一个文件里；
+加一个工具要在同一个 `switch` 中间插一段，而“声明了却没有实现”只能靠一条**扫源码文本**的测试
+（`case 'x':` 正则）来抓。那条测试本身是必要的（2026-09-25 `capabilities.requiresConfirm` 少报过
+三个工具），但它把“工具是否正确接线”绑在了某一种代码形状上。
+
+**Decision.** 按领域拆成 `src/services/tools/`：
+
+- `registry.ts`：`TOOL_DEFS` / `MCP_EXCLUDED` / `MCP_TOOL_DEFS` / `TOOL_REQUIREMENTS` 与可用性函数。
+- `dispatch.ts`：`TOOL_HANDLERS`（工具名 → handler）与 `executeTool`。
+- 8 个辅助模块：`paths.ts`（目录与知识线）、`concepts.ts`（概念页图谱）、`types.ts`（公共类型）、
+  `images.ts`（来信图片）、`transcript.ts`（转录形态）、`html.ts`（抓取与正文抽取）、
+  `runtime.ts`（连库、解析会话名、参数校验、失败回话与展示标签）。
+- 11 个领域 handler 文件：`sessions` / `media` / `favorites` / `daily` / `sns` / `todos` /
+  `knowledge` / `draft` / `memory` / `skills` / `misc`。
+- `src/services/assistantTools.ts` 变成门面：只 re-export 原来那 35 个导出名，所以 6 个源文件与
+  12 个测试的 `from '../services/assistantTools.js'` 一行都不用改。
+
+**行为不变**：每个 `case` 的函数体原样搬进 `handle<Name>(args, ctx)`，只去掉 6 个空格缩进；
+`(未知工具: x)`、`ToolInputError → (参数错误: …)`、其余异常回一句“执行失败”都保留在 `executeTool`
+里，语义与顺序没有变。
+
+**测试的耦合点跟着换，但断言意图不变**：`test/tool-registry.test.ts` 的“实现了哪些工具”改成读
+`TOOL_HANDLERS` 的键；`test/assistant-tools.test.ts` 的 `requiresConfirm` 改成对 handler 的
+`toString()` 数 `ctx.requiresConfirm`（仍然是数代码，不抄字段值），`MCP_EXCLUDED` 直接 import；
+`test/concept-dirs-agreement.test.ts` 与 `test/assistant-trace.test.ts` 的源码路径改到 `tools/`。
+
+**Consequences.**
+- `pnpm run build` 通过；`pnpm test` 985 条（978 通过 / 0 失败 / 7 跳过），与拆分前一致。
+- 新增一个工具现在改三处：`registry.ts` 的 `TOOL_DEFS`、领域文件里的 `handle<Name>`、
+  `dispatch.ts` 的 `TOOL_HANDLERS`。“声明了没实现”与“实现了没声明”由 registry 测试直接比键
+  抓住，不再依赖正则扫某个文件。
+- 没有拆 `src/core/wcdbCore.ts`（4553 行是**一个类**，`this.lib` / `this.handle` 是原生 DLL 的
+  状态，拆文件等于拆类）与 Python 入口脚本（TS 侧 58 处按路径调用，只能做“薄入口 + 包”，
+  这是另一件事）。
