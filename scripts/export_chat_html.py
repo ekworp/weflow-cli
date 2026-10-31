@@ -511,8 +511,14 @@ def connect(db_path, key_hex, salt_hex):
     return conn, c
 
 
-def fetch_messages(conn, talker, date=''):
-    """Fetch all messages for a talker, ordered by time ascending."""
+def fetch_messages(conn, talker, date='', limit=0):
+    """Fetch messages for a talker, ordered by time ascending.
+
+    With a positive limit, read only the newest ``limit`` rows from this
+    shard.  The caller merges shards and applies the same limit once more, so
+    the result is still the globally newest N messages without loading an
+    entire long conversation into memory.
+    """
     tbl = 'Msg_' + hashlib.md5(talker.encode()).hexdigest()
     c = conn.cursor()
 
@@ -546,25 +552,33 @@ def fetch_messages(conn, talker, date=''):
                            for col in EXPORT_MESSAGE_COLUMNS)
     order = [col for col in MESSAGE_ANCHOR_COLUMNS
              if col in available]
-    order_sql = ' ORDER BY ' + ', '.join('"%s" ASC' % col for col in order) if order else ''
+    if order:
+        direction = 'DESC' if limit and limit > 0 else 'ASC'
+        order_sql = ' ORDER BY ' + ', '.join('"%s" %s' % (col, direction) for col in order)
+    else:
+        order_sql = ''
+    limit_sql = ' LIMIT ?' if limit and limit > 0 else ''
+    params = list(date_params)
+    if limit and limit > 0:
+        params.append(limit)
 
-    c.execute(f'SELECT {projection} FROM "{tbl}"{date_filter}{order_sql}', date_params)
+    c.execute(f'SELECT {projection} FROM "{tbl}"{date_filter}{order_sql}{limit_sql}', params)
 
     messages = []
-    batch = 0
     while True:
         rows = c.fetchmany(5000)
         if not rows:
             break
         for row in rows:
             messages.append(row)
-        batch += 1
         print(f"  Fetched {len(messages)}/{total}...")
 
+    if limit and limit > 0:
+        messages.reverse()
     return messages
 
 
-def fetch_messages_from_shards(db_path, key_hex, salt_hex, talker, date='', passphrase=''):
+def fetch_messages_from_shards(db_path, key_hex, salt_hex, talker, date='', passphrase='', limit=0):
     """Read and merge messages from every NT message shard."""
     # `discover_message_shards` 保证不返回空表，所以这里不需要再兜底——
     # 原先的 `if not shards: shards = [db_path]` 是给"可能返回空"的那一份实现擦屁股的。
@@ -576,7 +590,7 @@ def fetch_messages_from_shards(db_path, key_hex, salt_hex, talker, date='', pass
         try:
             shard_key, shard_salt = derive_database_key(shard, key_hex, salt_hex, passphrase)
             shard_conn, _ = connect(shard, shard_key, shard_salt)
-            messages.extend(fetch_messages(shard_conn, talker, date))
+            messages.extend(fetch_messages(shard_conn, talker, date, limit=limit))
         except Exception as exc:
             # **少读一个分片 = 导出里少一段聊天，而用户看到的是"导出成功"**。
             # 必须留下分片名与原因：只有知道是哪个分片，才分得清"这个分片本来就空"、
@@ -3261,6 +3275,38 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
 
+    # Read and bound the conversation before scanning account-wide media and
+    # auxiliary indexes.  With --limit, each shard returns only its newest N
+    # rows; the merge below still applies the global limit for correctness.
+    print(f"Connecting to {args.db}...")
+    _phase("connect")
+    conn, c = connect(args.db, args.key, args.salt)
+    print(f"Fetching messages for {args.talker}...")
+    _phase("before fetch")
+    messages = fetch_messages_from_shards(
+        args.db, args.key, args.salt, args.talker, args.date, args.passphrase,
+        limit=args.limit,
+    )
+
+    if args.limit and args.limit > 0 and len(messages) > args.limit:
+        print(f"Limiting to the most recent {args.limit} of {len(messages)} messages")
+        messages = messages[-args.limit:]
+
+    if not messages:
+        if args.date:
+            export_dir = create_export_dir(
+                args.out, export_directory_name(args.name or args.talker, args.talker))
+            filepath = os.path.join(export_dir, 'index.html')
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(build_empty_html(args.talker, args.date, args.name or args.talker))
+            print(f"No messages found for {args.date}; wrote empty date-scoped page")
+            print(json.dumps({"success": True, "total": 0, "parts": 1, "files": [filepath]}))
+            conn.close()
+            return
+        print("No messages found!")
+        conn.close()
+        sys.exit(1)
+
     # Scan NT cache for image thumbnails
     image_map = {}
     _phase("start")
@@ -3348,38 +3394,6 @@ def main():
         args.name = CONTACT_NAMES.get(args.talker, '')
         if args.name:
             print(f"Name: {args.name} (from contacts)")
-
-    # Connect
-    print(f"Connecting to {args.db}...")
-    _phase("cover init")
-    conn, c = connect(args.db, args.key, args.salt)
-
-    # Fetch messages
-    print(f"Fetching messages for {args.talker}...")
-    _phase("before fetch")
-    messages = fetch_messages_from_shards(args.db, args.key, args.salt, args.talker, args.date, args.passphrase)
-
-    # `--limit` means the most recent N, the same as `messages` and
-    # `export json`. Sliced here, before the media and sender maps are built,
-    # so neither does work for messages that are about to be dropped.
-    if args.limit and args.limit > 0 and len(messages) > args.limit:
-        print(f"Limiting to the most recent {args.limit} of {len(messages)} messages")
-        messages = messages[-args.limit:]
-
-    if not messages:
-        if args.date:
-            export_dir = create_export_dir(
-                args.out, export_directory_name(args.name or args.talker, args.talker))
-            filepath = os.path.join(export_dir, 'index.html')
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(build_empty_html(args.talker, args.date, args.name or args.talker))
-            print(f"No messages found for {args.date}; wrote empty date-scoped page")
-            print(json.dumps({"success": True, "total": 0, "parts": 1, "files": [filepath]}))
-            conn.close()
-            return
-        print("No messages found!")
-        conn.close()
-        sys.exit(1)
 
     resource_map = load_resource_media_map(
         args.account_dir, args.key, args.salt, messages, image_map, args.passphrase
