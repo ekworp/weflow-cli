@@ -312,6 +312,15 @@ def copy_photoswipe_assets(export_dir):
         shutil.copyfile(os.path.join(source, filename), os.path.join(target, filename))
 
 
+def copy_bootstrap_assets(export_dir):
+    """Copy the vendored Bootstrap runtime into this standalone export."""
+    source = os.path.join(os.path.dirname(__file__), '..', 'resources', 'js', 'bootstrap')
+    target = os.path.join(export_dir, 'assets', 'bootstrap')
+    os.makedirs(target, exist_ok=True)
+    for filename in ('bootstrap.min.css', 'bootstrap.bundle.min.js'):
+        shutil.copyfile(os.path.join(source, filename), os.path.join(target, filename))
+
+
 def part_filenames(parts):
     """Page names inside one bundle: `index.html`, then `index_partN.html`."""
     if parts <= 1:
@@ -2720,7 +2729,7 @@ def build_html_page(talker, messages_part, part_num, total_parts, display_name):
         content_html = m['display']
 
         align = 'right' if is_self else 'left'
-        bg = '#95ec69' if is_self else '#ffffff'
+        bubble_class = 'self' if is_self else 'other'
         sender_display = escape_html(sender)
 
         original_rel = m.get('original_rel')
@@ -2732,7 +2741,7 @@ def build_html_page(talker, messages_part, part_num, total_parts, display_name):
                 '<img ', '<img data-full="%s" ' % escape_html(original_rel), 1)
 
         rows.append(f'''<div class="msg-row" style="text-align:{align};">
-  <div class="msg-bubble" style="background:{bg};">
+  <div class="msg-bubble {bubble_class}">
     <div class="msg-sender">{sender_display} · {time_str}</div>
     <div class="msg-content">{content_html}</div>
   </div>
@@ -2761,12 +2770,28 @@ def build_html_page(talker, messages_part, part_num, total_parts, display_name):
     nav = ''
     if total_parts > 1:
         names = part_filenames(total_parts)
-        nav = '\n  <div class="part-nav">\n%s\n  </div>' % '\n'.join(
-            '    <a href="%s" class="%s">第%d部分</a>' % (
+        links = '\n'.join(
+            '          <a href="%s" class="nav-link %s">第%d部分</a>' % (
                 escape_html(filename),
                 'active' if index + 1 == part_num else '',
                 index + 1)
             for index, filename in enumerate(names))
+        nav = '''
+  <button class="btn btn-outline-success d-lg-none part-nav-toggle" type="button"
+          data-bs-toggle="offcanvas" data-bs-target="#partsNav" aria-controls="partsNav">
+    第 %d 部分 <span class="ms-1">☰</span>
+  </button>
+  <aside class="offcanvas-lg offcanvas-start part-nav-panel" tabindex="-1" id="partsNav" aria-labelledby="partsNavLabel">
+    <div class="offcanvas-header">
+      <h5 class="offcanvas-title" id="partsNavLabel">聊天分页</h5>
+      <button type="button" class="btn-close d-lg-none" data-bs-dismiss="offcanvas" aria-label="关闭"></button>
+    </div>
+    <div class="offcanvas-body">
+      <nav class="nav nav-pills flex-column gap-1" aria-label="聊天分页导航">
+%s
+      </nav>
+    </div>
+  </aside>''' % (part_num, links)
 
     return f'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2776,9 +2801,26 @@ def build_html_page(talker, messages_part, part_num, total_parts, display_name):
 <title>聊天记录 - {escape_html(name)} (第{part_num}/{total_parts}部分)</title>
 <style>
 * {{ margin:0; padding:0; box-sizing:border-box; }}
+:root {{
+  color-scheme: light dark;
+  --page-bg: #e7edf1;
+  --surface: #ffffff;
+  --surface-muted: #f7f9fa;
+  --text: #263238;
+  --muted: #7b8790;
+  --border: rgba(44, 62, 80, .10);
+  --bubble-self: #95ec69;
+  --bubble-other: #ffffff;
+  --accent: #079455;
+  --accent-soft: #e4f7ed;
+}}
+html, body {{
+  background: var(--page-bg) !important;
+}}
 body {{
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #ededed;
+  background: var(--page-bg) !important;
+  color: var(--text);
   padding: 20px 0;
 }}
 .container {{
@@ -2787,35 +2829,72 @@ body {{
   padding: 0 12px;
 }}
 .header {{
-  background: #fff;
+  background: color-mix(in srgb, var(--surface) 94%, var(--page-bg));
   border-radius: 12px;
   padding: 20px;
   margin-bottom: 16px;
   text-align: center;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 10px rgba(31, 45, 61, .06);
+  z-index: 1030;
 }}
-.header h2 {{ font-size: 18px; color: #333; margin-bottom: 4px; }}
-.header p {{ font-size: 13px; color: #999; }}
-.part-nav {{
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  margin: 12px 0;
-  flex-wrap: wrap;
+.header h2 {{ font-size: 18px; color: var(--text); margin-bottom: 4px; }}
+.header p {{ font-size: 13px; color: var(--muted); }}
+.part-nav-toggle {{ margin: 0 auto 12px; display: block; }}
+.part-nav-panel {{ z-index: 1045; }}
+.part-nav-panel {{ --bs-offcanvas-bg: var(--surface); }}
+.part-nav-panel .offcanvas-body {{ padding: 0 12px 12px; }}
+.part-nav-panel .nav-link {{ color: var(--muted); font-size: 13px; }}
+.part-nav-panel .nav-link.active {{ background: var(--accent); color: #fff; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{
+    --page-bg: #182127;
+    --surface: #222d34;
+    --surface-muted: #2a373f;
+    --text: #e7edf0;
+    --muted: #9eabb2;
+    --border: rgba(220, 235, 242, .12);
+    --bubble-self: #23543d;
+    --bubble-other: #26333b;
+    --accent: #29b979;
+    --accent-soft: #183e2e;
+  }}
+  .btn-outline-success {{ color: #65d69f; border-color: #368f68; }}
+  .btn-outline-success:hover {{ color: #fff; background: #287c57; }}
+  .btn-close {{ filter: invert(1) grayscale(100%) brightness(200%); }}
+  .msg-voice-text {{ background: rgba(255,255,255,.06); border-left-color: #71808a; color: var(--text); }}
+  .voice-tag {{ background: #55452b; color: #f2c879; }}
+  .msg-sys {{ color: #89979f; }}
+  .msg-file {{ color: #62d49b; }}
+  .msg-app-title {{ color: var(--text); }}
+  .msg-app-desc, .msg-media {{ color: var(--muted); }}
+  .msg-link {{ background: var(--surface-muted); color: #9fc4e6; }}
+  .search-box input {{ background: var(--surface-muted); color: var(--text); border-color: var(--border); }}
+  .search-box input::placeholder {{ color: var(--muted); }}
+  .footer, .footer .hint {{ color: #8d9aa1; }}
 }}
-.part-nav a {{
-  display: inline-block;
-  padding: 4px 14px;
-  background: #fff;
-  border-radius: 6px;
-  text-decoration: none;
-  color: #576b95;
-  font-size: 13px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+@media (min-width: 992px) {{
+  body {{ padding-left: 220px; }}
+  .part-nav-panel {{
+    position: fixed; top: 20px; bottom: 20px; left: 12px;
+    width: 192px; height: auto; visibility: visible !important;
+    transform: none !important; border: 0; background: transparent;
+  }}
+  .part-nav-panel .offcanvas-header {{
+    display: block; padding: 14px 16px 8px; background: var(--surface);
+    border-radius: 12px 12px 0 0; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }}
+  .part-nav-panel .offcanvas-body {{
+    height: calc(100% - 52px); overflow-y: auto; background: var(--surface);
+    border-radius: 0 0 12px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }}
 }}
-.part-nav a.active {{
-  background: #07c160;
-  color: #fff;
+@media (max-width: 991.98px) {{
+  .header {{ padding: 12px; border-radius: 0 0 12px 12px; margin-left: -12px; margin-right: -12px; }}
+  .header h2 {{ font-size: 16px; }}
+  .header p {{ font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .header .search-box {{ margin-top: 8px; }}
+  .part-nav-panel .offcanvas-body {{ padding: 8px 16px 20px; }}
 }}
 .msg-row {{ margin: 8px 0; }}
 .msg-bubble {{
@@ -2824,11 +2903,14 @@ body {{
   padding: 8px 12px;
   border-radius: 8px;
   text-align: left;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(31, 45, 61, .05);
   word-break: break-all;
 }}
-.msg-sender {{ font-size: 11px; color: #999; margin-bottom: 3px; }}
-.msg-content {{ font-size: 15px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }}
+.msg-bubble.self {{ background: var(--bubble-self) !important; }}
+.msg-bubble.other {{ background: var(--bubble-other) !important; }}
+.msg-sender {{ font-size: 11px; color: var(--muted); margin-bottom: 3px; }}
+.msg-content {{ font-size: 15px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text); }}
 .msg-content img {{ max-width: 240px; max-height: 240px; border-radius: 4px; margin-top: 6px; display: block; cursor: zoom-in; }}
 .pswp__image-info {{
   position: absolute;
@@ -2908,11 +2990,12 @@ body {{
   display: none;
 }}
 </style>
+<link rel="stylesheet" href="assets/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="assets/photoswipe/photoswipe.css">
 </head>
 <body>
 <div class="container">
-<div class="header">
+<div class="header sticky-top">
   <h2>聊天记录 - {escape_html(name)}</h2>
   <p>第 {part_num}/{total_parts} 部分 · {len(messages_part)} 条消息 · {from_time} ~ {to_time}</p>{nav}
   <div class="search-box">
@@ -2927,6 +3010,7 @@ body {{
   <p class="hint">💡 图片与表情来自本机微信数据（会话缓存 + 账号媒体索引）。本机从未下载过的图片、以及未缓存封面的视频，无法显示。</p>{bundle_hint}{originals_hint}
   <p class="hint">⚠️ 语音下方文字为<b>本机机器转写</b>，未经校对。粤语/方言的识别准确率有限，可能出现通顺但并非原话的内容——<b>不可作为原话引用</b>；需要确证时请以录音为准。</p>
 </div>
+<script src="assets/bootstrap/bootstrap.bundle.min.js"></script>
 <script src="assets/photoswipe/photoswipe.umd.min.js"></script>
 <script src="assets/photoswipe/photoswipe-lightbox.umd.min.js"></script>
 <script>
@@ -3636,6 +3720,7 @@ def main():
     export_dir = create_export_dir(
         args.out, export_directory_name(display_name, args.talker))
     copy_photoswipe_assets(export_dir)
+    copy_bootstrap_assets(export_dir)
     print(f"Export directory: {export_dir}")
 
     voice_audio = save_voice_audio(formatted, export_dir)

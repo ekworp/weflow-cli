@@ -70,6 +70,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "bootstrap": "5.3.8",
     "electron": "^42.0.1",
     "jsdom": "^27.4.0",
     "photoswipe": "5.4.4",
