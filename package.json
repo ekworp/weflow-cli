@@ -49,7 +49,7 @@
   "scripts": {
     "build": "tsc",
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
-    "dev": "npx tsx bin/weflow-cli.ts",
+    "dev": "tsx bin/weflow-cli.ts",
     "start": "node cli.cjs",
     "prepublishOnly": "pnpm run build",
     "eval:assistant": "node --import tsx scripts/assistant_eval.ts"
@@ -72,6 +72,7 @@
     "@types/qrcode-terminal": "^0.12.2",
     "electron": "^42.0.1",
     "jsdom": "^27.4.0",
+    "photoswipe": "5.4.4",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
   },

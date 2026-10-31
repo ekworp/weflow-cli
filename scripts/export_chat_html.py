@@ -302,6 +302,16 @@ def create_export_dir(out_dir, name):
             index += 1
 
 
+def copy_photoswipe_assets(export_dir):
+    """Copy the vendored PhotoSwipe runtime into this standalone export."""
+    source = os.path.join(os.path.dirname(__file__), '..', 'resources', 'js', 'photoswipe')
+    target = os.path.join(export_dir, 'assets', 'photoswipe')
+    os.makedirs(target, exist_ok=True)
+    for filename in ('photoswipe.css', 'photoswipe.umd.min.js',
+                     'photoswipe-lightbox.umd.min.js'):
+        shutil.copyfile(os.path.join(source, filename), os.path.join(target, filename))
+
+
 def part_filenames(parts):
     """Page names inside one bundle: `index.html`, then `index_partN.html`."""
     if parts <= 1:
@@ -2754,33 +2764,16 @@ body {{
 .msg-sender {{ font-size: 11px; color: #999; margin-bottom: 3px; }}
 .msg-content {{ font-size: 15px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }}
 .msg-content img {{ max-width: 240px; max-height: 240px; border-radius: 4px; margin-top: 6px; display: block; cursor: zoom-in; }}
-.lightbox {{
-  position: fixed;
-  inset: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(0,0,0,0.86);
-  z-index: 1000;
-  cursor: zoom-out;
-}}
-.lightbox.open {{ display: flex; }}
-.lightbox img {{
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 4px;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.55);
-  cursor: zoom-out;
-}}
-.lightbox .lb-hint {{
-  position: fixed;
+.pswp__image-info {{
+  position: absolute;
   left: 0;
   right: 0;
-  bottom: 14px;
+  bottom: 16px;
+  z-index: 20;
+  color: rgba(255,255,255,0.72);
   text-align: center;
-  color: rgba(255,255,255,0.6);
   font-size: 12px;
+  pointer-events: none;
 }}
 .wxface {{
   display: inline-block; width: 22px; height: 22px; vertical-align: -5px;
@@ -2848,6 +2841,7 @@ body {{
   display: none;
 }}
 </style>
+<link rel="stylesheet" href="assets/photoswipe/photoswipe.css">
 </head>
 <body>
 <div class="container">
@@ -2866,13 +2860,9 @@ body {{
   <p class="hint">💡 图片与表情来自本机微信数据（会话缓存 + 账号媒体索引）。本机从未下载过的图片、以及未缓存封面的视频，无法显示。</p>{bundle_hint}{originals_hint}
   <p class="hint">⚠️ 语音下方文字为<b>本机机器转写</b>，未经校对。粤语/方言的识别准确率有限，可能出现通顺但并非原话的内容——<b>不可作为原话引用</b>；需要确证时请以录音为准。</p>
 </div>
-<div class="lightbox" id="lightbox"><img alt=""><div class="lb-hint">点击任意处或按 Esc 关闭</div></div>
+<script src="assets/photoswipe/photoswipe.umd.min.js"></script>
+<script src="assets/photoswipe/photoswipe-lightbox.umd.min.js"></script>
 <script>
-function closeLightbox() {{
-  const box = document.getElementById('lightbox');
-  box.classList.remove('open');
-  box.querySelector('img').removeAttribute('src');
-}}
 function searchMessages(query) {{
   const rows = document.querySelectorAll('.msg-row');
   const info = document.getElementById('search-info');
@@ -2899,23 +2889,47 @@ function searchMessages(query) {{
     info.style.display = 'none';
   }}
 }}
-// Click any bubble image to zoom it. `data-full` (written by
-// `--save-originals`) points at the original file next to the page; without it
-// the embedded preview is blown up instead of the click doing nothing.
-document.addEventListener('click', function (event) {{
+const imageItems = Array.from(document.querySelectorAll('.msg-content img')).map((img) => ({{
+  src: img.dataset.full || img.src,
+  width: img.naturalWidth || img.width || 1,
+  height: img.naturalHeight || img.height || 1,
+  element: img,
+}}));
+const imageInfo = (item) => {{
+  const image = item.element;
+  const width = image?.naturalWidth || item.width;
+  const height = image?.naturalHeight || item.height;
+  return width && height ? `${{width}} × ${{height}} px` : '图片信息不可用';
+}};
+const lightbox = new PhotoSwipeLightbox({{
+  dataSource: imageItems,
+  pswpModule: PhotoSwipe,
+}});
+document.addEventListener('click', (event) => {{
   const target = event.target;
-  if (target.tagName === 'IMG' && target.closest('.msg-content')) {{
-    const box = document.getElementById('lightbox');
-    box.querySelector('img').src = target.dataset.full || target.src;
-    box.classList.add('open');
+  if (target.tagName !== 'IMG' || !target.closest('.msg-content')) return;
+  const index = imageItems.findIndex((item) => item.element === target);
+  if (index >= 0) {{
+    lightbox.loadAndOpen(index);
     event.preventDefault();
-  }} else if (target.closest('#lightbox')) {{
-    closeLightbox();
   }}
 }});
-document.addEventListener('keydown', function (event) {{
-  if (event.key === 'Escape') closeLightbox();
+lightbox.on('uiRegister', () => {{
+  lightbox.pswp.ui.registerElement({{
+    name: 'image-info',
+    order: 9,
+    isButton: false,
+    appendTo: 'root',
+    html: '',
+    onInit: (el, pswp) => {{
+      const update = () => {{ el.textContent = imageInfo(pswp.currSlide.data); }};
+      pswp.on('change', update);
+      pswp.on('imageSizeChange', update);
+      update();
+    }},
+  }});
 }});
+lightbox.init();
 </script>
 </body>
 </html>'''
@@ -3492,6 +3506,7 @@ def main():
     # also creates `assets/`, so the layout is stable even without media.
     export_dir = create_export_dir(
         args.out, export_directory_name(display_name, args.talker))
+    copy_photoswipe_assets(export_dir)
     print(f"Export directory: {export_dir}")
 
     thumbs = save_thumbnails(formatted, export_dir)

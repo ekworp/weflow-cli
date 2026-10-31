@@ -473,9 +473,9 @@ def find_contact_db_path(message_db_path):
 
 
 def load_contact_names(contact_db_path, contact_key_hex, contact_salt_hex):
-    """Load wxid -> {remark, nick_name} map from contact.db.
+    """Load contact name fields from contact.db.
 
-    Returns dict: {wxid: display_name}
+    Returns dict: {wxid: {displayName, remark, nickname, alias}}
     display_name priority: remark > nick_name > alias > wxid
 
     取不到就返回空表（名字是装饰性的，调用方会退回 wxid）。**连接必须在 finally
@@ -502,10 +502,20 @@ def load_contact_names(contact_db_path, contact_key_hex, contact_salt_hex):
             conn.execute(f'PRAGMA key = "{raw_key}";')
 
         # contact.db schema: username, alias, remark, nick_name, ...
-        c.execute("SELECT username, COALESCE(NULLIF(remark,''), NULLIF(nick_name,''), NULLIF(alias,''), username) FROM contact")
-        for username, display in c.fetchall():
+        rows = conn.execute(
+            "SELECT username, remark, nick_name, alias FROM contact"
+        ).fetchall()
+        for username, remark, nickname, alias in rows:
             if username:
-                name_map[username] = display
+                remark = remark or ''
+                nickname = nickname or ''
+                alias = alias or ''
+                name_map[username] = {
+                    'displayName': remark or nickname or alias or username,
+                    'remark': remark,
+                    'nickname': nickname,
+                    'alias': alias,
+                }
     except Exception:
         pass
     finally:
@@ -542,7 +552,12 @@ def apply_contact_names(sessions, name_map):
     for s in sessions:
         username = s.get('username', '')
         if username in name_map:
-            s['displayName'] = name_map[username]
+            info = name_map[username]
+            if isinstance(info, dict):
+                s['displayName'] = info['displayName']
+            else:
+                # Compatibility with older callers/tests that supplied strings.
+                s['displayName'] = info
     return sessions
 
 
@@ -2064,6 +2079,12 @@ def main():
         result = get_contacts(conns, args.limit, keyword=args.keyword)
         if 'contacts' in result:
             result['contacts'] = apply_contact_names(result['contacts'], contact_name_map)
+            for contact in result['contacts']:
+                info = contact_name_map.get(contact.get('username'))
+                if isinstance(info, dict):
+                    for field in ('remark', 'nickname', 'alias'):
+                        if info.get(field):
+                            contact[field] = info[field]
             result['contacts'] = filter_contacts(result['contacts'], args.keyword, args.limit)
         print(json.dumps(result, ensure_ascii=True))
         for conn in conns:
