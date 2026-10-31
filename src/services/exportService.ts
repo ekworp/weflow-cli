@@ -160,7 +160,7 @@ export class ExportService {
     }
   }
 
-  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; format?: 'html' | 'md'; assetsOnly?: boolean; saveOriginals?: boolean } = {}): Promise<ExportResult> {
+  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; format?: 'html' | 'md'; assetsOnly?: boolean; saveOriginals?: boolean; mediaReport?: boolean } = {}): Promise<ExportResult> {
     const format = options.format ?? 'html'
     if (format === 'md' && (from !== undefined || to !== undefined)) {
       // 不静默降级成「导出全部」：范围是调用方明确要的，做不到就说出来。
@@ -268,6 +268,7 @@ export class ExportService {
           // `assets/originals/`。与 `--full-images` 不同 —— 那个决定预览用哪档字节，
           // 这个决定原图要不要留在磁盘上。默认关：导出物会因此多出几百 MB 的原图。
           WEFLOW_SAVE_ORIGINALS: options.saveOriginals ? '1' : undefined,
+          WEFLOW_MEDIA_REPORT: options.mediaReport ? '1' : undefined,
           WEFLOW_EXPORT_DATE: date || undefined,
           // Without this the Python path exported the entire history: `--limit`
           // only ever reached the fallback renderer, so a capped export of a
@@ -328,13 +329,13 @@ export class ExportService {
    * `--limit` 切片的 —— `--limit 200` 于是把整段历史的媒体都抽出来（文档还要拷成文件），
    * 实测 67 份里只有 33 份落在导出的 200 条里。
    */
-  async extractMedia(talker: string, outputDir: string, quiet = false, options: { fullImages?: boolean } = {}, limit = 0, date = ''): Promise<ExportResult> {
+  async extractMedia(talker: string, outputDir: string, quiet = false, options: { fullImages?: boolean; mediaReport?: boolean } = {}, limit = 0, date = ''): Promise<ExportResult> {
     return this.exportHtml(talker, outputDir, limit, date, undefined, undefined, quiet,
       { ...options, format: 'md', assetsOnly: true })
   }
 
   /** markdown + 图片落盘到 `<output>/<talker>_assets/`（同一条 Python 通路，换个输出形态）。 */
-  async exportMarkdown(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean } = {}): Promise<ExportResult> {
+  async exportMarkdown(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; mediaReport?: boolean } = {}): Promise<ExportResult> {
     return this.exportHtml(talker, outputDir, limit, date, from, to, quiet, { ...options, format: 'md' })
   }
 

@@ -331,6 +331,7 @@ def save_originals(items, export_dir):
     assets = os.path.join(export_dir, 'assets', 'originals')
     ORIGINAL_STATE['dir'] = assets
     seen = {}
+    pending = {}
     for item in items:
         if not item.get('image_b64'):
             continue
@@ -343,51 +344,62 @@ def save_originals(items, export_dir):
             # name "original" would be a lie.
             item['original_status'] = 'thumbnail-only'
             continue
-        rel = seen.get(info['path'])
-        if rel:
-            # Same picture, another message (forwarded, or the same file cached
-            # under two timestamps). Counts as reused, not as a second save.
-            item['original_rel'] = rel
-            item['original_status'] = 'reused'
-            ORIGINAL_STATE['reused'] += 1
-            continue
-        loaded = load_original(info)
-        if not loaded:
-            item['original_status'] = 'unreadable'
-            ORIGINAL_STATE['failed'] += 1
-            continue
-        data, mime = loaded
-        extension = _IMAGE_EXT_BY_MIME.get(mime, '.jpg')
-        name = 'img_%s%s' % (hashlib.md5(data).hexdigest()[:12], extension)
-        target = os.path.join(assets, name)
-        rel = os.path.relpath(target, export_dir).replace('\\', '/')
-        existed = os.path.isfile(target)
-        partial = target + '.part'
-        if not existed:
-            try:
-                os.makedirs(assets, exist_ok=True)
-                with open(partial, 'wb') as handle:
-                    handle.write(data)
-                # Rename only after a complete write: an interrupted run must
-                # not leave a half image that a later run then treats as done.
-                os.replace(partial, target)
-                ORIGINAL_STATE['saved'] += 1
-            except OSError:
-                # Keeping the bubble working matters more than the original:
-                # no link is attached, and the report says why. Remove the
-                # partial write so no half image outlives the run.
-                try:
-                    os.remove(partial)
-                except OSError:
-                    pass
-                item['original_status'] = 'write-failed'
-                ORIGINAL_STATE['failed'] += 1
+        pending.setdefault(info['path'], []).append((item, info))
+
+    # Decoding/decrypting large originals is the expensive part. Do that work
+    # concurrently, while keeping the final writes and counters on this thread
+    # so duplicate content cannot race for the same target file.
+    def load_pending(entry):
+        path, entries = entry
+        loaded = load_original(entries[0][1])
+        return path, loaded
+
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, max(1, len(pending)))) as pool:
+        loaded_originals = pool.map(load_pending, pending.items())
+        for source_path, loaded in loaded_originals:
+            entries = pending[source_path]
+            if not loaded:
+                for item, _ in entries:
+                    item['original_status'] = 'unreadable'
+                    ORIGINAL_STATE['failed'] += 1
                 continue
-        else:
-            ORIGINAL_STATE['reused'] += 1
-        seen[info['path']] = rel
-        item['original_rel'] = rel
-        item['original_status'] = 'saved' if not existed else 'reused'
+
+            data, mime = loaded
+            extension = _IMAGE_EXT_BY_MIME.get(mime, '.jpg')
+            name = 'img_%s%s' % (hashlib.md5(data).hexdigest()[:12], extension)
+            target = os.path.join(assets, name)
+            rel = os.path.relpath(target, export_dir).replace('\\', '/')
+            existed = os.path.isfile(target)
+            partial = target + '.part'
+            if not existed:
+                try:
+                    os.makedirs(assets, exist_ok=True)
+                    with open(partial, 'wb') as handle:
+                        handle.write(data)
+                    # Rename only after a complete write: an interrupted run
+                    # must not leave a half image that a later run then treats
+                    # as done.
+                    os.replace(partial, target)
+                except OSError:
+                    # Keeping the bubble working matters more than the
+                    # original: no link is attached, and the report says why.
+                    try:
+                        os.remove(partial)
+                    except OSError:
+                        pass
+                    for item, _ in entries:
+                        item['original_status'] = 'write-failed'
+                        ORIGINAL_STATE['failed'] += 1
+                    continue
+            seen[source_path] = rel
+            for index, (item, _) in enumerate(entries):
+                item['original_rel'] = rel
+                item['original_status'] = 'saved' if not existed and index == 0 else 'reused'
+                if item['original_status'] == 'saved':
+                    ORIGINAL_STATE['saved'] += 1
+                else:
+                    ORIGINAL_STATE['reused'] += 1
     return assets
 
 
@@ -2909,15 +2921,38 @@ function searchMessages(query) {{
 }}
 const imageItems = Array.from(document.querySelectorAll('.msg-content img')).map((img) => ({{
   src: img.dataset.full || img.src,
-  width: img.naturalWidth || img.width || 1,
-  height: img.naturalHeight || img.height || 1,
+  // PhotoSwipe needs the source image dimensions, not the CSS thumbnail
+  // dimensions. They are filled from the original on click below.
+  width: img.dataset.full ? 1 : (img.naturalWidth || img.width || 1),
+  height: img.dataset.full ? 1 : (img.naturalHeight || img.height || 1),
   element: img,
 }}));
 const imageInfo = (item) => {{
   const image = item.element;
-  const width = image?.naturalWidth || item.width;
-  const height = image?.naturalHeight || item.height;
+  const width = item.width || image?.naturalWidth;
+  const height = item.height || image?.naturalHeight;
   return width && height ? `${{width}} × ${{height}} px` : '图片信息不可用';
+}};
+const imageDimensionPromises = new WeakMap();
+const loadImageDimensions = (item) => {{
+  if (item.width > 1 && item.height > 1) return Promise.resolve(item);
+  if (imageDimensionPromises.has(item)) return imageDimensionPromises.get(item);
+  const promise = new Promise((resolve) => {{
+    const probe = new Image();
+    probe.onload = () => {{
+      item.width = probe.naturalWidth || 1;
+      item.height = probe.naturalHeight || 1;
+      resolve(item);
+    }};
+    probe.onerror = () => {{
+      item.width = item.element.naturalWidth || item.element.width || 1;
+      item.height = item.element.naturalHeight || item.element.height || 1;
+      resolve(item);
+    }};
+    probe.src = item.src;
+  }});
+  imageDimensionPromises.set(item, promise);
+  return promise;
 }};
 const lightbox = new PhotoSwipeLightbox({{
   dataSource: imageItems,
@@ -2928,7 +2963,9 @@ document.addEventListener('click', (event) => {{
   if (target.tagName !== 'IMG' || !target.closest('.msg-content')) return;
   const index = imageItems.findIndex((item) => item.element === target);
   if (index >= 0) {{
-    lightbox.loadAndOpen(index);
+    // Prepare every slide so keyboard navigation never lands on a 1x1 item.
+    Promise.all(imageItems.map(loadImageDimensions))
+      .then(() => lightbox.loadAndOpen(index, imageItems));
     event.preventDefault();
   }}
 }});
@@ -3252,6 +3289,9 @@ def main():
                         default=os.environ.get('WEFLOW_SAVE_ORIGINALS', '') == '1',
                         help='HTML 模式：把原图存到 <输出>/<联系人>_<时间戳>/assets/originals/，'
                              '聊天里仍显示缩略图，点击后打开原图')
+    parser.add_argument('--media-report', action='store_true',
+                        default=os.environ.get('WEFLOW_MEDIA_REPORT', '') == '1',
+                        help='按需在 assets/ 下生成媒体报告 JSON')
     parser.add_argument('--parts', type=int, default=5, help='Number of parts to split into')
     parser.add_argument('--wx-dir', default='', help='Traditional WeChat data dir (FileStorage fallback)')
     parser.add_argument('--cache-dir', default=os.environ.get('WEFLOW_EXPORT_CACHE_DIR', ''), help='NT cache directory for image thumbnails')
@@ -3446,10 +3486,17 @@ def main():
     # conversation once to record what it needs (local-only, ~0.1s), fetch it
     # all concurrently, then format against a warm cache.
     sink = []
+    first_pass = []
+    remote_message_indexes = set()
     PREFETCH['sink'] = sink
     try:
-        for row in messages:
-            format_message(row, args.talker, wx_dir, image_map, sender_map, display_name, resource_map, args.own_wxid, file_index)
+        for index, row in enumerate(messages):
+            before = len(sink)
+            first_pass.append(format_message(
+                row, args.talker, wx_dir, image_map, sender_map, display_name,
+                resource_map, args.own_wxid, file_index))
+            if len(sink) != before:
+                remote_message_indexes.add(index)
     finally:
         PREFETCH['sink'] = None
     if sink:
@@ -3470,7 +3517,12 @@ def main():
     for i, row in enumerate(messages):
         if i % progress_step == 0:
             print(f"  Formatting {i}/{len(messages)}...", flush=True)
-        result = format_message(row, args.talker, wx_dir, image_map, sender_map, display_name, resource_map, args.own_wxid, file_index)
+        if i in remote_message_indexes:
+            result = format_message(
+                row, args.talker, wx_dir, image_map, sender_map, display_name,
+                resource_map, args.own_wxid, file_index)
+        else:
+            result = first_pass[i]
         if result.get('image_b64'):
             img_hit_count += 1
             if result.get('local_type') == 49:
@@ -3506,8 +3558,8 @@ def main():
         # 这一步也写媒体报告：三种形态的调用方应当拿到同一份东西（状态计数 + 报告文件名），
         # 少写这一份的话，`--media` 的调用者只能看到文档计数、看不到"哪些媒体没嵌上、为什么"。
         media_report_path = None
-        if media_items:
-            media_report_path = os.path.join(args.out, f'{file_prefix}_media.json')
+        if args.media_report and media_items:
+            media_report_path = os.path.join(assets_name, 'media.json')
             with open(media_report_path, 'w', encoding='utf-8') as handle:
                 json.dump(build_media_report(media_items, display_name, args.talker, len(formatted)),
                           handle, ensure_ascii=False, indent=2)
@@ -3524,8 +3576,8 @@ def main():
     if args.format == 'md':
         md_path, asset_total, asset_new, assets_name = write_markdown(args.out, file_prefix, formatted, args.assets_dir)
         media_report_path = None      # 没有媒体时下面那段不跑，但 JSON 里仍要如实给出 None
-        if media_items:
-            media_report_path = os.path.join(args.out, f'{file_prefix}_media.json')
+        if args.media_report and media_items:
+            media_report_path = os.path.join(assets_name, 'media.json')
             with open(media_report_path, 'w', encoding='utf-8') as handle:
                 json.dump(build_media_report(media_items, display_name, args.talker, len(formatted)),
                           handle, ensure_ascii=False, indent=2)
@@ -3567,13 +3619,13 @@ def main():
         print(f"Originals: {originals['saved']} saved, {originals['reused']} reused, "
               f"{originals['failed']} unreadable -> assets/originals/")
 
-    # Media coverage report. Written inside the bundle, so it is always found
-    # next to what it describes.
+    # Media coverage report is opt-in. Keep it under the bundle's assets root,
+    # alongside the files it describes.
     media_report = None
     media_report_path = None
-    if media_items:
+    if args.media_report and media_items:
         media_report = build_media_report(media_items, display_name, args.talker, per_part)
-        media_report_path = os.path.join(export_dir, f'{file_prefix}_media.json')
+        media_report_path = os.path.join(export_dir, 'assets', 'media.json')
         with open(media_report_path, 'w', encoding='utf-8') as handle:
             json.dump(media_report, handle, ensure_ascii=False, indent=2)
         summary = media_report['counts']

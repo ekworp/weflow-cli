@@ -29,6 +29,7 @@ program
   .option('--non-interactive', '禁止交互选择；匹配不唯一时返回错误')
   .option('--full-images', '使用原图而非微信缓存缩略图（更清晰，但导出慢数倍）')
   .option('--save-originals', 'html 导出时把原图存到 <输出>/<联系人>_<时间戳>/assets/originals/，聊天里仍是缩略图，点击后打开原图')
+  .option('--media-report', '按需在导出物的 assets/ 目录下生成媒体报告 JSON')
   .option('--media', 'json/txt/excel 导出时一并抽出图片与文档（落盘到 <输出>/<会话>_assets，并在导出物里给出相对路径）')
   .action(async (talkerInput: string, format: string, opts) => {
     const validFormats = ['json', 'txt', 'html', 'md', 'excel']
@@ -86,7 +87,7 @@ program
     // "各状态多少条、报告叫什么"，而不必去翻 Python 的 stdout。
     let extracted: ExportResult | undefined
     if (opts.media && (format === 'json' || format === 'txt' || format === 'excel')) {
-      const media = await exportService.extractMedia(talker, opts.output, !!opts.json, { fullImages: opts.fullImages === true }, limit, opts.date || '')
+      const media = await exportService.extractMedia(talker, opts.output, !!opts.json, { fullImages: opts.fullImages === true, mediaReport: opts.mediaReport === true }, limit, opts.date || '')
       extracted = media
       if (!media.success) {
         if (opts.json) console.log(JSON.stringify({ success: false, code: 'MEDIA_EXPORT_FAILED', error: media.error || '媒体抽取失败' }))
@@ -118,11 +119,12 @@ program
         result = await exportService.exportHtml(talker, opts.output, limit, opts.date || '', from, to, !!opts.json, {
           fullImages: opts.fullImages === true,
           saveOriginals: opts.saveOriginals === true,
+          mediaReport: opts.mediaReport === true,
         })
         break
       case 'md':
         // markdown + 图片落盘（`<输出>/<talker>_assets/`）；json/txt/excel 之后会自动带上那些图。
-        result = await exportService.exportMarkdown(talker, opts.output, limit, opts.date || '', from, to, !!opts.json, { fullImages: opts.fullImages === true })
+        result = await exportService.exportMarkdown(talker, opts.output, limit, opts.date || '', from, to, !!opts.json, { fullImages: opts.fullImages === true, mediaReport: opts.mediaReport === true })
         break
       case 'excel':
         result = await exportService.exportExcel(talker, opts.output, limit, from, to)
