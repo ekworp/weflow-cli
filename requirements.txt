@@ -7,3 +7,5 @@ zstandard
 scrapling
 numpy
 pycryptodome
+# SILK voice decoder used by HTML export to write browser-playable WAV files.
+silk-python>=0.2.9

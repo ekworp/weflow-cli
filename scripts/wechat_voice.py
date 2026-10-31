@@ -3,9 +3,9 @@
 
 WeChat 4.x keeps voice payloads in `media_*.db` under `VoiceInfo.voice_data`,
 encoded as SILK v3 (a one-byte length prefix, then `#!SILK_V3`). Browsers
-cannot play SILK and ffmpeg has no SILK decoder, so a chat export has nothing
-to show for a voice message; the audio is decoded with `pilk` and transcribed
-with a local `faster-whisper` model instead.
+cannot play SILK and ffmpeg has no SILK decoder, so a chat export must decode
+it first; `silk-python` provides the decoder and a local `faster-whisper` model
+can transcribe the resulting audio.
 
 Recognition is expensive next to everything else an export does, so it is
 deliberately kept out of the export path: this module fills a
@@ -116,26 +116,47 @@ def voice_key(blob):
 def decode_silk(blob, wav_path):
     """Write `blob` to `wav_path` as 16kHz mono WAV. True on success.
 
-    pilk takes paths rather than bytes, and the 16kHz rate is what Whisper
-    wants, so no resampling step is needed afterwards.
+    `silk-python` exposes a file-like API and returns raw PCM. The 16kHz rate
+    is what Whisper wants, so no resampling step is needed afterwards.
     """
     try:
-        import pilk
+        import io
+        import wave
+        import pysilk
     except ImportError:
         return False
-    silk_path = wav_path + '.silk'
     try:
-        with open(silk_path, 'wb') as handle:
-            handle.write(blob)
-        pilk.silk_to_wav(silk_path, wav_path, rate=16000)
+        raw = bytes(blob)
+        # WeChat adds a one-byte prefix and omits SILK's terminal marker.
+        # Normalize that wrapper for pysilk's standard SILK decoder.
+        candidates = [raw]
+        normalized = raw
+        if normalized.startswith(b'\x02#!SILK_V3'):
+            normalized = normalized[1:]
+        if normalized.startswith(b'#!SILK_V3') and not normalized.endswith(b'\xff\xff'):
+            normalized += b'\xff\xff'
+        if normalized != raw:
+            candidates.append(normalized)
+        pcm = None
+        for candidate in candidates:
+            output = io.BytesIO()
+            try:
+                pysilk.decode(io.BytesIO(candidate), output, 16000)
+                if output.getvalue():
+                    pcm = output.getvalue()
+                    break
+            except Exception:
+                continue
+        if not pcm:
+            return False
+        with wave.open(wav_path, 'wb') as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16000)
+            handle.writeframes(pcm)
         return os.path.isfile(wav_path) and os.path.getsize(wav_path) > 44
     except Exception:
         return False
-    finally:
-        try:
-            os.remove(silk_path)
-        except OSError:
-            pass
 
 
 def resolve_model(model_name=''):

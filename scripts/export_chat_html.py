@@ -412,6 +412,43 @@ def original_summary():
     }
 
 
+def save_voice_audio(items, export_dir):
+    """Decode voice messages to browser-playable WAV files."""
+    if not _WECHAT_VOICE or not VOICE_STATE['map']:
+        return {'saved': 0, 'reused': 0, 'failed': 0}
+    voice_dir = os.path.join(export_dir, 'assets', 'voice')
+    state = {'saved': 0, 'reused': 0, 'failed': 0}
+    decoded = {}
+    for item in items:
+        if item.get('local_type') != 34:
+            continue
+        blob = VOICE_STATE['map'].get(item.get('local_id'))
+        if not blob:
+            state['failed'] += 1
+            continue
+        digest = wechat_voice.voice_key(blob)
+        filename = 'voice_%s.wav' % digest
+        target = os.path.join(voice_dir, filename)
+        rel = 'assets/voice/%s' % filename
+        if digest not in decoded:
+            if os.path.isfile(target) and os.path.getsize(target) > 44:
+                decoded[digest] = True
+                state['reused'] += 1
+            else:
+                os.makedirs(voice_dir, exist_ok=True)
+                decoded[digest] = wechat_voice.decode_silk(blob, target)
+                if decoded[digest]:
+                    state['saved'] += 1
+                else:
+                    state['failed'] += 1
+        if decoded[digest]:
+            item['display'] += (
+                '<audio class="msg-voice-audio" controls preload="none" '
+                'src="%s"></audio>' % rel
+            )
+    return state
+
+
 def _use_thumbnail_file(display, blob, rel):
     """Swap one embedded `data:` preview for its file path.
 
@@ -1924,9 +1961,8 @@ def image_is_blank(b64_data, threshold=0.985):
 def render_voice(local_id, content):
     """`[语音 6″]` plus its transcript when one has been cached.
 
-    Browsers cannot play SILK and ffmpeg cannot decode it, so there is no audio
-    element to offer - the transcript is the only way a voice message can carry
-    meaning in an export.
+    The playable WAV element is attached after formatting, once the export
+    directory exists and the SILK payload has been decoded.
     """
     length = (extract_xml_attr_value(content, 'voicelength')
               or extract_xml_attr_value(content, 'length'))
@@ -2812,6 +2848,7 @@ body {{
 {face_rules}
 .msg-media {{ color: #888; font-size: 14px; }}
 .msg-voice-text {{ margin-top: 4px; padding: 6px 9px; background: rgba(0,0,0,0.045); border-left: 3px solid #bbb; border-radius: 3px; font-size: 14px; line-height: 1.5; color: #444; }}
+.msg-voice-audio {{ display: block; width: min(280px, 100%); margin-top: 6px; height: 32px; }}
 .voice-tag {{ display: inline-block; margin-right: 6px; padding: 1px 5px; border-radius: 3px; background: #fdf0e0; color: #b5762a; font-size: 11px; vertical-align: 1px; white-space: nowrap; }}
 .msg-sys {{ color: #bbb; font-size: 13px; }}
 .msg-file {{ color: #07c160; font-weight: 500; }}
@@ -3600,6 +3637,12 @@ def main():
         args.out, export_directory_name(display_name, args.talker))
     copy_photoswipe_assets(export_dir)
     print(f"Export directory: {export_dir}")
+
+    voice_audio = save_voice_audio(formatted, export_dir)
+    if sum(voice_audio.values()):
+        print(f"Voice audio: {voice_audio['saved']} saved, "
+              f"{voice_audio['reused']} reused, {voice_audio['failed']} failed "
+              "-> assets/voice/")
 
     thumbs = save_thumbnails(formatted, export_dir)
     print(f"Previews: {thumbs['written']} saved, {thumbs['reused']} reused, "
