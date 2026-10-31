@@ -839,7 +839,7 @@ def scan_nt_cache(nt_cache_dir, talker, account_dir='', own_wxid=''):
     return image_map
 
 
-def scan_account_media(account_dir, own_wxid='', talker=''):
+def scan_account_media(account_dir, own_wxid='', talker='', wanted_md5s=None):
     """Index image resources stored outside a conversation cache directory.
 
     Scoped to `talker` whenever it is known. Walking the whole account means
@@ -847,6 +847,7 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
     dominated export time; a conversation only ever needs its own media.
     """
     image_map = {}
+    wanted_md5s = {str(value).lower() for value in (wanted_md5s or ())}
     v2_key = resolve_v2_media_key(account_dir, own_wxid)
     if SAVE_ORIGINALS and v2_key:
         # `save_originals()` runs after this and reads files lazily; without the
@@ -879,6 +880,9 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
             continue
         for current_root, _, files in os.walk(root):
             for fname in files:
+                filename_md5s = extract_media_md5s(fname)
+                if wanted_md5s and filename_md5s and not wanted_md5s.intersection(filename_md5s):
+                    continue
                 path = os.path.join(current_root, fname)
                 try:
                     stat = os.stat(path)
@@ -2936,7 +2940,10 @@ lightbox.on('uiRegister', () => {{
     appendTo: 'root',
     html: '',
     onInit: (el, pswp) => {{
-      const update = () => {{ el.textContent = imageInfo(pswp.currSlide.data); }};
+      const update = () => {{
+        const slide = pswp.currSlide;
+        el.textContent = slide?.data ? imageInfo(slide.data) : '';
+      }};
       pswp.on('change', update);
       pswp.on('imageSizeChange', update);
       update();
@@ -3307,20 +3314,43 @@ def main():
         conn.close()
         sys.exit(1)
 
+    message_types = {int(row[2] or 0) for row in messages}
+    needs_image_media = bool(message_types & {3, 47, 49})
+    needs_file_index = 49 in message_types
+    needs_voice_map = 34 in message_types
+    needs_sticker_cache = 47 in message_types
+    needs_contact_names = '@chatroom' in args.talker or not args.name
+
     # Scan NT cache for image thumbnails
     image_map = {}
     _phase("start")
-    if args.cache_dir:
+    if args.cache_dir and needs_image_media:
         print(f"Scanning NT cache: {args.cache_dir}")
         image_map = scan_nt_cache(args.cache_dir, args.talker, args.account_dir, args.own_wxid)
     else:
         image_map = {}
+
+    resource_map = load_resource_media_map(
+        args.account_dir, args.key, args.salt, messages, image_map, args.passphrase
+    ) if needs_image_media else {}
+    if resource_map:
+        print(f"  Found resource mappings for {len(resource_map)} message keys")
+
+    wanted_md5s = set()
+    for row in messages:
+        if int(row[2] or 0) in (3, 47, 49):
+            wanted_md5s.update(extract_media_md5s(row[8]))
+    for values in resource_map.values():
+        wanted_md5s.update(str(value).lower() for value in values)
     # The account media index holds everything the conversation cache does not.
     # A conversation cache only keeps recent months, so without this a group
     # photo from last year resolved 0/1444 - every image and video came out as
     # a bare `[图片]`. Both indexes are merged rather than chosen between.
-    if args.account_dir:
-        account_media = scan_account_media(args.account_dir, args.own_wxid, args.talker)
+    if args.account_dir and needs_image_media:
+        account_media = scan_account_media(
+            args.account_dir, args.own_wxid, args.talker,
+            wanted_md5s=wanted_md5s or None,
+        )
         print(f"  Account media index: {len(account_media)} entries")
         for key, value in account_media.items():
             if key in image_map:
@@ -3335,14 +3365,14 @@ def main():
     # 文档本体的索引：只 stat，不读内容（1,677 个文件的走一遍不到一秒）。没有它，`appmsg type=6`
     # 的消息就只能渲染成 `[文件] 名字` —— 正是反馈里"其余格式不支持导出文档"的那一半。
     file_index = {}
-    if args.account_dir:
+    if args.account_dir and needs_file_index:
         file_index = scan_account_file_index(args.account_dir)
         if file_index:
             print(f"  Account file index: {len(file_index)} key(s)")
     _phase("media scan")
 
     # Custom stickers: derive the local cache key from the account seed.
-    if args.account_dir and _WECHAT_EMOTICON:
+    if args.account_dir and _WECHAT_EMOTICON and needs_sticker_cache:
         STICKER_STATE['dirs'] = wechat_emoticon.sticker_cache_dirs(args.account_dir)
         STICKER_STATE['cache_dir'] = os.path.join(args.out, '.sticker-cache')
         seed, discovered = resolve_emoticon_seed(args.emoticon_seed, args.account_dir, args.out)
@@ -3364,13 +3394,14 @@ def main():
     COVER_STATE['thumb_budget'] = THUMB_FETCH_LIMIT
 
     # Contact names make a group transcript readable; the ids alone do not.
-    CONTACT_NAMES.update(load_contact_names(args.contact_db, args.contact_key, args.contact_salt))
+    if needs_contact_names:
+        CONTACT_NAMES.update(load_contact_names(args.contact_db, args.contact_key, args.contact_salt))
     if CONTACT_NAMES:
         print(f"Contacts: {len(CONTACT_NAMES)} name(s)")
 
     # Voice: load the payloads so a cached transcript can be shown. Anything
     # not yet transcribed simply renders as `[语音 N″]`.
-    if _WECHAT_VOICE:
+    if _WECHAT_VOICE and needs_voice_map:
         # 缓存的家由 `wechat_voice` 定义：以前这里按 `--out` 拼，于是同一段音频在不同
         # 输出目录下会被各转写一遍，而卡片那条线读的又是另一处（2026-10-01）。
         VOICE_STATE['cache'] = wechat_voice.TranscriptCache(wechat_voice.DEFAULT_CACHE_DIR)
@@ -3395,11 +3426,6 @@ def main():
         if args.name:
             print(f"Name: {args.name} (from contacts)")
 
-    resource_map = load_resource_media_map(
-        args.account_dir, args.key, args.salt, messages, image_map, args.passphrase
-    )
-    if resource_map:
-        print(f"  Found resource mappings for {len(resource_map)} message keys")
     _phase("resource map")
 
     # Build sender name map from every message shard because each shard can
